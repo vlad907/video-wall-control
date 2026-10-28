@@ -38,8 +38,13 @@ machine on the LAN.
 
 - Each card is one panel (one Studio Monitor port). It shows what that panel is
   playing right now and whether it matches the saved mapping.
-- The **NDI streams on the network** list shows every source Studio Monitor can see
-  (refreshed every 10 s) and which panel, if any, is showing it.
+- The **NDI streams on the network** list shows every source found (refreshed every 10 s)
+  and which panel, if any, is showing it. Streams are found two ways: through Studio
+  Monitor's `/v1/sources`, and directly on the network over mDNS. The mDNS search works even
+  when no Studio Monitor is running. If you use an NDI Discovery Server rather than mDNS,
+  streams appear once at least one Studio Monitor is running.
+- If the Studio Monitor program can't be found, a yellow banner appears with a field to
+  paste its full path. In File Explorer, Shift + right-click the .exe and choose *Copy as path*.
 - Pick an **NDI source** for each panel, then click **Apply to this panel** or
   **Save & apply all**. Applied choices are saved to `config.json` and restored on every boot.
   Until you save, each dropdown shows whatever the panel is playing right now.
@@ -60,7 +65,8 @@ Open `http://localhost:8080/api/sources/raw` on the Mini PC. It shows the raw
 |---|---|---|
 | `dashboard_port` | `8080` | Dashboard port (80–83 belong to Studio Monitor) |
 | `dashboard_host` | `0.0.0.0` | Use `127.0.0.1` to allow the dashboard only on the Mini PC itself |
-| `exe_path` | `""` | Full path to `Application.Network.VideoMonitor2.x64.exe`. If empty, it's looked up in `exe_search_paths` (NDI 6 / NDI 5 / NewTek folders) |
+| `exe_path` | `""` | Full path to the Studio Monitor .exe. If empty, it's looked up in `exe_search_paths`, then anywhere under `Program Files\NDI`, `NewTek` or `Vizrt` (also in `Program Files (x86)`) |
+| `mdns_discovery` | `true` | Also find NDI streams directly over mDNS |
 | `boot_delay_seconds` | `10` | Wait before the first launch |
 | `launch_gap_seconds` | `2` | Gap between instance launches |
 | `watchdog_interval_seconds` | `15` | How often the watchdog checks |

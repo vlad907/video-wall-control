@@ -58,6 +58,10 @@
   #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel-2);
            border: 1px solid var(--border); padding: 10px 16px; border-radius: 8px; display: none;
            max-width: 90vw; z-index: 5; }
+  .banner { background: #2a2113; border: 1px solid #5e4b1d; border-radius: 10px; padding: 12px 14px;
+            margin-bottom: 20px; display: flex; flex-direction: column; gap: 6px; }
+  .banner-row { display: flex; gap: 8px; }
+  .banner-row input { margin-top: 0; }
   .streams-wrap { margin-bottom: 20px; }
   .streams-wrap h3 { font-size: 14px; margin: 0 0 8px; }
   #streams { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -94,6 +98,15 @@
 </header>
 
 <main>
+  <section id="exeBanner" class="banner" hidden>
+    <b>NDI Studio Monitor wasn't found, so the panels can't be started automatically.</b>
+    <div class="muted">Searched: <span id="exeRoots"></span>. Paste the full path to the Studio Monitor .exe
+      (in File Explorer, Shift + right-click the file &gt; <i>Copy as path</i>).</div>
+    <div class="banner-row">
+      <input type="text" id="exeInput" placeholder="C:\Program Files\NDI\NDI 6 Tools\Studio Monitor\Application.Network.VideoMonitor2.x64.exe">
+      <button id="btnExe" class="primary">Save path</button>
+    </div>
+  </section>
   <section class="streams-wrap">
     <h3>NDI streams on the network (<span id="streamCount">0</span>)</h3>
     <div id="streams"></div>
@@ -233,10 +246,18 @@ function render() {
     badge.className = "badge state " + (matches ? "match" : p.ndi_source ? "mismatch" : "");
     badge.textContent = !p.ndi_source ? "not assigned" : matches ? "matches saved" : "differs from saved";
 
-    if (!dirty.has(p.port)) {
-      const srcOpts = allSources().map((s) => ({ value: s, label: s }));
-      // Nothing saved yet: show what the panel is playing so the dropdown reflects reality.
-      fillSelect(card.querySelector(".src"), srcOpts, p.ndi_source || p.current_source, "— choose a source —");
+    // Always keep the option list current; only the selected value depends on unsaved edits.
+    const sel = card.querySelector(".src");
+    const srcOpts = allSources().map((s) => ({ value: s, label: s }));
+    const key = JSON.stringify(srcOpts.map((o) => o.value));
+    const isDirty = dirty.has(p.port);
+    // Nothing saved yet: show what the panel is playing so the dropdown reflects reality.
+    const wanted = isDirty ? sel.value : (p.ndi_source || p.current_source || "");
+    const typingOther = isDirty && sel.value === OTHER;
+    const stale = sel.dataset.key !== key || (!isDirty && sel.value !== wanted);
+    if (stale && !typingOther && document.activeElement !== sel) {
+      fillSelect(sel, srcOpts, wanted, "— choose a source —");
+      sel.dataset.key = key;
       card.querySelector(".src-other").hidden = true;
     }
   }
@@ -254,6 +275,8 @@ async function refreshStatus() {
     $("lastCheck").textContent = status.last_check || "pending";
     $("enforce").checked = !!status.enforce_mapping;
     $("btnRestart").hidden = !status.processes_managed;
+    $("exeBanner").hidden = !status.processes_managed || !!status.exe_path;
+    $("exeRoots").textContent = (status.exe_search_roots || []).join(", ") || "Program Files";
     render();
   } catch (e) {
     $("phase").textContent = "unreachable";
@@ -315,6 +338,13 @@ $("btnRestart").onclick = async () => {
 };
 $("enforce").onchange = (e) => api("/api/settings", { method: "POST", body: { enforce_mapping: e.target.checked } });
 $("btnLog").onclick = refreshLog;
+$("btnExe").onclick = async () => {
+  try {
+    await api("/api/settings", { method: "POST", body: { exe_path: $("exeInput").value } });
+    toast("Saved. Missing monitors will start within 15 seconds.");
+    refreshStatus(); refreshLog();
+  } catch (e) { toast(e.message, 7000); }
+};
 
 (async () => {
   await refreshSources(false);

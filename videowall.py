@@ -15,6 +15,8 @@ import logging
 import logging.handlers
 import os
 import re
+import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -56,6 +58,7 @@ DEFAULT_CONFIG = {
     "api_ready_timeout_seconds": 20,
     "watchdog_interval_seconds": 15,
     "enforce_mapping": True,
+    "mdns_discovery": True,
     "hung_restart_after_checks": 4,
     "restart_cooldown_seconds": 300,
     "layout_columns": 2,
@@ -194,10 +197,135 @@ def get_raw_sources():
 
 
 def get_sources():
-    """Return a sorted list of NDI source names on the network."""
-    _, result = get_raw_sources()
-    names = set(normalize_sources(result)) | set(find_ndi_names(result))
+    """Return a sorted list of NDI source names, from Studio Monitor and/or mDNS."""
+    names, error = set(), None
+    try:
+        _, result = get_raw_sources()
+        names |= set(normalize_sources(result)) | set(find_ndi_names(result))
+    except RuntimeError as exc:
+        error = exc
+    if cfg("mdns_discovery"):
+        names |= mdns_sources()
+    if not names and error:
+        raise error
     return sorted(names, key=str.lower)
+
+
+# --------------------------------------------------------------------------
+# NDI discovery via mDNS (works even when no Studio Monitor is running)
+# --------------------------------------------------------------------------
+
+NDI_SERVICE = "_ndi._tcp.local"
+mdns_lock = threading.Lock()
+mdns_seen = {}   # name -> last time seen
+mdns_state = {"last_query": 0.0}
+
+
+def local_ipv4_addresses():
+    addrs = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addrs.add(info[4][0])
+    except OSError:
+        pass
+    return [a for a in addrs if not a.startswith("127.")]
+
+
+def dns_read_name(data, offset):
+    labels, jumped, end = [], False, offset
+    for _ in range(128):
+        length = data[offset]
+        if length == 0:
+            offset += 1
+            break
+        if length & 0xC0 == 0xC0:
+            if not jumped:
+                end = offset + 2
+            offset = ((length & 0x3F) << 8) | data[offset + 1]
+            jumped = True
+            continue
+        labels.append(data[offset + 1:offset + 1 + length].decode("utf-8", "replace"))
+        offset += 1 + length
+    return ".".join(labels), (end if jumped else offset)
+
+
+def dns_ptr_targets(data, service):
+    """Return PTR targets for `service` found anywhere in a DNS response packet."""
+    qd, an, ns, ar = struct.unpack("!4H", data[4:12])
+    offset = 12
+    for _ in range(qd):
+        _, offset = dns_read_name(data, offset)
+        offset += 4
+    targets = []
+    for _ in range(an + ns + ar):
+        name, offset = dns_read_name(data, offset)
+        rtype, _, _, rdlength = struct.unpack("!HHIH", data[offset:offset + 10])
+        offset += 10
+        if rtype == 12 and name.lower().rstrip(".") == service:
+            target, _ = dns_read_name(data, offset)
+            targets.append(target)
+        offset += rdlength
+    return targets
+
+
+def mdns_query_packet(service):
+    qname = b"".join(bytes([len(p)]) + p.encode() for p in service.split(".")) + b"\0"
+    # PTR question, class IN with the "unicast response" bit set.
+    return struct.pack("!6H", 0, 0, 1, 0, 0, 0) + qname + struct.pack("!HH", 12, 0x8001)
+
+
+def mdns_browse(timeout=1.5):
+    found = set()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+        sock.bind(("", 0))
+        sock.settimeout(0.25)
+        packet = mdns_query_packet(NDI_SERVICE)
+        interfaces = local_ipv4_addresses() or [None]
+        for attempt in range(2):
+            for iface in interfaces:
+                try:
+                    if iface:
+                        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface))
+                    sock.sendto(packet, ("224.0.0.251", 5353))
+                except OSError:
+                    pass
+            deadline = time.time() + timeout / 2
+            while time.time() < deadline:
+                try:
+                    data, _ = sock.recvfrom(9000)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                try:
+                    for target in dns_ptr_targets(data, NDI_SERVICE):
+                        suffix = "." + NDI_SERVICE
+                        if target.lower().endswith(suffix):
+                            found.add(target[:-len(suffix)])
+                except (IndexError, struct.error):
+                    continue
+    finally:
+        sock.close()
+    return found
+
+
+def mdns_sources():
+    """NDI names seen via mDNS in the last minute (queries at most every 5 s)."""
+    with mdns_lock:
+        now = time.time()
+        if now - mdns_state["last_query"] > 5:
+            mdns_state["last_query"] = now
+            try:
+                for name in mdns_browse():
+                    mdns_seen[name] = now
+            except OSError as exc:
+                log.debug("mDNS browse failed: %s", exc)
+        for name, seen in list(mdns_seen.items()):
+            if now - seen > 60:
+                del mdns_seen[name]
+        return set(mdns_seen)
 
 
 def find_ndi_names(obj):
@@ -285,37 +413,96 @@ def wait_for_api(ports, timeout):
 # Process management (Windows)
 # --------------------------------------------------------------------------
 
+EXE_PATTERN = re.compile(r"(videomonitor|studio ?monitor).*\.exe$", re.I)
+exe_cache = {"path": None, "checked": 0.0, "warned": 0.0}
+
+
+def search_roots():
+    roots = []
+    for var in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+        base = os.environ.get(var)
+        if base:
+            for vendor in ("NDI", "NewTek", "Vizrt"):
+                folder = os.path.join(base, vendor)
+                if folder not in roots:
+                    roots.append(folder)
+    return roots
+
+
+def scan_for_exe():
+    """Walk the NDI/NewTek install folders for a Studio Monitor executable."""
+    preferred, fallback = [], []
+    for root in search_roots():
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            if dirpath[len(root):].count(os.sep) >= 4:
+                dirnames[:] = []
+            for f in filenames:
+                if f.lower() == cfg("exe_name").lower():
+                    preferred.append(os.path.join(dirpath, f))
+                elif EXE_PATTERN.search(f) and "uninst" not in f.lower():
+                    fallback.append(os.path.join(dirpath, f))
+    # Highest NDI version folder first (NDI 6 before NDI 5).
+    for found in (preferred, fallback):
+        if found:
+            return sorted(found, reverse=True)[0]
+    return None
+
+
 def find_exe():
     explicit = cfg("exe_path")
-    if explicit and os.path.isfile(explicit):
-        return explicit
-    name = cfg("exe_name")
+    if explicit:
+        if os.path.isfile(explicit):
+            return explicit
+        log.warning("exe_path '%s' does not exist; searching instead", explicit)
+    cached = exe_cache["path"]
+    if cached and os.path.isfile(cached):
+        return cached
+    if time.time() - exe_cache["checked"] < 60:
+        return None
+    exe_cache["checked"] = time.time()
+    path = None
     for folder in cfg("exe_search_paths"):
-        for match in sorted(glob.glob(os.path.join(folder, name)), reverse=True):
+        for match in sorted(glob.glob(os.path.join(folder, cfg("exe_name"))), reverse=True):
             if os.path.isfile(match):
-                return match
-    return None
+                path = match
+                break
+        if path:
+            break
+    path = path or scan_for_exe()
+    if path:
+        log.info("Using Studio Monitor at %s", path)
+    exe_cache["path"] = path
+    return path
+
+
+def process_name():
+    """Image name to count/kill: the discovered exe's file name, else the configured one."""
+    exe = find_exe()
+    return os.path.basename(exe) if exe else cfg("exe_name")
 
 
 def count_processes():
     if not IS_WINDOWS:
         return None
+    name = process_name()
     try:
         out = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq %s" % cfg("exe_name"), "/FO", "CSV", "/NH"],
+            ["tasklist", "/FI", "IMAGENAME eq %s" % name, "/FO", "CSV", "/NH"],
             capture_output=True, text=True, timeout=10, creationflags=CREATE_NO_WINDOW,
         ).stdout
     except (OSError, subprocess.SubprocessError) as exc:
         log.error("tasklist failed: %s", exc)
         return None
-    target = cfg("exe_name").lower()
+    target = name.lower()
     return sum(1 for line in out.splitlines() if line.strip().strip('"').lower().startswith(target))
 
 
 def kill_all_instances():
     if not IS_WINDOWS:
         return
-    subprocess.run(["taskkill", "/F", "/IM", cfg("exe_name")],
+    subprocess.run(["taskkill", "/F", "/IM", process_name()],
                    capture_output=True, timeout=15, creationflags=CREATE_NO_WINDOW)
     log.info("Killed all Studio Monitor instances")
 
@@ -331,10 +518,19 @@ def launch_instance(exe):
         subprocess.Popen([exe], creationflags=base_flags, **kwargs)
 
 
-def launch_instances(count):
+def exe_or_warn():
     exe = find_exe()
+    # Logged at most every 5 minutes so the watchdog doesn't flood the log.
+    if not exe and time.time() - exe_cache["warned"] > 300:
+        exe_cache["warned"] = time.time()
+        log.error("Studio Monitor executable not found under %s. "
+                  "Set its full path in the dashboard.", ", ".join(search_roots()) or "Program Files")
+    return exe
+
+
+def launch_instances(count):
+    exe = exe_or_warn()
     if not exe:
-        log.error("Studio Monitor executable not found. Set 'exe_path' in config.json.")
         return False
     gap = float(cfg("launch_gap_seconds"))
     for i in range(count):
@@ -409,6 +605,8 @@ def watchdog_tick():
         running = count_processes()
         state["process_count"] = running
         if running is not None and running < len(expected):
+            if not exe_or_warn():
+                return
             with action_lock:
                 missing = len(expected) - running
                 log.warning("Only %d/%d Studio Monitor instances running; launching %d",
@@ -551,6 +749,8 @@ def status_payload():
         "process_count": state["process_count"] if processes_managed() else None,
         "processes_managed": processes_managed(),
         "exe_path": find_exe() if processes_managed() else None,
+        "exe_configured": cfg("exe_path"),
+        "exe_search_roots": search_roots(),
         "last_check": state["last_check"],
         "enforce_mapping": cfg("enforce_mapping"),
         "layout_columns": cfg("layout_columns"),
@@ -646,6 +846,13 @@ class Handler(BaseHTTPRequestHandler):
                 with config_lock:
                     if "enforce_mapping" in body:
                         config["enforce_mapping"] = bool(body["enforce_mapping"])
+                    if "exe_path" in body:
+                        exe = str(body["exe_path"]).strip().strip('"')
+                        if exe and not os.path.isfile(exe):
+                            raise ValueError("File not found: %s" % exe)
+                        config["exe_path"] = exe
+                        exe_cache.update(path=None, checked=0.0, warned=0.0)
+                        log.info("Studio Monitor path set to '%s'", exe or "(auto-detect)")
                 save_config()
                 self.send_json({"ok": True})
             else:
