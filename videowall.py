@@ -450,6 +450,37 @@ def scan_for_exe():
     return None
 
 
+def exe_from_start_menu():
+    """Resolve NDI 'Studio Monitor' Start Menu shortcuts to their target .exe."""
+    if not IS_WINDOWS:
+        return None
+    links = []
+    for var in ("ProgramData", "APPDATA"):
+        root = os.path.join(os.environ.get(var, ""), r"Microsoft\Windows\Start Menu\Programs")
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _, filenames in os.walk(root):
+            for f in filenames:
+                full = os.path.join(dirpath, f)
+                if f.lower().endswith(".lnk") and "monitor" in f.lower() and "ndi" in full.lower():
+                    links.append(full)
+    if not links:
+        return None
+    script = "$s = New-Object -ComObject WScript.Shell; " + "; ".join(
+        "$s.CreateShortcut('%s').TargetPath" % link.replace("'", "''") for link in links)
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                             capture_output=True, text=True, timeout=20,
+                             creationflags=CREATE_NO_WINDOW).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("Could not read Start Menu shortcuts: %s", exc)
+        return None
+    targets = [t.strip() for t in out.splitlines()
+               if t.strip().lower().endswith(".exe") and os.path.isfile(t.strip())]
+    targets.sort(key=lambda t: (not EXE_PATTERN.search(os.path.basename(t)), t))
+    return targets[0] if targets else None
+
+
 def find_exe():
     explicit = cfg("exe_path")
     if explicit:
@@ -470,7 +501,7 @@ def find_exe():
                 break
         if path:
             break
-    path = path or scan_for_exe()
+    path = path or scan_for_exe() or exe_from_start_menu()
     if path:
         log.info("Using Studio Monitor at %s", path)
     exe_cache["path"] = path

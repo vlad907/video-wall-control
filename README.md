@@ -65,7 +65,7 @@ Open `http://localhost:8080/api/sources/raw` on the Mini PC. It shows the raw
 |---|---|---|
 | `dashboard_port` | `8080` | Dashboard port (80–83 belong to Studio Monitor) |
 | `dashboard_host` | `0.0.0.0` | Use `127.0.0.1` to allow the dashboard only on the Mini PC itself |
-| `exe_path` | `""` | Full path to the Studio Monitor .exe. If empty, it's looked up in `exe_search_paths`, then anywhere under `Program Files\NDI`, `NewTek` or `Vizrt` (also in `Program Files (x86)`) |
+| `exe_path` | `""` | Full path to the Studio Monitor .exe. If empty, it's looked up in `exe_search_paths`, then anywhere under `Program Files\NDI`, `NewTek` or `Vizrt` (also in `Program Files (x86)`), then the target of any NDI "Studio Monitor" Start Menu shortcut |
 | `mdns_discovery` | `true` | Also find NDI streams directly over mDNS |
 | `boot_delay_seconds` | `10` | Wait before the first launch |
 | `launch_gap_seconds` | `2` | Gap between instance launches |
