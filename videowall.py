@@ -59,6 +59,7 @@ DEFAULT_CONFIG = {
     "watchdog_interval_seconds": 15,
     "enforce_mapping": True,
     "mdns_discovery": True,
+    "fullscreen": True,
     "hung_restart_after_checks": 4,
     "restart_cooldown_seconds": 300,
     "layout_columns": 2,
@@ -361,24 +362,88 @@ def normalize_sources(result):
     return names
 
 
-def build_payload(panel):
-    window = dict(cfg("window_options"))
+def window_rect(window):
+    """(left, top, right, bottom) of Studio Monitor's normal window position, or None."""
+    try:
+        rect = tuple(int(window[k]) for k in ("normal_posn_left", "normal_posn_top",
+                                               "normal_posn_right", "normal_posn_bottom"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return rect if rect[2] > rect[0] and rect[3] > rect[1] else None
+
+
+def display_rect(d):
+    return (d["x"], d["y"], d["x"] + d["width"], d["y"] + d["height"])
+
+
+def overlap_area(a, b):
+    w = min(a[2], b[2]) - max(a[0], b[0])
+    h = min(a[3], b[3]) - max(a[1], b[1])
+    return max(w, 0) * max(h, 0)
+
+
+def resolve_screen(panel, current, displays):
+    """Pick the display this panel fills and remember it in config.json.
+
+    Uses the saved screen if it still exists; otherwise the screen the window is
+    mostly on now, skipping screens already claimed by other panels.
+    """
+    by_device = {d["device"]: d for d in displays}
+    if panel.get("screen") in by_device:
+        return by_device[panel["screen"]]
+    taken = {p.get("screen") for p in panels() if p["port"] != panel["port"]}
+    free = [d for d in displays if d["device"] not in taken] or displays
+    if len(displays) > len(panels()):
+        # More screens than panels: the primary is likely the control screen, try it last.
+        free = sorted(free, key=lambda d: d.get("primary", False))
+    rect = window_rect((current or {}).get("window") or {})
+    best = None
+    if rect:
+        best = max(free, key=lambda d: overlap_area(rect, display_rect(d)))
+        if overlap_area(rect, display_rect(best)) == 0:
+            best = None
+    best = best or free[0]
+    with config_lock:
+        for p in config["panels"]:
+            if p["port"] == panel["port"]:
+                p["screen"] = best["device"]
+    save_config()
+    log.info("%s assigned to screen %s (%dx%d at %d,%d)", panel["name"], best["short"],
+             best["width"], best["height"], best["x"], best["y"])
+    return best
+
+
+def build_payload(panel, current=None):
+    """Start from the panel's current configuration and change only our fields."""
+    payload = json.loads(json.dumps(current)) if current else {}
+    payload["version"] = payload.get("version", 1)
+    payload["NDI_source"] = panel["ndi_source"]
+    window = payload.setdefault("window", {})
+    window.update(cfg("window_options"))
     if panel.get("display_device"):
         window["display_device"] = panel["display_device"]
-    return {
-        "version": 1,
-        "NDI_source": panel["ndi_source"],
-        "window": window,
-        "decorations": dict(cfg("decorations")),
-    }
+    payload.setdefault("decorations", {}).update(cfg("decorations"))
+    if cfg("fullscreen"):
+        displays = enumerate_displays()
+        if displays:
+            # Borderless + always on top, sized exactly to the screen = full screen.
+            left, top, right, bottom = display_rect(resolve_screen(panel, current, displays))
+            window.update(showcmd=1, normal_posn_left=left, normal_posn_top=top,
+                          normal_posn_right=right, normal_posn_bottom=bottom)
+    return payload
 
 
 def apply_panel(panel):
     """POST the saved mapping to one Studio Monitor. Returns (ok, message)."""
+    current = get_configuration(panel["port"])
     if not panel.get("ndi_source"):
-        return False, "%s: no NDI source assigned, skipped" % panel["name"]
+        # No saved source: keep what it's playing but still apply window settings.
+        if not (current or {}).get("NDI_source"):
+            return False, "%s: no NDI source assigned, skipped" % panel["name"]
+        panel = dict(panel, ndi_source=current["NDI_source"])
     try:
-        http_json("POST", monitor_url(panel["port"], "/v1/configuration"), build_payload(panel), timeout=5)
+        payload = build_payload(panel, current)
+        http_json("POST", monitor_url(panel["port"], "/v1/configuration"), payload, timeout=5)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:200]
         log.error("%s (port %d): HTTP %d %s", panel["name"], panel["port"], exc.code, detail)
@@ -386,8 +451,11 @@ def apply_panel(panel):
     except (urllib.error.URLError, OSError) as exc:
         log.error("%s (port %d): apply failed: %s", panel["name"], panel["port"], exc)
         return False, "%s: %s" % (panel["name"], exc)
-    log.info("%s (port %d) -> '%s' on '%s'", panel["name"], panel["port"],
-             panel["ndi_source"], panel.get("display_device") or "(unchanged display)")
+    window = payload["window"]
+    where = (" full screen %d,%d-%d,%d" % (window["normal_posn_left"], window["normal_posn_top"],
+                                            window["normal_posn_right"], window["normal_posn_bottom"])
+             if "normal_posn_left" in window and cfg("fullscreen") else "")
+    log.info("%s (port %d) -> '%s'%s", panel["name"], panel["port"], panel["ndi_source"], where)
     return True, "%s: applied" % panel["name"]
 
 
@@ -785,6 +853,8 @@ def status_payload():
         "last_check": state["last_check"],
         "enforce_mapping": cfg("enforce_mapping"),
         "layout_columns": cfg("layout_columns"),
+        "fullscreen": cfg("fullscreen"),
+        "screens": enumerate_displays(),
     }
 
 
@@ -864,6 +934,16 @@ class Handler(BaseHTTPRequestHandler):
                     results = [apply_panel(p) for p in panels() if p["port"] in ports]
                 self.send_json({"results": [{"ok": ok, "message": m} for ok, m in results]})
             elif path == "/api/reapply":
+                with action_lock:
+                    results = apply_all()
+                self.send_json({"results": [{"ok": ok, "message": m} for ok, m in results]})
+            elif path == "/api/snap":
+                # Forget saved screens and re-detect from where each window is right now.
+                with config_lock:
+                    for p in config["panels"]:
+                        p.pop("screen", None)
+                save_config()
+                log.info("Re-detecting screens from current window positions")
                 with action_lock:
                     results = apply_all()
                 self.send_json({"results": [{"ok": ok, "message": m} for ok, m in results]})

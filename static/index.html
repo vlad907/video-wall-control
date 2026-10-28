@@ -92,6 +92,7 @@
     </label>
     <button id="btnSources">Refresh sources</button>
     <button id="btnReapply">Re-apply saved</button>
+    <button id="btnSnap" title="Move each Studio Monitor window onto the screen you want, then click this to make it fill that screen">Snap to screens</button>
     <button id="btnRestart" class="danger">Restart monitors</button>
     <button id="btnApplyAll" class="primary">Save &amp; apply all</button>
   </div>
@@ -171,7 +172,7 @@ function buildCard(p) {
     </div>
     <div class="live">
       <div><span>Now playing:</span> <b class="cur-src">–</b></div>
-      <div><span>Display:</span> <span class="cur-disp">–</span></div>
+      <div><span>Screen:</span> <span class="cur-disp">–</span></div>
     </div>
     <div>
       <label>NDI source</label>
@@ -240,7 +241,10 @@ function render() {
     if (!card) { card = buildCard(p); grid.appendChild(card); }
     card.querySelector(".dot").classList.toggle("on", p.reachable);
     card.querySelector(".cur-src").textContent = p.reachable ? (p.current_source || "(none)") : "offline";
-    card.querySelector(".cur-disp").textContent = p.reachable ? (p.current_display || "(default)") : "–";
+    const screen = (status.screens || []).find((s) => s.device === p.screen);
+    card.querySelector(".cur-disp").textContent = screen
+      ? `${screen.short}  ${screen.width}×${screen.height} at ${screen.x},${screen.y}${status.fullscreen ? "  (full screen)" : ""}`
+      : p.screen || (p.reachable ? "not assigned yet" : "–");
     const badge = card.querySelector(".state");
     const matches = p.reachable && p.ndi_source && p.current_source === p.ndi_source;
     badge.className = "badge state " + (matches ? "match" : p.ndi_source ? "mismatch" : "");
@@ -328,6 +332,11 @@ $("btnApplyAll").onclick = () => applyPanels(status.panels.map((p) => p.port));
 $("btnSources").onclick = async () => { await refreshSources(true); render(); };
 $("btnReapply").onclick = async () => {
   try { reportResults((await api("/api/reapply", { method: "POST" })).results); }
+  catch (e) { toast(e.message); }
+  refreshStatus(); refreshLog();
+};
+$("btnSnap").onclick = async () => {
+  try { reportResults((await api("/api/snap", { method: "POST" })).results); }
   catch (e) { toast(e.message); }
   refreshStatus(); refreshLog();
 };

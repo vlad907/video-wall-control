@@ -48,8 +48,11 @@ machine on the LAN.
 - Pick an **NDI source** for each panel, then click **Apply to this panel** or
   **Save & apply all**. Applied choices are saved to `config.json` and restored on every boot.
   Until you save, each dropdown shows whatever the panel is playing right now.
-- Display placement is left to Studio Monitor: position each window once in its own
-  settings and it stays there.
+- **Full screen:** each panel is made borderless and always on top, and its window is sized
+  to exactly cover one screen. The first time, the screen is whichever one the window is
+  mostly on; after that it's remembered in `config.json` (`screen`). To change which panel
+  goes on which screen, drag each Studio Monitor window onto the screen you want and click
+  **Snap to screens**.
 - **Enforce mapping** lets the watchdog put the saved source back if someone changes it
   in Studio Monitor's own UI. Turn it off if you want to make manual changes.
 - **Restart monitors** kills all instances and relaunches them in order.
@@ -67,6 +70,7 @@ Open `http://localhost:8080/api/sources/raw` on the Mini PC. It shows the raw
 | `dashboard_host` | `0.0.0.0` | Use `127.0.0.1` to allow the dashboard only on the Mini PC itself |
 | `exe_path` | `""` | Full path to the Studio Monitor .exe. If empty, it's looked up in `exe_search_paths`, then anywhere under `Program Files\NDI`, `NewTek` or `Vizrt` (also in `Program Files (x86)`), then the target of any NDI "Studio Monitor" Start Menu shortcut |
 | `mdns_discovery` | `true` | Also find NDI streams directly over mDNS |
+| `fullscreen` | `true` | Size each window to exactly cover its screen (borderless, always on top) |
 | `boot_delay_seconds` | `10` | Wait before the first launch |
 | `launch_gap_seconds` | `2` | Gap between instance launches |
 | `watchdog_interval_seconds` | `15` | How often the watchdog checks |
@@ -77,13 +81,15 @@ Open `http://localhost:8080/api/sources/raw` on the Mini PC. It shows the raw
 | `layout_columns` | `2` | Dashboard grid. Use `4` for a 1×4 wall |
 | `panels` | ports 80–83 | Panel name, port, saved `ndi_source` (optional `display_device`, sent only if set) |
 
-The POST sent to each `http://127.0.0.1:<port>/v1/configuration` looks like this:
+Each apply reads the panel's current `/v1/configuration`, changes only these fields, and POSTs the whole object back:
 
 ```json
 {
   "version": 1,
   "NDI_source": "RESOLUME-PC (Panel 1)",
-  "window": { "display_device": "...", "hide_border": true, "always_on_top": true },
+  "window": { "hide_border": true, "always_on_top": true, "showcmd": 1,
+              "normal_posn_left": 1920, "normal_posn_top": -2160,
+              "normal_posn_right": 5760, "normal_posn_bottom": 0 },
   "decorations": { "hw_accel": true }
 }
 ```
