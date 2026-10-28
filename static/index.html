@@ -58,6 +58,16 @@
   #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel-2);
            border: 1px solid var(--border); padding: 10px 16px; border-radius: 8px; display: none;
            max-width: 90vw; z-index: 5; }
+  .streams-wrap { margin-bottom: 20px; }
+  .streams-wrap h3 { font-size: 14px; margin: 0 0 8px; }
+  #streams { display: flex; flex-wrap: wrap; gap: 8px; }
+  .stream { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+            display: flex; flex-direction: column; min-width: 0; max-width: 100%; }
+  .stream b { font-weight: 600; overflow-wrap: anywhere; }
+  .stream span { font-size: 12px; color: var(--muted); }
+  .stream.live { border-color: #2d5a3f; } .stream.live span { color: var(--ok); }
+  .stream.offline { opacity: .6; }
+  .muted { color: var(--muted); }
   .switch { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; cursor: pointer; }
 </style>
 </head>
@@ -84,6 +94,10 @@
 </header>
 
 <main>
+  <section class="streams-wrap">
+    <h3>NDI streams on the network (<span id="streamCount">0</span>)</h3>
+    <div id="streams"></div>
+  </section>
   <div class="grid" id="grid"></div>
   <section class="log">
     <h3>Activity <button id="btnLog">Refresh</button></h3>
@@ -95,7 +109,6 @@
 <script>
 const OTHER = "__other__";
 let sources = [];
-let displays = [];
 let status = null;
 const dirty = new Set();   // ports with unsaved edits
 
@@ -134,18 +147,6 @@ function fillSelect(select, options, value, placeholder) {
   select.value = value || "";
 }
 
-function displayOptions() {
-  const opts = displays.map((d) => ({
-    value: d.device,
-    label: `${d.short}${d.monitor ? " — " + d.monitor : ""}  ${d.width}×${d.height} @ ${d.x},${d.y}${d.primary ? "  (primary)" : ""}`,
-  }));
-  // Also offer whatever values Studio Monitor itself currently reports.
-  for (const p of status?.panels || []) {
-    if (p.current_display) opts.push({ value: p.current_display, label: p.current_display + "  (reported by Studio Monitor)" });
-  }
-  return opts;
-}
-
 function buildCard(p) {
   const card = document.createElement("div");
   card.className = "card";
@@ -164,11 +165,6 @@ function buildCard(p) {
       <select class="src"></select>
       <input type="text" class="src-other" placeholder="MACHINE (Stream name)" hidden>
     </div>
-    <div>
-      <label>Output display</label>
-      <select class="disp"></select>
-      <input type="text" class="disp-other" placeholder="Display device name" hidden>
-    </div>
     <div class="row">
       <span class="badge state" style="margin-right:auto"></span>
       <button class="apply primary">Apply to this panel</button>
@@ -177,22 +173,50 @@ function buildCard(p) {
   card.querySelector(".port").textContent = "port " + p.port;
 
   const mark = () => { dirty.add(p.port); card.classList.add("dirty"); };
-  for (const cls of ["src", "disp"]) {
-    const sel = card.querySelector("." + cls);
-    const other = card.querySelector(`.${cls}-other`);
-    sel.addEventListener("change", () => { other.hidden = sel.value !== OTHER; if (!other.hidden) other.focus(); mark(); });
-    other.addEventListener("input", mark);
-  }
+  const sel = card.querySelector(".src");
+  const other = card.querySelector(".src-other");
+  sel.addEventListener("change", () => { other.hidden = sel.value !== OTHER; if (!other.hidden) other.focus(); mark(); });
+  other.addEventListener("input", mark);
   card.querySelector(".apply").addEventListener("click", () => applyPanels([p.port]));
   return card;
 }
 
 function readCard(card) {
-  const val = (cls) => {
-    const sel = card.querySelector("." + cls);
-    return sel.value === OTHER ? card.querySelector(`.${cls}-other`).value.trim() : sel.value;
-  };
-  return { port: Number(card.dataset.port), ndi_source: val("src"), display_device: val("disp") };
+  const sel = card.querySelector(".src");
+  const value = sel.value === OTHER ? card.querySelector(".src-other").value.trim() : sel.value;
+  return { port: Number(card.dataset.port), ndi_source: value };
+}
+
+// Everything known: discovered sources plus whatever any panel is playing or has saved.
+function allSources() {
+  const names = new Set(sources);
+  for (const p of status?.panels || []) {
+    if (p.current_source) names.add(p.current_source);
+    if (p.ndi_source) names.add(p.ndi_source);
+  }
+  return [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+}
+
+function renderStreams() {
+  const list = $("streams");
+  const names = allSources();
+  $("streamCount").textContent = names.length;
+  if (!names.length) {
+    list.innerHTML = '<span class="muted">No NDI streams found yet. Check that Resolume is outputting NDI and this PC is on the same network.</span>';
+    return;
+  }
+  list.replaceChildren(...names.map((name) => {
+    const chip = document.createElement("div");
+    chip.className = "stream";
+    const onPanels = (status?.panels || []).filter((p) => p.current_source === name).map((p) => p.name);
+    const offline = !sources.includes(name);
+    chip.innerHTML = `<b></b><span></span>`;
+    chip.querySelector("b").textContent = name;
+    chip.querySelector("span").textContent = onPanels.length ? "on " + onPanels.join(", ") : offline ? "not currently discovered" : "available";
+    if (onPanels.length) chip.classList.add("live");
+    if (offline) chip.classList.add("offline");
+    return chip;
+  }));
 }
 
 function render() {
@@ -210,13 +234,13 @@ function render() {
     badge.textContent = !p.ndi_source ? "not assigned" : matches ? "matches saved" : "differs from saved";
 
     if (!dirty.has(p.port)) {
-      const srcOpts = sources.map((s) => ({ value: s, label: s }));
-      fillSelect(card.querySelector(".src"), srcOpts, p.ndi_source, "— choose a source —");
-      fillSelect(card.querySelector(".disp"), displayOptions(), p.display_device, "— keep current display —");
+      const srcOpts = allSources().map((s) => ({ value: s, label: s }));
+      // Nothing saved yet: show what the panel is playing so the dropdown reflects reality.
+      fillSelect(card.querySelector(".src"), srcOpts, p.ndi_source || p.current_source, "— choose a source —");
       card.querySelector(".src-other").hidden = true;
-      card.querySelector(".disp-other").hidden = true;
     }
   }
+  renderStreams();
 }
 
 async function refreshStatus() {
@@ -245,10 +269,6 @@ async function refreshSources(announce) {
     $("srcCount").textContent = "error";
     if (announce) toast("Source discovery failed: " + e.message);
   }
-}
-
-async function refreshDisplays() {
-  try { displays = (await api("/api/displays")).displays; } catch { displays = []; }
 }
 
 async function refreshLog() {
@@ -282,7 +302,7 @@ async function applyPanels(ports) {
 }
 
 $("btnApplyAll").onclick = () => applyPanels(status.panels.map((p) => p.port));
-$("btnSources").onclick = async () => { await refreshSources(true); await refreshDisplays(); render(); };
+$("btnSources").onclick = async () => { await refreshSources(true); render(); };
 $("btnReapply").onclick = async () => {
   try { reportResults((await api("/api/reapply", { method: "POST" })).results); }
   catch (e) { toast(e.message); }
@@ -297,12 +317,12 @@ $("enforce").onchange = (e) => api("/api/settings", { method: "POST", body: { en
 $("btnLog").onclick = refreshLog;
 
 (async () => {
-  await Promise.all([refreshSources(false), refreshDisplays()]);
+  await refreshSources(false);
   await refreshStatus();
   refreshLog();
   setInterval(refreshStatus, 5000);
   setInterval(refreshLog, 10000);
-  setInterval(() => refreshSources(false), 30000);
+  setInterval(() => refreshSources(false).then(() => status && render()), 10000);
 })();
 </script>
 </body>

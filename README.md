@@ -9,8 +9,8 @@ A background service plus web dashboard for a 4-panel NDI mosaic driven by
 - Applies the saved stream-to-panel mapping from `config.json` to each instance
 - Watchdog: relaunches crashed instances, re-applies the mapping if a panel drifts
   to another source, and restarts all instances if an API stays unresponsive
-- Dashboard at `http://<mini-pc-ip>:8080`: live state of each panel, NDI source
-  discovery, display selection, apply/save, re-apply, restart, activity log
+- Dashboard at `http://<mini-pc-ip>:8080`: every NDI stream on the network, what each
+  panel is playing, source selection, apply/save, re-apply, restart, activity log
 
 It uses only the Python standard library, so nothing needs to be installed with pip.
 
@@ -38,23 +38,21 @@ machine on the LAN.
 
 - Each card is one panel (one Studio Monitor port). It shows what that panel is
   playing right now and whether it matches the saved mapping.
-- Pick an **NDI source** and an **Output display** for each panel, then click
-  **Apply to this panel** or **Save & apply all**. Applied choices are saved to `config.json`
-  and restored on every boot.
-- **Keep current display** leaves out `display_device`, so Studio Monitor keeps
-  whatever display it's already on.
+- The **NDI streams on the network** list shows every source Studio Monitor can see
+  (refreshed every 10 s) and which panel, if any, is showing it.
+- Pick an **NDI source** for each panel, then click **Apply to this panel** or
+  **Save & apply all**. Applied choices are saved to `config.json` and restored on every boot.
+  Until you save, each dropdown shows whatever the panel is playing right now.
+- Display placement is left to Studio Monitor: position each window once in its own
+  settings and it stays there.
 - **Enforce mapping** lets the watchdog put the saved source back if someone changes it
   in Studio Monitor's own UI. Turn it off if you want to make manual changes.
 - **Restart monitors** kills all instances and relaunches them in order.
 
-### Display names
+### If no streams show up
 
-The display list combines the Windows displays (`\\.\DISPLAY1`... with resolution and
-desktop position, sorted top-to-bottom and left-to-right) with whatever value Studio
-Monitor itself reports in `/v1/configuration` (labelled *reported by Studio Monitor*).
-**Use the format Studio Monitor reports.** To find it, move each Studio Monitor window to
-a display using its own settings once, then look at the *Display* line on each card.
-You can also type any value with *Other (type manually)*.
+Open `http://localhost:8080/api/sources/raw` on the Mini PC. It shows the raw
+`/v1/sources` reply from Studio Monitor, which helps when the list comes back empty.
 
 ## config.json
 
@@ -71,7 +69,7 @@ You can also type any value with *Other (type manually)*.
 | `window_options` | `hide_border`, `always_on_top` = `true` | Sent as the `window` object |
 | `decorations` | `hw_accel: true` | Sent as the `decorations` object |
 | `layout_columns` | `2` | Dashboard grid. Use `4` for a 1×4 wall |
-| `panels` | ports 80–83 | Panel name, port, saved `ndi_source` and `display_device` |
+| `panels` | ports 80–83 | Panel name, port, saved `ndi_source` (optional `display_device`, sent only if set) |
 
 The POST sent to each `http://127.0.0.1:<port>/v1/configuration` looks like this:
 

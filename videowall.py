@@ -14,6 +14,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -178,17 +179,39 @@ def get_configuration(port):
         return None
 
 
-def get_sources():
-    """Return a sorted list of NDI source names, discovered via the first reachable panel."""
+NDI_NAME = re.compile(r"^[^()]+ \(.+\)$")  # NDI names look like "MACHINE (Stream)"
+
+
+def get_raw_sources():
+    """Return (port, raw /v1/sources response) from the first reachable panel."""
     last_error = None
     for p in panels():
         try:
-            result = http_json("GET", monitor_url(p["port"], "/v1/sources"), timeout=5)
+            return p["port"], http_json("GET", monitor_url(p["port"], "/v1/sources"), timeout=5)
         except (urllib.error.URLError, OSError, ValueError) as exc:
             last_error = exc
-            continue
-        return sorted(set(normalize_sources(result)), key=str.lower)
     raise RuntimeError("No Studio Monitor instance reachable (%s)" % last_error)
+
+
+def get_sources():
+    """Return a sorted list of NDI source names on the network."""
+    _, result = get_raw_sources()
+    names = set(normalize_sources(result)) | set(find_ndi_names(result))
+    return sorted(names, key=str.lower)
+
+
+def find_ndi_names(obj):
+    """Collect every string shaped like an NDI name anywhere in the JSON (keys or values)."""
+    if isinstance(obj, str):
+        return [obj] if NDI_NAME.match(obj.strip()) else []
+    found = []
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            found += find_ndi_names(key) + find_ndi_names(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            found += find_ndi_names(item)
+    return [s.strip() for s in found]
 
 
 def normalize_sources(result):
@@ -196,7 +219,7 @@ def normalize_sources(result):
         for key in ("sources", "NDI_sources", "items", "data"):
             if key in result:
                 return normalize_sources(result[key])
-        return [str(k) for k in result.keys()]
+        return []
     names = []
     if isinstance(result, list):
         for item in result:
@@ -582,6 +605,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(status_payload())
             elif path == "/api/sources":
                 self.send_json({"sources": get_sources()})
+            elif path == "/api/sources/raw":
+                port, raw = get_raw_sources()
+                self.send_json({"port": port, "raw": raw})
             elif path == "/api/displays":
                 self.send_json({"displays": enumerate_displays()})
             elif path == "/api/log":
