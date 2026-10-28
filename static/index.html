@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Wall Control</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --panel-2: #1f232c; --border: #2a2f3a;
+    --text: #e6e8ec; --muted: #8b93a3; --accent: #4c8dff; --ok: #3ccf7a;
+    --warn: #f0b429; --bad: #ef5454;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+           justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--border);
+           background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .meta { color: var(--muted); font-size: 13px; display: flex; gap: 16px; flex-wrap: wrap; }
+  .meta b { color: var(--text); font-weight: 600; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+  main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr)); }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px;
+          display: flex; flex-direction: column; gap: 12px; }
+  .card.dirty { border-color: var(--warn); }
+  .card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .card-head h2 { font-size: 15px; margin: 0; }
+  .port { color: var(--muted); font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px;
+         background: var(--bad); }
+  .dot.on { background: var(--ok); }
+  .live { background: var(--panel-2); border-radius: 6px; padding: 8px 10px; font-size: 13px; }
+  .live div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .live span { color: var(--muted); }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  select, input[type=text] { width: 100%; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 7px 8px; font: inherit; }
+  input[type=text] { margin-top: 6px; }
+  button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+           border-radius: 6px; padding: 7px 12px; font: inherit; cursor: pointer; white-space: nowrap; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; justify-content: flex-end; }
+  .badge { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: var(--panel-2);
+           color: var(--muted); border: 1px solid var(--border); }
+  .badge.match { color: var(--ok); border-color: #2d5a3f; }
+  .badge.mismatch { color: var(--warn); border-color: #5e4b1d; }
+  section.log { margin-top: 24px; }
+  section.log h3 { font-size: 14px; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
+  #log { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+         max-height: 280px; overflow: auto; font: 12px/1.5 ui-monospace, Consolas, monospace; }
+  #log .WARNING { color: var(--warn); } #log .ERROR { color: var(--bad); }
+  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel-2);
+           border: 1px solid var(--border); padding: 10px 16px; border-radius: 8px; display: none;
+           max-width: 90vw; z-index: 5; }
+  .switch { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; cursor: pointer; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Video Wall Control</h1>
+    <div class="meta">
+      <span>Service: <b id="phase">…</b></span>
+      <span id="procWrap">Studio Monitors: <b id="procs">…</b></span>
+      <span>Watchdog: <b id="lastCheck">–</b></span>
+      <span>Sources: <b id="srcCount">–</b></span>
+    </div>
+  </div>
+  <div class="toolbar">
+    <label class="switch" title="Watchdog re-applies the saved source if a panel drifts">
+      <input type="checkbox" id="enforce"> Enforce mapping
+    </label>
+    <button id="btnSources">Refresh sources</button>
+    <button id="btnReapply">Re-apply saved</button>
+    <button id="btnRestart" class="danger">Restart monitors</button>
+    <button id="btnApplyAll" class="primary">Save &amp; apply all</button>
+  </div>
+</header>
+
+<main>
+  <div class="grid" id="grid"></div>
+  <section class="log">
+    <h3>Activity <button id="btnLog">Refresh</button></h3>
+    <div id="log"></div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const OTHER = "__other__";
+let sources = [];
+let displays = [];
+let status = null;
+const dirty = new Set();   // ports with unsaved edits
+
+const $ = (id) => document.getElementById(id);
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...opts,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function toast(msg, ms = 3500) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => (t.style.display = "none"), ms);
+}
+
+function fillSelect(select, options, value, placeholder) {
+  select.replaceChildren();
+  if (placeholder) select.add(new Option(placeholder, ""));
+  const values = new Set();
+  for (const o of options) {
+    if (values.has(o.value)) continue;
+    values.add(o.value);
+    select.add(new Option(o.label, o.value));
+  }
+  select.add(new Option("Other (type manually)…", OTHER));
+  if (value && !values.has(value)) select.add(new Option(value + "  (saved)", value), select.options.length - 1);
+  select.value = value || "";
+}
+
+function displayOptions() {
+  const opts = displays.map((d) => ({
+    value: d.device,
+    label: `${d.short}${d.monitor ? " — " + d.monitor : ""}  ${d.width}×${d.height} @ ${d.x},${d.y}${d.primary ? "  (primary)" : ""}`,
+  }));
+  // Also offer whatever values Studio Monitor itself currently reports.
+  for (const p of status?.panels || []) {
+    if (p.current_display) opts.push({ value: p.current_display, label: p.current_display + "  (reported by Studio Monitor)" });
+  }
+  return opts;
+}
+
+function buildCard(p) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.dataset.port = p.port;
+  card.innerHTML = `
+    <div class="card-head">
+      <h2><span class="dot"></span><span class="name"></span></h2>
+      <span class="port"></span>
+    </div>
+    <div class="live">
+      <div><span>Now playing:</span> <b class="cur-src">–</b></div>
+      <div><span>Display:</span> <span class="cur-disp">–</span></div>
+    </div>
+    <div>
+      <label>NDI source</label>
+      <select class="src"></select>
+      <input type="text" class="src-other" placeholder="MACHINE (Stream name)" hidden>
+    </div>
+    <div>
+      <label>Output display</label>
+      <select class="disp"></select>
+      <input type="text" class="disp-other" placeholder="Display device name" hidden>
+    </div>
+    <div class="row">
+      <span class="badge state" style="margin-right:auto"></span>
+      <button class="apply primary">Apply to this panel</button>
+    </div>`;
+  card.querySelector(".name").textContent = p.name;
+  card.querySelector(".port").textContent = "port " + p.port;
+
+  const mark = () => { dirty.add(p.port); card.classList.add("dirty"); };
+  for (const cls of ["src", "disp"]) {
+    const sel = card.querySelector("." + cls);
+    const other = card.querySelector(`.${cls}-other`);
+    sel.addEventListener("change", () => { other.hidden = sel.value !== OTHER; if (!other.hidden) other.focus(); mark(); });
+    other.addEventListener("input", mark);
+  }
+  card.querySelector(".apply").addEventListener("click", () => applyPanels([p.port]));
+  return card;
+}
+
+function readCard(card) {
+  const val = (cls) => {
+    const sel = card.querySelector("." + cls);
+    return sel.value === OTHER ? card.querySelector(`.${cls}-other`).value.trim() : sel.value;
+  };
+  return { port: Number(card.dataset.port), ndi_source: val("src"), display_device: val("disp") };
+}
+
+function render() {
+  const grid = $("grid");
+  grid.style.setProperty("--cols", status.layout_columns || 2);
+  for (const p of status.panels) {
+    let card = grid.querySelector(`.card[data-port="${p.port}"]`);
+    if (!card) { card = buildCard(p); grid.appendChild(card); }
+    card.querySelector(".dot").classList.toggle("on", p.reachable);
+    card.querySelector(".cur-src").textContent = p.reachable ? (p.current_source || "(none)") : "offline";
+    card.querySelector(".cur-disp").textContent = p.reachable ? (p.current_display || "(default)") : "–";
+    const badge = card.querySelector(".state");
+    const matches = p.reachable && p.ndi_source && p.current_source === p.ndi_source;
+    badge.className = "badge state " + (matches ? "match" : p.ndi_source ? "mismatch" : "");
+    badge.textContent = !p.ndi_source ? "not assigned" : matches ? "matches saved" : "differs from saved";
+
+    if (!dirty.has(p.port)) {
+      const srcOpts = sources.map((s) => ({ value: s, label: s }));
+      fillSelect(card.querySelector(".src"), srcOpts, p.ndi_source, "— choose a source —");
+      fillSelect(card.querySelector(".disp"), displayOptions(), p.display_device, "— keep current display —");
+      card.querySelector(".src-other").hidden = true;
+      card.querySelector(".disp-other").hidden = true;
+    }
+  }
+}
+
+async function refreshStatus() {
+  try {
+    status = await api("/api/status");
+    $("phase").textContent = status.phase;
+    $("procWrap").hidden = !status.processes_managed;
+    const expected = status.panels.length;
+    $("procs").textContent = status.process_count == null ? "?" : `${status.process_count}/${expected}`;
+    $("procs").style.color = status.process_count >= expected ? "var(--ok)" : "var(--warn)";
+    $("lastCheck").textContent = status.last_check || "pending";
+    $("enforce").checked = !!status.enforce_mapping;
+    $("btnRestart").hidden = !status.processes_managed;
+    render();
+  } catch (e) {
+    $("phase").textContent = "unreachable";
+  }
+}
+
+async function refreshSources(announce) {
+  try {
+    sources = (await api("/api/sources")).sources;
+    $("srcCount").textContent = sources.length;
+    if (announce) toast(`Found ${sources.length} NDI source(s)`);
+  } catch (e) {
+    $("srcCount").textContent = "error";
+    if (announce) toast("Source discovery failed: " + e.message);
+  }
+}
+
+async function refreshDisplays() {
+  try { displays = (await api("/api/displays")).displays; } catch { displays = []; }
+}
+
+async function refreshLog() {
+  const { log } = await api("/api/log");
+  const box = $("log");
+  box.replaceChildren(...log.slice().reverse().map((l) => {
+    const div = document.createElement("div");
+    div.className = l.level;
+    div.textContent = `${l.time}  ${l.message}`;
+    return div;
+  }));
+}
+
+function reportResults(results) {
+  const failed = results.filter((r) => !r.ok);
+  toast(failed.length ? failed.map((r) => r.message).join(" · ") : `Applied to ${results.length} panel(s)`, failed.length ? 7000 : 3500);
+}
+
+async function applyPanels(ports) {
+  const cards = [...document.querySelectorAll(".card")].filter((c) => ports.includes(Number(c.dataset.port)));
+  const panels = cards.map(readCard);
+  try {
+    const { results } = await api("/api/apply", { method: "POST", body: { panels } });
+    ports.forEach((p) => dirty.delete(p));
+    cards.forEach((c) => c.classList.remove("dirty"));
+    reportResults(results);
+  } catch (e) {
+    toast("Apply failed: " + e.message, 7000);
+  }
+  setTimeout(() => { refreshStatus(); refreshLog(); }, 600);
+}
+
+$("btnApplyAll").onclick = () => applyPanels(status.panels.map((p) => p.port));
+$("btnSources").onclick = async () => { await refreshSources(true); await refreshDisplays(); render(); };
+$("btnReapply").onclick = async () => {
+  try { reportResults((await api("/api/reapply", { method: "POST" })).results); }
+  catch (e) { toast(e.message); }
+  refreshStatus(); refreshLog();
+};
+$("btnRestart").onclick = async () => {
+  if (!confirm("Kill and relaunch all Studio Monitor instances? The wall will go black for a few seconds.")) return;
+  try { await api("/api/restart", { method: "POST" }); toast("Restarting monitors…"); }
+  catch (e) { toast(e.message); }
+};
+$("enforce").onchange = (e) => api("/api/settings", { method: "POST", body: { enforce_mapping: e.target.checked } });
+$("btnLog").onclick = refreshLog;
+
+(async () => {
+  await Promise.all([refreshSources(false), refreshDisplays()]);
+  await refreshStatus();
+  refreshLog();
+  setInterval(refreshStatus, 5000);
+  setInterval(refreshLog, 10000);
+  setInterval(() => refreshSources(false), 30000);
+})();
+</script>
+</body>
+</html>

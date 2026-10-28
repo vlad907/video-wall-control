@@ -1,0 +1,655 @@
+"""
+Video Wall Control - background service + web dashboard for a 4-panel
+NDI Studio Monitor mosaic.
+
+Pure Python standard library (3.8+), no pip install needed.
+Run with pythonw.exe on Windows so no console window appears.
+
+    pythonw videowall.py            # normal (background) start
+    python  videowall.py --console  # foreground, logs to the console too
+"""
+
+import glob
+import json
+import logging
+import logging.handlers
+import os
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = Path(os.environ.get("VIDEOWALL_CONFIG", BASE_DIR / "config.json"))
+STATIC_DIR = BASE_DIR / "static"
+LOG_DIR = BASE_DIR / "logs"
+
+IS_WINDOWS = os.name == "nt"
+CREATE_NO_WINDOW = 0x08000000
+DETACHED_PROCESS = 0x00000008
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+
+DEFAULT_CONFIG = {
+    "dashboard_host": "0.0.0.0",
+    "dashboard_port": 8080,
+    "monitor_host": "127.0.0.1",
+    "manage_processes": True,
+    "exe_name": "Application.Network.VideoMonitor2.x64.exe",
+    "exe_path": "",
+    "exe_search_paths": [
+        r"C:\Program Files\NDI\NDI 6 Tools\Studio Monitor",
+        r"C:\Program Files\NDI\NDI 5 Tools\Studio Monitor",
+        r"C:\Program Files\NewTek\NDI 5 Tools\Studio Monitor",
+        r"C:\Program Files\NewTek\NDI 4 Tools\Studio Monitor",
+        r"C:\Program Files\NDI\*\Studio Monitor",
+        r"C:\Program Files\NewTek\*\Studio Monitor",
+    ],
+    "boot_delay_seconds": 10,
+    "launch_gap_seconds": 2,
+    "api_ready_timeout_seconds": 20,
+    "watchdog_interval_seconds": 15,
+    "enforce_mapping": True,
+    "hung_restart_after_checks": 4,
+    "restart_cooldown_seconds": 300,
+    "layout_columns": 2,
+    "window_options": {"hide_border": True, "always_on_top": True},
+    "decorations": {"hw_accel": True},
+    "panels": [
+        {"name": "Panel 1", "port": 80, "ndi_source": "", "display_device": ""},
+        {"name": "Panel 2", "port": 81, "ndi_source": "", "display_device": ""},
+        {"name": "Panel 3", "port": 82, "ndi_source": "", "display_device": ""},
+        {"name": "Panel 4", "port": 83, "ndi_source": "", "display_device": ""},
+    ],
+}
+
+# pythonw.exe has no stdout/stderr; anything writing to them would crash.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+
+log = logging.getLogger("videowall")
+recent_log = deque(maxlen=300)
+
+
+class MemoryHandler(logging.Handler):
+    def emit(self, record):
+        recent_log.append({
+            "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.created)),
+            "level": record.levelname,
+            "message": record.getMessage(),
+        })
+
+
+def setup_logging(console):
+    LOG_DIR.mkdir(exist_ok=True)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(message)s")
+    file_handler = logging.handlers.RotatingFileHandler(
+        LOG_DIR / "videowall.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    file_handler.setFormatter(fmt)
+    log.addHandler(file_handler)
+    log.addHandler(MemoryHandler())
+    if console:
+        stream = logging.StreamHandler()
+        stream.setFormatter(fmt)
+        log.addHandler(stream)
+    log.setLevel(logging.INFO)
+
+
+# --------------------------------------------------------------------------
+# Config
+# --------------------------------------------------------------------------
+
+config_lock = threading.RLock()
+config = {}
+
+
+def load_config():
+    global config
+    data = {}
+    if CONFIG_PATH.exists():
+        try:
+            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as exc:
+            log.error("Could not read %s (%s); using defaults", CONFIG_PATH, exc)
+    merged = json.loads(json.dumps(DEFAULT_CONFIG))
+    merged.update(data)
+    with config_lock:
+        config = merged
+    if not CONFIG_PATH.exists():
+        save_config()
+
+
+def save_config():
+    with config_lock:
+        text = json.dumps(config, indent=2)
+    tmp = CONFIG_PATH.with_suffix(".json.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, CONFIG_PATH)
+
+
+def cfg(key):
+    with config_lock:
+        return config.get(key, DEFAULT_CONFIG.get(key))
+
+
+def panels():
+    with config_lock:
+        return [dict(p) for p in config["panels"]]
+
+
+# --------------------------------------------------------------------------
+# NDI Studio Monitor HTTP API
+# --------------------------------------------------------------------------
+
+def monitor_url(port, path):
+    return "http://%s:%d%s" % (cfg("monitor_host"), port, path)
+
+
+def http_json(method, url, body=None, timeout=3):
+    data = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8", "replace").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+def get_configuration(port):
+    """Return the panel's current configuration dict, or None if unreachable."""
+    try:
+        result = http_json("GET", monitor_url(port, "/v1/configuration"))
+        return result if isinstance(result, dict) else {}
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def get_sources():
+    """Return a sorted list of NDI source names, discovered via the first reachable panel."""
+    last_error = None
+    for p in panels():
+        try:
+            result = http_json("GET", monitor_url(p["port"], "/v1/sources"), timeout=5)
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            last_error = exc
+            continue
+        return sorted(set(normalize_sources(result)), key=str.lower)
+    raise RuntimeError("No Studio Monitor instance reachable (%s)" % last_error)
+
+
+def normalize_sources(result):
+    if isinstance(result, dict):
+        for key in ("sources", "NDI_sources", "items", "data"):
+            if key in result:
+                return normalize_sources(result[key])
+        return [str(k) for k in result.keys()]
+    names = []
+    if isinstance(result, list):
+        for item in result:
+            if isinstance(item, str):
+                names.append(item)
+            elif isinstance(item, dict):
+                for key in ("name", "NDI_source", "source", "ndi_name"):
+                    if item.get(key):
+                        names.append(str(item[key]))
+                        break
+    return names
+
+
+def build_payload(panel):
+    window = dict(cfg("window_options"))
+    if panel.get("display_device"):
+        window["display_device"] = panel["display_device"]
+    return {
+        "version": 1,
+        "NDI_source": panel["ndi_source"],
+        "window": window,
+        "decorations": dict(cfg("decorations")),
+    }
+
+
+def apply_panel(panel):
+    """POST the saved mapping to one Studio Monitor. Returns (ok, message)."""
+    if not panel.get("ndi_source"):
+        return False, "%s: no NDI source assigned, skipped" % panel["name"]
+    try:
+        http_json("POST", monitor_url(panel["port"], "/v1/configuration"), build_payload(panel), timeout=5)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:200]
+        log.error("%s (port %d): HTTP %d %s", panel["name"], panel["port"], exc.code, detail)
+        return False, "%s: HTTP %d %s" % (panel["name"], exc.code, detail)
+    except (urllib.error.URLError, OSError) as exc:
+        log.error("%s (port %d): apply failed: %s", panel["name"], panel["port"], exc)
+        return False, "%s: %s" % (panel["name"], exc)
+    log.info("%s (port %d) -> '%s' on '%s'", panel["name"], panel["port"],
+             panel["ndi_source"], panel.get("display_device") or "(unchanged display)")
+    return True, "%s: applied" % panel["name"]
+
+
+def apply_all():
+    return [apply_panel(p) for p in panels()]
+
+
+def wait_for_api(ports, timeout):
+    deadline = time.time() + timeout
+    pending = set(ports)
+    while pending and time.time() < deadline:
+        for port in list(pending):
+            if get_configuration(port) is not None:
+                pending.discard(port)
+        if pending:
+            time.sleep(1)
+    if pending:
+        log.warning("API not responding on port(s) %s after %ds", sorted(pending), timeout)
+    return not pending
+
+
+# --------------------------------------------------------------------------
+# Process management (Windows)
+# --------------------------------------------------------------------------
+
+def find_exe():
+    explicit = cfg("exe_path")
+    if explicit and os.path.isfile(explicit):
+        return explicit
+    name = cfg("exe_name")
+    for folder in cfg("exe_search_paths"):
+        for match in sorted(glob.glob(os.path.join(folder, name)), reverse=True):
+            if os.path.isfile(match):
+                return match
+    return None
+
+
+def count_processes():
+    if not IS_WINDOWS:
+        return None
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq %s" % cfg("exe_name"), "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=10, creationflags=CREATE_NO_WINDOW,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.error("tasklist failed: %s", exc)
+        return None
+    target = cfg("exe_name").lower()
+    return sum(1 for line in out.splitlines() if line.strip().strip('"').lower().startswith(target))
+
+
+def kill_all_instances():
+    if not IS_WINDOWS:
+        return
+    subprocess.run(["taskkill", "/F", "/IM", cfg("exe_name")],
+                   capture_output=True, timeout=15, creationflags=CREATE_NO_WINDOW)
+    log.info("Killed all Studio Monitor instances")
+
+
+def launch_instance(exe):
+    kwargs = dict(cwd=os.path.dirname(exe), stdin=subprocess.DEVNULL,
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    base_flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    try:
+        # Break away from Task Scheduler's job so monitors survive a service restart.
+        subprocess.Popen([exe], creationflags=base_flags | CREATE_BREAKAWAY_FROM_JOB, **kwargs)
+    except OSError:
+        subprocess.Popen([exe], creationflags=base_flags, **kwargs)
+
+
+def launch_instances(count):
+    exe = find_exe()
+    if not exe:
+        log.error("Studio Monitor executable not found. Set 'exe_path' in config.json.")
+        return False
+    gap = float(cfg("launch_gap_seconds"))
+    for i in range(count):
+        log.info("Launching Studio Monitor instance %d/%d", i + 1, count)
+        try:
+            launch_instance(exe)
+        except OSError as exc:
+            log.error("Failed to launch %s: %s", exe, exc)
+            return False
+        time.sleep(gap)
+    return True
+
+
+# --------------------------------------------------------------------------
+# Supervisor / watchdog
+# --------------------------------------------------------------------------
+
+action_lock = threading.Lock()
+state = {
+    "phase": "starting",
+    "process_count": None,
+    "last_check": None,
+    "last_restart": 0.0,
+    "unreachable_streak": {},
+}
+
+
+def processes_managed():
+    return bool(cfg("manage_processes")) and IS_WINDOWS
+
+
+def restart_all(reason):
+    with action_lock:
+        log.warning("Restarting all Studio Monitor instances: %s", reason)
+        state["phase"] = "restarting"
+        state["last_restart"] = time.time()
+        kill_all_instances()
+        time.sleep(2)
+        ports = [p["port"] for p in panels()]
+        if launch_instances(len(ports)):
+            wait_for_api(ports, cfg("api_ready_timeout_seconds"))
+            apply_all()
+        state["unreachable_streak"] = {}
+        state["phase"] = "running"
+
+
+def initial_startup():
+    delay = float(cfg("boot_delay_seconds"))
+    state["phase"] = "boot-delay"
+    log.info("Waiting %.0fs for network and displays to initialize", delay)
+    time.sleep(delay)
+    with action_lock:
+        state["phase"] = "launching"
+        ports = [p["port"] for p in panels()]
+        if processes_managed():
+            running = count_processes() or 0
+            state["process_count"] = running
+            log.info("Found %d running Studio Monitor instance(s), need %d", running, len(ports))
+            if running < len(ports):
+                launch_instances(len(ports) - running)
+        else:
+            log.info("Process management disabled; only applying configuration")
+        wait_for_api(ports, cfg("api_ready_timeout_seconds"))
+        log.info("Applying saved mapping")
+        apply_all()
+        state["phase"] = "running"
+
+
+def watchdog_tick():
+    expected = panels()
+    if processes_managed():
+        running = count_processes()
+        state["process_count"] = running
+        if running is not None and running < len(expected):
+            with action_lock:
+                missing = len(expected) - running
+                log.warning("Only %d/%d Studio Monitor instances running; launching %d",
+                            running, len(expected), missing)
+                if launch_instances(missing):
+                    wait_for_api([p["port"] for p in expected], cfg("api_ready_timeout_seconds"))
+                    apply_all()
+            return
+
+    streaks = state["unreachable_streak"]
+    for panel in expected:
+        current = get_configuration(panel["port"])
+        if current is None:
+            streaks[panel["port"]] = streaks.get(panel["port"], 0) + 1
+            continue
+        streaks[panel["port"]] = 0
+        if (cfg("enforce_mapping") and panel.get("ndi_source")
+                and current.get("NDI_source") != panel["ndi_source"]):
+            log.info("%s drifted to '%s'; re-applying '%s'",
+                     panel["name"], current.get("NDI_source"), panel["ndi_source"])
+            with action_lock:
+                apply_panel(panel)
+
+    limit = int(cfg("hung_restart_after_checks"))
+    hung = [port for port, n in streaks.items() if n >= limit]
+    cooled_down = time.time() - state["last_restart"] > float(cfg("restart_cooldown_seconds"))
+    if hung and processes_managed() and cooled_down:
+        restart_all("API unresponsive on port(s) %s" % sorted(hung))
+
+
+def supervisor_loop():
+    try:
+        initial_startup()
+    except Exception:
+        log.exception("Startup sequence failed")
+        state["phase"] = "running"
+    while True:
+        time.sleep(float(cfg("watchdog_interval_seconds")))
+        try:
+            watchdog_tick()
+            state["last_check"] = time.strftime("%H:%M:%S")
+        except Exception:
+            log.exception("Watchdog tick failed")
+
+
+def run_in_background(fn, *args):
+    threading.Thread(target=fn, args=args, daemon=True).start()
+
+
+# --------------------------------------------------------------------------
+# Display enumeration (Windows)
+# --------------------------------------------------------------------------
+
+def enumerate_displays():
+    if not IS_WINDOWS:
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    try:
+        user32.SetProcessDPIAware()
+    except AttributeError:
+        pass
+
+    class DISPLAY_DEVICEW(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("DeviceName", wintypes.WCHAR * 32),
+                    ("DeviceString", wintypes.WCHAR * 128), ("StateFlags", wintypes.DWORD),
+                    ("DeviceID", wintypes.WCHAR * 128), ("DeviceKey", wintypes.WCHAR * 128)]
+
+    class MONITORINFOEXW(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD),
+                    ("szDevice", wintypes.WCHAR * 32)]
+
+    MonitorEnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+                                         ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+    user32.EnumDisplayDevicesW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD,
+                                           ctypes.POINTER(DISPLAY_DEVICEW), wintypes.DWORD]
+    user32.EnumDisplayMonitors.argtypes = [wintypes.HDC, ctypes.c_void_p, MonitorEnumProc,
+                                           wintypes.LPARAM]
+    user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFOEXW)]
+
+    friendly = {}
+    i = 0
+    while True:
+        adapter = DISPLAY_DEVICEW()
+        adapter.cb = ctypes.sizeof(adapter)
+        if not user32.EnumDisplayDevicesW(None, i, ctypes.byref(adapter), 0):
+            break
+        if adapter.StateFlags & 0x1:  # DISPLAY_DEVICE_ATTACHED_TO_DESKTOP
+            monitor = DISPLAY_DEVICEW()
+            monitor.cb = ctypes.sizeof(monitor)
+            name = ""
+            if user32.EnumDisplayDevicesW(adapter.DeviceName, 0, ctypes.byref(monitor), 0):
+                name = monitor.DeviceString
+            friendly[adapter.DeviceName] = (name or adapter.DeviceString, adapter.DeviceString)
+        i += 1
+
+    displays = []
+
+    def callback(hmonitor, hdc, rect, lparam):
+        info = MONITORINFOEXW()
+        info.cbSize = ctypes.sizeof(info)
+        if user32.GetMonitorInfoW(hmonitor, ctypes.byref(info)):
+            r = info.rcMonitor
+            monitor_name, adapter_name = friendly.get(info.szDevice, ("", ""))
+            displays.append({
+                "device": info.szDevice,
+                "short": info.szDevice.replace("\\\\.\\", ""),
+                "monitor": monitor_name,
+                "adapter": adapter_name,
+                "x": r.left, "y": r.top,
+                "width": r.right - r.left, "height": r.bottom - r.top,
+                "primary": bool(info.dwFlags & 0x1),
+            })
+        return True
+
+    user32.EnumDisplayMonitors(None, None, MonitorEnumProc(callback), 0)
+    displays.sort(key=lambda d: (d["y"], d["x"]))
+    return displays
+
+
+# --------------------------------------------------------------------------
+# Dashboard HTTP server
+# --------------------------------------------------------------------------
+
+def status_payload():
+    result = []
+    for p in panels():
+        current = get_configuration(p["port"])
+        window = (current or {}).get("window") or {}
+        result.append(dict(p, reachable=current is not None,
+                           current_source=(current or {}).get("NDI_source"),
+                           current_display=window.get("display_device"),
+                           current_config=current))
+    return {
+        "panels": result,
+        "phase": state["phase"],
+        "process_count": state["process_count"] if processes_managed() else None,
+        "processes_managed": processes_managed(),
+        "exe_path": find_exe() if processes_managed() else None,
+        "last_check": state["last_check"],
+        "enforce_mapping": cfg("enforce_mapping"),
+        "layout_columns": cfg("layout_columns"),
+    }
+
+
+def update_panels(updates):
+    with config_lock:
+        by_port = {p["port"]: p for p in config["panels"]}
+        for u in updates:
+            panel = by_port.get(int(u["port"]))
+            if not panel:
+                raise ValueError("Unknown panel port %s" % u["port"])
+            for key in ("ndi_source", "display_device", "name"):
+                if key in u and u[key] is not None:
+                    panel[key] = str(u[key]).strip()
+    save_config()
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "VideoWallControl/1.0"
+
+    def log_message(self, fmt, *args):
+        log.debug("%s %s", self.address_string(), fmt % args)
+
+    def send_json(self, obj, code=200):
+        body = json.dumps(obj).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def read_body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if not length:
+            return {}
+        return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        try:
+            if path in ("/", "/index.html"):
+                body = (STATIC_DIR / "index.html").read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif path == "/api/status":
+                self.send_json(status_payload())
+            elif path == "/api/sources":
+                self.send_json({"sources": get_sources()})
+            elif path == "/api/displays":
+                self.send_json({"displays": enumerate_displays()})
+            elif path == "/api/log":
+                self.send_json({"log": list(recent_log)})
+            else:
+                self.send_json({"error": "not found"}, 404)
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, 503)
+        except Exception as exc:
+            log.exception("GET %s failed", path)
+            self.send_json({"error": str(exc)}, 500)
+
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        try:
+            body = self.read_body()
+            if path == "/api/apply":
+                # body: {"panels": [{"port": 80, "ndi_source": "...", "display_device": "..."}]}
+                updates = body.get("panels") or []
+                update_panels(updates)
+                ports = {int(u["port"]) for u in updates}
+                with action_lock:
+                    results = [apply_panel(p) for p in panels() if p["port"] in ports]
+                self.send_json({"results": [{"ok": ok, "message": m} for ok, m in results]})
+            elif path == "/api/reapply":
+                with action_lock:
+                    results = apply_all()
+                self.send_json({"results": [{"ok": ok, "message": m} for ok, m in results]})
+            elif path == "/api/restart":
+                if not processes_managed():
+                    self.send_json({"error": "Process management is disabled"}, 400)
+                    return
+                run_in_background(restart_all, "requested from dashboard")
+                self.send_json({"ok": True})
+            elif path == "/api/settings":
+                with config_lock:
+                    if "enforce_mapping" in body:
+                        config["enforce_mapping"] = bool(body["enforce_mapping"])
+                save_config()
+                self.send_json({"ok": True})
+            else:
+                self.send_json({"error": "not found"}, 404)
+        except (ValueError, KeyError, TypeError) as exc:
+            self.send_json({"error": str(exc)}, 400)
+        except Exception as exc:
+            log.exception("POST %s failed", path)
+            self.send_json({"error": str(exc)}, 500)
+
+
+def main():
+    setup_logging(console="--console" in sys.argv)
+    load_config()
+    host, port = cfg("dashboard_host"), int(cfg("dashboard_port"))
+    try:
+        server = ThreadingHTTPServer((host, port), Handler)
+    except OSError as exc:
+        log.error("Cannot bind dashboard on %s:%d (%s). Already running?", host, port, exc)
+        sys.exit(1)
+    server.daemon_threads = True
+    log.info("Video Wall Control started; dashboard on http://%s:%d", host, port)
+    run_in_background(supervisor_loop)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        log.info("Shutting down")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,5 @@
+logs/
+__pycache__/
+*.json.tmp
+.DS_Store
+test-config.json

@@ -1,0 +1,57 @@
+{
+  "dashboard_host": "0.0.0.0",
+  "dashboard_port": 8080,
+  "monitor_host": "127.0.0.1",
+  "manage_processes": true,
+  "exe_name": "Application.Network.VideoMonitor2.x64.exe",
+  "exe_path": "",
+  "exe_search_paths": [
+    "C:\\Program Files\\NDI\\NDI 6 Tools\\Studio Monitor",
+    "C:\\Program Files\\NDI\\NDI 5 Tools\\Studio Monitor",
+    "C:\\Program Files\\NewTek\\NDI 5 Tools\\Studio Monitor",
+    "C:\\Program Files\\NewTek\\NDI 4 Tools\\Studio Monitor",
+    "C:\\Program Files\\NDI\\*\\Studio Monitor",
+    "C:\\Program Files\\NewTek\\*\\Studio Monitor"
+  ],
+  "boot_delay_seconds": 10,
+  "launch_gap_seconds": 2,
+  "api_ready_timeout_seconds": 20,
+  "watchdog_interval_seconds": 15,
+  "enforce_mapping": true,
+  "hung_restart_after_checks": 4,
+  "restart_cooldown_seconds": 300,
+  "layout_columns": 2,
+  "window_options": {
+    "hide_border": true,
+    "always_on_top": true
+  },
+  "decorations": {
+    "hw_accel": true
+  },
+  "panels": [
+    {
+      "name": "Panel 1",
+      "port": 80,
+      "ndi_source": "",
+      "display_device": ""
+    },
+    {
+      "name": "Panel 2",
+      "port": 81,
+      "ndi_source": "",
+      "display_device": ""
+    },
+    {
+      "name": "Panel 3",
+      "port": 82,
+      "ndi_source": "",
+      "display_device": ""
+    },
+    {
+      "name": "Panel 4",
+      "port": 83,
+      "ndi_source": "",
+      "display_device": ""
+    }
+  ]
+}
