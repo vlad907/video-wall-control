@@ -1,0 +1,99 @@
+{
+  "id": "mixed-resolution",
+  "name": "Mixed resolution - 4K centre, 1080p sides",
+  "frameRate": 60,
+  "canvas": {
+    "width": 7680,
+    "height": 2160,
+    "background": [
+      0,
+      0,
+      0,
+      1
+    ]
+  },
+  "sources": [
+    {
+      "id": "pattern",
+      "name": "Test pattern",
+      "type": "test_pattern",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 7680,
+        "h": 2160
+      },
+      "enabled": true
+    }
+  ],
+  "outputs": [
+    {
+      "id": "out-1",
+      "name": "Left 1080p (shows 1920x2160 strip scaled to fit)",
+      "ndiName": "Mosaic_Output_01",
+      "width": 1920,
+      "height": 1080,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "w": 1920,
+        "h": 2160
+      },
+      "rotation": 0,
+      "scaleMode": "fit",
+      "source": "canvas",
+      "enabled": true
+    },
+    {
+      "id": "out-2",
+      "name": "Centre 4K",
+      "ndiName": "Mosaic_Output_02",
+      "width": 3840,
+      "height": 2160,
+      "crop": {
+        "x": 1920,
+        "y": 0,
+        "w": 3840,
+        "h": 2160
+      },
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true
+    },
+    {
+      "id": "out-3",
+      "name": "Right 1080p (fill: crops to keep aspect)",
+      "ndiName": "Mosaic_Output_03",
+      "width": 1920,
+      "height": 1080,
+      "crop": {
+        "x": 5760,
+        "y": 0,
+        "w": 1920,
+        "h": 2160
+      },
+      "rotation": 0,
+      "scaleMode": "fill",
+      "source": "canvas",
+      "enabled": true
+    },
+    {
+      "id": "out-4",
+      "name": "Centre detail 1080p (1:1 pixel zoom)",
+      "ndiName": "Mosaic_Output_04",
+      "width": 1920,
+      "height": 1080,
+      "crop": {
+        "x": 2880,
+        "y": 540,
+        "w": 1920,
+        "h": 1080
+      },
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true
+    }
+  ]
+}

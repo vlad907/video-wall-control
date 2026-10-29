@@ -1,0 +1,99 @@
+{
+  "id": "row-1x4-4k",
+  "name": "1x4 horizontal - four 4K displays",
+  "frameRate": 60,
+  "canvas": {
+    "width": 15360,
+    "height": 2160,
+    "background": [
+      0,
+      0,
+      0,
+      1
+    ]
+  },
+  "sources": [
+    {
+      "id": "pattern",
+      "name": "Test pattern",
+      "type": "test_pattern",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 15360,
+        "h": 2160
+      },
+      "enabled": true
+    }
+  ],
+  "outputs": [
+    {
+      "id": "out-1",
+      "name": "Display 1",
+      "ndiName": "Mosaic_Output_01",
+      "width": 3840,
+      "height": 2160,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "w": 3840,
+        "h": 2160
+      },
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true
+    },
+    {
+      "id": "out-2",
+      "name": "Display 2",
+      "ndiName": "Mosaic_Output_02",
+      "width": 3840,
+      "height": 2160,
+      "crop": {
+        "x": 3840,
+        "y": 0,
+        "w": 3840,
+        "h": 2160
+      },
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true
+    },
+    {
+      "id": "out-3",
+      "name": "Display 3",
+      "ndiName": "Mosaic_Output_03",
+      "width": 3840,
+      "height": 2160,
+      "crop": {
+        "x": 7680,
+        "y": 0,
+        "w": 3840,
+        "h": 2160
+      },
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true
+    },
+    {
+      "id": "out-4",
+      "name": "Display 4",
+      "ndiName": "Mosaic_Output_04",
+      "width": 3840,
+      "height": 2160,
+      "crop": {
+        "x": 11520,
+        "y": 0,
+        "w": 3840,
+        "h": 2160
+      },
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true
+    }
+  ]
+}
