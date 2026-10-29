@@ -40,6 +40,8 @@ public:
     bool previewJpeg(const std::string& target, std::string& jpeg);
     // Full-resolution JPEG of the next frame an output sends.
     bool snapshotJpeg(const std::string& outputId, std::string& jpeg, uint64_t& frameId);
+    // Same frame as raw BGRA (UYVY outputs are decoded), for automated checks.
+    bool snapshotBgra(const std::string& outputId, std::vector<uint8_t>& bgra, int& w, int& h, uint64_t& frameId);
 
 private:
     struct SourceState {
@@ -106,7 +108,7 @@ private:
 
     // Metrics
     RateMeter renderRate_;
-    Ewma encodeMs_, waitMs_, gpuMs_, frameMs_;
+    Ewma encodeMs_, waitMs_, gpuMs_, frameMs_, jitterMs_;
     std::atomic<uint64_t> frameId_{0}, lateFrames_{0};
     std::atomic<double> targetFps_{60};
 };

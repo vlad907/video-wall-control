@@ -18,6 +18,8 @@ in the style of Resolume's Advanced Output drives the running engine through a R
 | Piece | State |
 |---|---|
 | Render engine, test pattern, crop / scale / rotation, bounded readback, metrics | **Working, measured** on macOS (Metal, Apple M4) |
+| GPU UYVY 4:2:2 output (BT.709), default wire format | **Working, verified** (`tools/check_uyvy.py`); halves readback |
+| Precise frame pacing + real-time thread priority | **Working** on macOS (tick lateness about 0.001 ms); Windows path (high-resolution timer, MMCSS) compiled, not run |
 | Web editor (drag / resize regions, inspector, live previews, layouts, metrics) | **Working**, verified against the running engine |
 | REST API + server-sent events | **Working**, exercised with curl |
 | Layout persistence across restarts | **Working**, verified |
@@ -66,6 +68,12 @@ mosaic_engine [--port 8090] [--host 0.0.0.0] [--data ./data] [--layouts ./layout
 - `--run-seconds N`: headless benchmark; prints the metrics JSON when it exits.
 - `--snapshot-dir DIR`: after 2 s, writes a full-resolution JPEG of every output plus `canvas.jpg`. This is the quickest way to check a mapping.
 
+Tools:
+- `python3 tools/bench.py`: runs each layout in BGRA and UYVY and prints a results table.
+- `python3 tools/check_uyvy.py`: checks GPU UYVY packing against BGRA. Needs numpy for the full report.
+
+A test-pattern source with `"animated": false` freezes the moving bar and frame counter, so snapshots can be compared.
+
 The API has no authentication. Use `--host 127.0.0.1` if the machine is on an untrusted network.
 
 ## Layouts
@@ -80,7 +88,7 @@ Example layouts are in [layouts/](layouts):
 | `mixed-resolution.json` | 4K centre plus 1080p sides, using `fit`, `fill` and a 1:1 pixel crop |
 | `rotated-portrait.json` | Portrait displays (`rotation` 90 / 270) beside a landscape pair |
 
-Output fields: `id`, `name`, `ndiName`, `width`/`height` (output resolution), `crop`
+Output fields: `id`, `name`, `ndiName`, `width`/`height` (output resolution), `pixelFormat` (`uyvy`, the default, or `bgra`), `crop`
 (region in canvas pixels, or in source pixels when `source` is a source id),
 `rotation` (0/90/180/270, clockwise), `scaleMode` (`stretch` | `fit` | `fill`),
 `source` (`"canvas"` or a source id), `enabled`.
@@ -113,6 +121,7 @@ Across the whole source there's also:
 | PATCH | `/api/outputs/:id` | change any field; applied on the next frame |
 | DELETE | `/api/outputs/:id` | remove |
 | GET | `/api/outputs/:id/snapshot.jpg` | full-res frame (header `X-Frame-Id`) |
+| GET | `/api/outputs/:id/frame.bgra` | the same frame as raw BGRA (UYVY decoded); headers `X-Width`, `X-Height`, `X-Frame-Id` |
 | GET | `/api/preview/:target.jpg` | low-res live preview, `target` = `canvas` or an output id |
 | GET / PUT | `/api/layout` | the whole active layout |
 | GET | `/api/layouts` | saved layouts |
@@ -135,19 +144,25 @@ Status and metrics are pushed with **server-sent events**, not WebSockets. Every
 the UI needs is server-to-client, and SSE needs no extra dependency, works through
 proxies, and reconnects automatically. Commands go over REST.
 
-## Measured performance (macOS, Apple M4, Metal, null sink, 30 s runs)
+## Measured performance (macOS, Apple M4, Metal, null sink)
 
-| Layout | Render fps | Late frames | CPU encode / frame | GPU / frame | GPU util | Frame → sink latency | Drops | Frames on all 4 outputs |
-|---|---|---|---|---|---|---|---|---|
-| 4 × 1080p (3840×2160 canvas) | 59.92 | 0 | 0.47 ms | 7.6 ms | 52 % | 9.1 ms | 0 | 1572 / 1572 |
-| 4 × 4K (7680×4320 canvas) | 60.00 | 1 (startup) | 0.37 ms | 10.6 ms | 72 % | 12.0 ms | 0 | 1569 / 1569 |
+From `python3 tools/bench.py --seconds 15`:
+
+| Layout | Format | fps | Late frames | Tick lateness | CPU / frame | GPU / frame | GPU util | Readback | Frame → sink | Drops | Frames on all outputs |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 4 × 1080p | BGRA | 60.02 | 0 | 0.001 ms | 0.41 ms | 11.1 ms | 71 % | 1989 MB/s | 12.5 ms | 0 | 668 / 668 |
+| 4 × 1080p | **UYVY** | 60.01 | 0 | 0.002 ms | 0.42 ms | 11.9 ms | 76 % | **996 MB/s** | 13.3 ms | 0 | 665 / 665 |
+| 4 × 4K | BGRA | 60.00 | 0 | 0.001 ms | 0.33 ms | 14.5 ms | 89 % | 7957 MB/s | 15.6 ms | 0 | 666 / 666 |
+| 4 × 4K | **UYVY** | 59.99 | 0 | 0.001 ms | 0.37 ms | 14.8 ms | 89 % | **3981 MB/s** | 15.9 ms | 0 | 666 / 666 |
 
 Memory stays flat at about 267 MB over a 40 s 4×4K run.
 
 How to read these numbers:
-- **GPU / frame** is measured while macOS scales the GPU clock down. It *rises* on lighter layouts, so read it as busy time at a reduced clock, not as the cost at full speed.
-- **Frame → sink latency** is from the frame tick to the sink accepting the frame. It includes up to one frame of in-flight queueing. It does not include NDI encoding, the network, or the receiver.
-- These numbers come from Apple silicon's unified memory, where a readback costs no PCIe transfer. A discrete GPU on Windows will behave differently, so that's the first thing to measure there.
+- **UYVY halves readback bandwidth.** The packing accuracy is checked by `tools/check_uyvy.py`: on pixel pairs of uniform colour (96.7 % of the test frame), the maximum error is 1 level.
+- **Tick lateness** is how late each frame starts compared with its schedule. Before the render thread used the macOS real-time policy, it averaged 3–4 ms (timer coalescing). See `engine/src/util/realtime.cpp`.
+- **GPU / frame and utilisation** are mostly the test pattern. Every frame it redraws all 33 MP of the 8K canvas with per-pixel digit drawing. A real NDI input replaces that with one texture upload. macOS also scales the GPU clock down, so these times are not full-speed costs.
+- **Frame → sink** is from the frame tick to the sink accepting the frame. It is mostly GPU execution time at the reduced clock. It does not include NDI encoding, the network, or the receiver.
+- These numbers come from Apple silicon's unified memory, where a readback costs no PCIe transfer. On a discrete GPU, readback is the cost UYVY halves, so that's the first thing to measure on Windows.
 
 ## Synchronisation: what is and isn't guaranteed
 
@@ -157,8 +172,7 @@ See [docs/SYNC.md](docs/SYNC.md). In short:
 
 ## Limitations / next steps
 
-- The Direct3D 11 backend and NDI integration need their first run on the Windows workstation.
-- Frames are sent as BGRA. Converting to UYVY on the GPU would halve readback and NDI-encode bandwidth. That's the main change for 4K60 × 4, see [docs/NEXT.md](docs/NEXT.md).
+- The Direct3D 11 backend and NDI integration need their first run on the Windows workstation (run `tools/bench.py` there). See [docs/NEXT.md](docs/NEXT.md).
 - No audio.
 - No video-file source.
 - No edge blending or warping.

@@ -16,6 +16,8 @@ struct Rect {
 
 enum class ScaleMode { Stretch, Fit, Fill };
 enum class SourceType { TestPattern, Ndi, Solid };
+// Wire format of an output. UYVY is NDI's native 4:2:2 format (half the bytes of BGRA).
+enum class PixelFormat { Uyvy, Bgra };
 
 struct SourceConfig {
     std::string id;
@@ -24,6 +26,7 @@ struct SourceConfig {
     std::string ndiName;                      // for SourceType::Ndi
     Rect rect;                                // placement on the canvas, in canvas pixels
     std::array<float, 4> color{0.f, 0.f, 0.f, 1.f};  // for SourceType::Solid
+    bool animated = true;                     // test pattern: false freezes the moving bar and frame counter
     bool enabled = true;
 };
 
@@ -36,6 +39,7 @@ struct OutputConfig {
     int rotation = 0;                         // 0, 90, 180, 270 (clockwise)
     ScaleMode scaleMode = ScaleMode::Stretch;
     std::string source = "canvas";            // "canvas" or a source id (crop is then in source pixels)
+    PixelFormat pixelFormat = PixelFormat::Uyvy;
     bool enabled = true;
 };
 
@@ -82,5 +86,6 @@ void patchOutput(OutputConfig& o, const nlohmann::json& patch);
 
 const char* toString(ScaleMode m);
 const char* toString(SourceType t);
+const char* toString(PixelFormat f);
 
 }  // namespace mosaic

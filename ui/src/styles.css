@@ -87,6 +87,7 @@ small, .muted { color: var(--muted); }
 .group > h3, .group > select { grid-column: 1 / -1; }
 .row { display: contents; }
 .row.buttons button { width: 100%; }
+.wide-note { grid-column: 1 / -1; }
 .seg { grid-column: 1 / -1; display: flex; }
 .seg button { flex: 1; border-radius: 0; }
 .seg button:first-child { border-radius: 5px 0 0 5px; }

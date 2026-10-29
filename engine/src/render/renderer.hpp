@@ -74,6 +74,8 @@ public:
     virtual void beginPass(TexId dst, const float* clearRGBA) = 0;
     virtual void drawTestPattern(const Uniforms&) = 0;
     virtual void drawTextured(TexId src, const Uniforms&) = 0;
+    // Packs src (W x H BGRA) into the pass target (W/2 x H) as UYVY 4:2:2.
+    virtual void drawUYVY(TexId src, const Uniforms&) = 0;
     virtual void endPass() = 0;
     virtual void copyToReadback(TexId src, ReadbackId dst, int slot) = 0;
     virtual void endFrame() = 0;

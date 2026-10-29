@@ -48,6 +48,27 @@ float3 mapOutputUV(float2 uv, uint rot, uint mode, float2 cropSize, float2 outSi
 }
 
 // ---------------------------------------------------------------------------
+// UYVY 4:2:2 packing (BT.709, limited range) - NDI's native video format
+// ---------------------------------------------------------------------------
+// Packs two horizontally adjacent pixels into one BGRA8 texel. A BGRA8 target
+// stores (b, g, r, a) in byte order, so returning (V, Y0, U, Y1) produces the
+// UYVY byte sequence U Y0 V Y1 in memory.
+float4 packUYVY(float3 a, float3 b) {
+    float3 k = float3(0.2126, 0.7152, 0.0722);
+    float ya = dot(a, k);
+    float yb = dot(b, k);
+    float3 c = (a + b) * 0.5;
+    float yc = dot(c, k);
+    float cb = (c.b - yc) / 1.8556;
+    float cr = (c.r - yc) / 1.5748;
+    float y0 = (16.0 + 219.0 * ya) / 255.0;
+    float y1 = (16.0 + 219.0 * yb) / 255.0;
+    float u = (128.0 + 224.0 * cb) / 255.0;
+    float v = (128.0 + 224.0 * cr) / 255.0;
+    return float4(v, y0, u, y1);
+}
+
+// ---------------------------------------------------------------------------
 // Test pattern
 // ---------------------------------------------------------------------------
 float3 hue(float h) {
@@ -206,6 +227,14 @@ fragment float4 ps_textured(VOut in [[stage_in]], constant Uniforms& u [[buffer(
     if (m.z < 0.5 || suv.x < 0.0 || suv.y < 0.0 || suv.x > 1.0 || suv.y > 1.0) return float4(u.bg.rgb, 1.0);
     return float4(tex.sample(smp, suv).rgb, 1.0);
 }
+
+// Target is half the source width; each texel packs source pixels 2x and 2x+1.
+fragment float4 ps_uyvy(VOut in [[stage_in]], texture2d<float> tex [[texture(0)]]) {
+    uint2 p = uint2(in.pos.xy);
+    float3 a = tex.read(uint2(p.x * 2u, p.y)).rgb;
+    float3 b = tex.read(uint2(p.x * 2u + 1u, p.y)).rgb;
+    return packUYVY(a, b);
+}
 )SHADER";
 
 // ---------------------------------------------------------------------------
@@ -232,6 +261,13 @@ float4 ps_textured(float4 pos : SV_Position) : SV_Target {
     float2 suv = (u.crop.xy + m.xy * u.crop.zw) / u.sizes.xy;
     if (m.z < 0.5 || suv.x < 0.0 || suv.y < 0.0 || suv.x > 1.0 || suv.y > 1.0) return float4(u.bg.rgb, 1.0);
     return float4(tex.Sample(smp, suv).rgb, 1.0);
+}
+
+float4 ps_uyvy(float4 pos : SV_Position) : SV_Target {
+    int2 p = int2(pos.xy);
+    float3 a = tex.Load(int3(p.x * 2, p.y, 0)).rgb;
+    float3 b = tex.Load(int3(p.x * 2 + 1, p.y, 0)).rgb;
+    return packUYVY(a, b);
 }
 )SHADER";
 

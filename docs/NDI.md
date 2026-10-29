@@ -40,8 +40,8 @@ expected, the fix stays inside `ndi_sdk.cpp`.
 
 ## How frames are submitted
 
-- **Send:** `NDIlib_send_send_video_async_v2` with `NDIlib_FourCC_video_type_BGRA`.
-  `p_data` points straight at the GPU readback buffer: a shared `MTLBuffer` on
+- **Send:** `NDIlib_send_send_video_async_v2` with `NDIlib_FourCC_video_type_UYVY` (the default, packed on the GPU)
+  or `..._BGRA` per output. `p_data` points straight at the GPU readback buffer: a shared `MTLBuffer` on
   macOS, or a mapped `STAGING` texture on Windows with `line_stride_in_bytes = RowPitch`.
   No CPU copy happens before NDI.
 - **Buffer lifetime:** with async sends, NDI may read the buffer until the *next*
@@ -61,8 +61,10 @@ expected, the fix stays inside `ndi_sdk.cpp`.
   thread uploads it into one of three rotating textures and frees it. When frames
   stop, the source shows "no signal (holding last frame)".
 
-## Bandwidth (why UYVY is the next step)
+## Bandwidth and UYVY
 
-A 3840×2160 BGRA frame is 33 MB. At 60 fps that's about 2 GB/s per output to read
-back, and about 8 GB/s for four 4K outputs, all of which NDI then has to encode.
-Converting to UYVY 4:2:2 on the GPU, in the output shader, halves both. See NEXT.md.
+A 3840×2160 BGRA frame is 33 MB. At 60 fps that's about 2 GB/s per output, and about 8 GB/s for four 4K outputs.
+The output pass now packs BT.709 limited-range UYVY 4:2:2 on the GPU (`ps_uyvy` in
+`render/shaders.hpp`). Measured at 4×4K, that halves the readback to 3.98 GB/s, and NDI
+receives its native format, so it does no colour conversion of its own. Set an output's
+`pixelFormat` to `bgra` to compare.

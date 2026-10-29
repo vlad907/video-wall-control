@@ -154,6 +154,18 @@ export function Inspector({
         </div>
       </div>
 
+      <div className="group">
+        <h3>Wire format</h3>
+        <div className="seg">
+          {(["uyvy", "bgra"] as const).map((f) => (
+            <button key={f} className={output.pixelFormat === f ? "on" : ""} onClick={() => onPatch({ pixelFormat: f })}>
+              {f === "uyvy" ? "UYVY 4:2:2" : "BGRA"}
+            </button>
+          ))}
+        </div>
+        <small className="wide-note">UYVY is NDI's native format and halves readback bandwidth.</small>
+      </div>
+
       <button className="danger" onClick={onDelete}>
         Remove output
       </button>

@@ -189,6 +189,19 @@ struct HttpApi::Impl {
             res.set_content(jpeg, "image/jpeg");
         }));
 
+        s.Get(R"(/api/outputs/([A-Za-z0-9_\-]+)/frame\.bgra)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::vector<uint8_t> bgra;
+            int w = 0, h = 0;
+            uint64_t frameId = 0;
+            if (!engine.snapshotBgra(req.matches[1], bgra, w, h, frameId))
+                return sendError(res, 503, "no frame (output missing, disabled or not sending)");
+            res.set_header("X-Width", std::to_string(w));
+            res.set_header("X-Height", std::to_string(h));
+            res.set_header("X-Frame-Id", std::to_string(frameId));
+            res.set_header("Cache-Control", "no-store");
+            res.set_content(std::string(bgra.begin(), bgra.end()), "application/octet-stream");
+        }));
+
         // ---- previews (low-res, ~10 fps while requested) ----
         s.Get(R"(/api/preview/([A-Za-z0-9_\-]+)\.jpg)", guard([this](const httplib::Request& req, httplib::Response& res) {
             std::string jpeg;

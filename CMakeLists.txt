@@ -79,6 +79,7 @@ set(ENGINE_SOURCES
   engine/src/io/null_sink.cpp
   engine/src/api/http_api.cpp
   engine/src/util/image.cpp
+  engine/src/util/realtime.cpp
 )
 if(MOSAIC_HAVE_NDI)
   list(APPEND ENGINE_SOURCES engine/src/io/ndi_sdk.cpp)
@@ -95,7 +96,8 @@ else()
 endif()
 
 add_executable(mosaic_engine ${ENGINE_SOURCES})
-target_include_directories(mosaic_engine PRIVATE engine/src ${stb_SOURCE_DIR})
+target_include_directories(mosaic_engine PRIVATE engine/src)
+target_include_directories(mosaic_engine SYSTEM PRIVATE ${stb_SOURCE_DIR})
 target_link_libraries(mosaic_engine PRIVATE nlohmann_json::nlohmann_json httplib::httplib)
 target_compile_definitions(mosaic_engine PRIVATE MOSAIC_VERSION="${PROJECT_VERSION}")
 
@@ -118,7 +120,7 @@ if(APPLE)
   target_link_libraries(mosaic_engine PRIVATE "-framework Metal" "-framework Foundation" "-framework IOKit" "-framework CoreFoundation" "-framework CFNetwork")
 elseif(WIN32)
   target_compile_definitions(mosaic_engine PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
-  target_link_libraries(mosaic_engine PRIVATE d3d11 dxgi d3dcompiler pdh ws2_32)
+  target_link_libraries(mosaic_engine PRIVATE d3d11 dxgi d3dcompiler pdh ws2_32 avrt winmm)
   if(MSVC)
     target_compile_options(mosaic_engine PRIVATE /W3 /utf-8 /permissive-)
   endif()

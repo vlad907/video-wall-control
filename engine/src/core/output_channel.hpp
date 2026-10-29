@@ -96,14 +96,18 @@ public:
     static constexpr int kSlots = 4;
     static constexpr size_t kMaxQueue = 2;
 
-    OutputChannel(std::string id, int width, int height, std::string ndiName, double fps,
+    OutputChannel(std::string id, int width, int height, std::string ndiName, double fps, bool uyvy,
                   Renderer& renderer, std::unique_ptr<VideoSink> sink);
     ~OutputChannel();
 
     const std::string id;
     const int width, height;
     const std::string ndiName;
-    TexId target() const { return target_; }
+    const bool uyvy;
+    TexId target() const { return target_; }        // full-size BGRA render target
+    TexId packed() const { return packed_; }        // W/2 x H UYVY target (uyvy only)
+    TexId readbackSource() const { return uyvy ? packed_ : target_; }
+    size_t bytesPerFrame() const { return static_cast<size_t>(width) * height * (uyvy ? 2 : 4); }
     ReadbackId readback() const { return readback_; }
     std::string sinkKind() const { return sink_->kind(); }
 
@@ -121,8 +125,8 @@ public:
     void destroyGpuResources();
 
     OutputMetrics metrics();
-    // Full-resolution BGRA copy of the next frame sent (for testing). Blocks up to timeoutMs.
-    bool snapshot(std::vector<uint8_t>& bgra, int& w, int& h, uint64_t& frameId, int timeoutMs);
+    // Copy of the next frame sent, in its wire format (tightly packed). Blocks up to timeoutMs.
+    bool snapshot(std::vector<uint8_t>& data, int& w, int& h, uint64_t& frameId, int timeoutMs);
 
     std::function<void(uint64_t frameId)> onDelivered;  // set before use
     std::function<void(uint64_t frameId)> onDropped;
@@ -138,7 +142,7 @@ private:
     Renderer& renderer_;
     std::unique_ptr<VideoSink> sink_;
     double fps_;
-    TexId target_ = 0;
+    TexId target_ = 0, packed_ = 0;
     ReadbackId readback_ = 0;
     SlotRing ring_{kSlots};
     std::vector<FrameMeta> meta_;

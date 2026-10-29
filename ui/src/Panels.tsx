@@ -211,6 +211,12 @@ export function MetricsPanel({ metrics }: { metrics: Metrics | null }) {
         <span>
           GPU util <b>{e.gpuUtilization >= 0 ? `${fmt(e.gpuUtilization, 0)}%` : "n/a"}</b>
         </span>
+        <span>
+          readback <b>{fmt(e.readbackMBps, 0)}</b> MB/s
+        </span>
+        <span className={e.tickJitterMs > 1 ? "warn" : ""}>
+          tick lateness <b>{fmt(e.tickJitterMs, 2)}</b> ms
+        </span>
         <span className={e.lateFrames ? "warn" : ""}>
           late <b>{e.lateFrames}</b>
         </span>
@@ -228,6 +234,7 @@ export function MetricsPanel({ metrics }: { metrics: Metrics | null }) {
             <th>Output</th>
             <th>Stream</th>
             <th>Sink</th>
+            <th>Format</th>
             <th>FPS</th>
             <th>Sent</th>
             <th>Dropped</th>
@@ -244,6 +251,7 @@ export function MetricsPanel({ metrics }: { metrics: Metrics | null }) {
               <td>{o.name}</td>
               <td>{o.ndiName}</td>
               <td>{o.sink}</td>
+              <td>{o.pixelFormat}</td>
               <td className={o.enabled && o.fps < e.targetFps * 0.97 ? "warn" : ""}>{fmt(o.fps)}</td>
               <td>{o.framesSent}</td>
               <td className={o.droppedNoBuffer + o.droppedQueue ? "warn" : ""}>

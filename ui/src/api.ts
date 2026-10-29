@@ -25,6 +25,7 @@ export interface Output {
   rotation: 0 | 90 | 180 | 270;
   scaleMode: ScaleMode;
   source: string;
+  pixelFormat: "uyvy" | "bgra";
   enabled: boolean;
 }
 
@@ -49,6 +50,7 @@ export interface OutputMetrics {
   name: string;
   ndiName: string;
   sink: string;
+  pixelFormat: string;
   enabled: boolean;
   width: number;
   height: number;
@@ -78,6 +80,8 @@ export interface Metrics {
     frameMs: number;
     frameMsMax: number;
     gpuUtilization: number;
+    readbackMBps: number;
+    tickJitterMs: number;
     lateFrames: number;
     ndi: string;
     layout: string;

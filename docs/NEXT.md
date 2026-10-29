@@ -2,6 +2,15 @@
 
 ## Milestone 2: four 4K60 NDI outputs on the Windows workstation
 
+Progress (done on macOS; the Windows run is pending):
+- [x] GPU UYVY 4:2:2 packing, now the default: readback halved (7.96 → 3.98 GB/s at 4×4K), accuracy verified
+- [x] Precise frame pacing and real-time / MMCSS thread priority: tick lateness 3–4 ms → 0.001 ms on macOS
+- [x] Sender threads at raised priority
+- [x] `tools/bench.py` (one-command benchmark) and `tools/check_uyvy.py`
+- [ ] First run on the Windows workstation (D3D11): `python tools\bench.py`
+- [ ] NDI SDK build, then 4×4K60 to NDI Studio Monitor on a second machine for 30 minutes
+- [ ] Glass-to-glass latency measurement
+
 1. **First Windows run** (see WINDOWS.md): Direct3D 11.4 with the null sink, 4 × 1080p
    then 4 × 4K, recording `renderFps`, `gpuMs`, `latencyMs` and drops.
    The aim is to confirm 33 MB/frame/output of PCIe readback is sustainable.

@@ -43,6 +43,8 @@ const char* toString(SourceType t) {
     }
 }
 
+const char* toString(PixelFormat f) { return f == PixelFormat::Bgra ? "bgra" : "uyvy"; }
+
 static ScaleMode scaleModeFrom(const std::string& s) {
     if (s == "fit") return ScaleMode::Fit;
     if (s == "fill") return ScaleMode::Fill;
@@ -79,6 +81,7 @@ void to_json(json& j, const SourceConfig& s) {
     j = json{{"id", s.id}, {"name", s.name}, {"type", toString(s.type)}, {"rect", s.rect}, {"enabled", s.enabled}};
     if (s.type == SourceType::Ndi) j["ndiName"] = s.ndiName;
     if (s.type == SourceType::Solid) j["color"] = s.color;
+    if (s.type == SourceType::TestPattern) j["animated"] = s.animated;
 }
 
 void from_json(const json& j, SourceConfig& s) {
@@ -89,13 +92,14 @@ void from_json(const json& j, SourceConfig& s) {
     if (j.contains("rect")) s.rect = j.at("rect").get<Rect>();
     if (j.contains("color")) s.color = j.at("color").get<std::array<float, 4>>();
     s.enabled = j.value("enabled", s.enabled);
+    s.animated = j.value("animated", s.animated);
 }
 
 void to_json(json& j, const OutputConfig& o) {
     j = json{{"id", o.id},           {"name", o.name},         {"ndiName", o.ndiName},
              {"width", o.width},     {"height", o.height},     {"crop", o.crop},
              {"rotation", o.rotation}, {"scaleMode", toString(o.scaleMode)},
-             {"source", o.source},   {"enabled", o.enabled}};
+             {"source", o.source},   {"pixelFormat", toString(o.pixelFormat)}, {"enabled", o.enabled}};
 }
 
 void from_json(const json& j, OutputConfig& o) {
@@ -116,6 +120,7 @@ void patchOutput(OutputConfig& o, const json& p) {
     o.rotation = p.value("rotation", o.rotation);
     if (p.contains("scaleMode")) o.scaleMode = scaleModeFrom(p.at("scaleMode").get<std::string>());
     o.source = p.value("source", o.source);
+    if (p.contains("pixelFormat")) o.pixelFormat = p.at("pixelFormat").get<std::string>() == "bgra" ? PixelFormat::Bgra : PixelFormat::Uyvy;
     o.enabled = p.value("enabled", o.enabled);
 }
 
@@ -185,6 +190,8 @@ std::vector<std::string> normalize(Layout& l) {
         ndiNames.insert(o.ndiName);
         o.width = clampDim(o.width);
         o.height = clampDim(o.height);
+        // UYVY packs pixel pairs, so the width must be even.
+        if (o.pixelFormat == PixelFormat::Uyvy && o.width % 2) o.width += 1;
         o.rotation = ((o.rotation % 360) + 360) % 360;
         o.rotation = (o.rotation / 90) * 90;
         if (o.crop.w <= 0 || o.crop.h <= 0) o.crop = {0, 0, o.width, o.height};

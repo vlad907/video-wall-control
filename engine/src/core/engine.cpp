@@ -6,6 +6,7 @@
 #include <iostream>
 
 #include "util/image.hpp"
+#include "util/realtime.hpp"
 
 using nlohmann::json;
 
@@ -102,6 +103,8 @@ void Engine::stop() {
 // ---------------------------------------------------------------------------
 
 void Engine::loop() {
+    raiseThreadPriority(ThreadRole::Render);
+    PreciseSleeper sleeper;
     auto next = Clock::now();
     while (running_) {
         auto layout = store_.active();
@@ -112,8 +115,9 @@ void Engine::loop() {
         targetFps_ = layout->frameRate;
         auto interval = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / layout->frameRate));
 
-        std::this_thread::sleep_until(next);
+        sleeper.sleepUntil(next);
         auto tick = Clock::now();
+        jitterMs_.add(msBetween(next, tick));  // how late the tick fired
         if (tick - next > interval) {
             // Fell behind by more than a frame: skip ahead instead of bursting.
             lateFrames_++;
@@ -213,7 +217,13 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
         renderer_.beginPass(ch->target(), layout.canvas.background.data());
         renderer_.drawTextured(src, u);
         renderer_.endPass();
-        renderer_.copyToReadback(ch->target(), ch->readback(), slot);
+        if (ch->uyvy) {
+            // Pack to UYVY on the GPU: half the readback bytes, and NDI's native format.
+            renderer_.beginPass(ch->packed(), nullptr);
+            renderer_.drawUYVY(ch->target(), makeUniforms(0, 0, float(ch->width / 2), float(ch->height)));
+            renderer_.endPass();
+        }
+        renderer_.copyToReadback(ch->readbackSource(), ch->readback(), slot);
         ++expected;
     }
 
@@ -248,10 +258,10 @@ void Engine::updateSources(const Layout& layout, uint64_t frameId, double second
         json st = {{"id", id}, {"type", toString(s.cfg.type)}, {"width", s.w}, {"height", s.h}};
         if (s.cfg.type == SourceType::TestPattern) {
             Uniforms u = makeUniforms(0, 0, float(s.w), float(s.h));
-            u.fparams[0] = static_cast<float>(seconds);
+            u.fparams[0] = s.cfg.animated ? static_cast<float>(seconds) : 0.f;
             u.fparams[1] = kTileW;
             u.fparams[2] = kTileH;
-            u.iparams[0] = static_cast<uint32_t>(frameId);
+            u.iparams[0] = s.cfg.animated ? static_cast<uint32_t>(frameId) : 0u;
             renderer_.beginPass(s.tex[0], nullptr);
             renderer_.drawTestPattern(u);
             renderer_.endPass();
@@ -443,7 +453,7 @@ void Engine::reconcile(const Layout& layout) {
         for (auto it = channels_.begin(); it != channels_.end();) {
             const OutputConfig* o = layout.findOutput(it->first);
             bool keep = o && o->width == it->second->width && o->height == it->second->height &&
-                        o->ndiName == it->second->ndiName;
+                        o->ndiName == it->second->ndiName && (o->pixelFormat == PixelFormat::Uyvy) == it->second->uyvy;
             if (keep) {
                 ++it;
             } else {
@@ -464,8 +474,8 @@ void Engine::reconcile(const Layout& layout) {
             if (channels_.count(o.id)) continue;
         }
         std::string kind;
-        auto ch = std::make_shared<OutputChannel>(o.id, o.width, o.height, o.ndiName, layout.frameRate, renderer_,
-                                                  makeSink(o.ndiName, kind));
+        auto ch = std::make_shared<OutputChannel>(o.id, o.width, o.height, o.ndiName, layout.frameRate,
+                                                  o.pixelFormat == PixelFormat::Uyvy, renderer_, makeSink(o.ndiName, kind));
         ch->onDelivered = [this](uint64_t f) { syncDelivered(f, true); };
         ch->onDropped = [this](uint64_t f) { syncDelivered(f, false); };
         std::lock_guard l(channelsMutex_);
@@ -489,10 +499,12 @@ json Engine::metrics() {
         for (auto& [id, ch] : channels_) chans.emplace_back(id, ch);
     }
     uint64_t minId = UINT64_MAX, maxId = 0;
+    double readbackBytesPerSec = 0;
     for (auto& o : layout->outputs) {
         auto it = std::find_if(chans.begin(), chans.end(), [&](auto& p) { return p.first == o.id; });
         if (it == chans.end()) continue;
         OutputMetrics m = it->second->metrics();
+        if (o.enabled) readbackBytesPerSec += double(it->second->bytesPerFrame()) * m.fps;
         if (o.enabled && m.sent > 0) {
             minId = std::min(minId, m.lastFrameId);
             maxId = std::max(maxId, m.lastFrameId);
@@ -501,6 +513,7 @@ json Engine::metrics() {
                            {"name", o.name},
                            {"ndiName", o.ndiName},
                            {"sink", it->second->sinkKind()},
+                           {"pixelFormat", it->second->uyvy ? "uyvy" : "bgra"},
                            {"enabled", o.enabled},
                            {"width", o.width},
                            {"height", o.height},
@@ -541,7 +554,10 @@ json Engine::metrics() {
               {"gpuMs", gpuMs_.value()},
               {"frameMs", frameMs_.value()},
               {"frameMsMax", frameMs_.takeMax()},
+              {"tickJitterMs", jitterMs_.value()},
+              {"tickJitterMsMax", jitterMs_.takeMax()},
               {"gpuUtilization", renderer_.gpuUtilization()},
+              {"readbackMBps", readbackBytesPerSec / 1e6},
               {"lateFrames", lateFrames_.load()},
               {"ndi", ndi_ ? ndi_->version() : "unavailable"},
               {"layout", layout->id},
@@ -581,6 +597,14 @@ bool Engine::previewJpeg(const std::string& target, std::string& jpeg) {
 }
 
 bool Engine::snapshotJpeg(const std::string& outputId, std::string& jpeg, uint64_t& frameId) {
+    std::vector<uint8_t> bgra;
+    int w = 0, h = 0;
+    if (!snapshotBgra(outputId, bgra, w, h, frameId)) return false;
+    jpeg = encodeJpegBGRA(bgra.data(), w, h, w * 4, 92);
+    return !jpeg.empty();
+}
+
+bool Engine::snapshotBgra(const std::string& outputId, std::vector<uint8_t>& bgra, int& w, int& h, uint64_t& frameId) {
     std::shared_ptr<OutputChannel> ch;
     {
         std::lock_guard l(channelsMutex_);
@@ -588,11 +612,11 @@ bool Engine::snapshotJpeg(const std::string& outputId, std::string& jpeg, uint64
         if (it == channels_.end()) return false;
         ch = it->second;
     }
-    std::vector<uint8_t> bgra;
-    int w = 0, h = 0;
-    if (!ch->snapshot(bgra, w, h, frameId, 1000)) return false;
-    jpeg = encodeJpegBGRA(bgra.data(), w, h, w * 4, 92);
-    return !jpeg.empty();
+    std::vector<uint8_t> data;
+    if (!ch->snapshot(data, w, h, frameId, 1000)) return false;
+    if (ch->uyvy) decodeUyvyToBgra(data.data(), w, h, w * 2, bgra);
+    else bgra.swap(data);
+    return true;
 }
 
 }  // namespace mosaic

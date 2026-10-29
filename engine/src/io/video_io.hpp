@@ -9,11 +9,14 @@
 
 namespace mosaic {
 
+enum class FrameFormat { BGRA, UYVY };
+
 // One rendered output frame, pointing straight at GPU readback memory.
 struct VideoFrameView {
-    const uint8_t* data = nullptr;  // BGRA, top row first
+    const uint8_t* data = nullptr;  // top row first
     int stride = 0;                 // bytes per row
-    int width = 0, height = 0;
+    int width = 0, height = 0;      // picture size in pixels
+    FrameFormat format = FrameFormat::BGRA;  // UYVY: 2 bytes per pixel (U Y0 V Y1)
     double fps = 60.0;
     uint64_t frameId = 0;           // engine frame the pixels were rendered in
     int64_t timecode = 0;           // 100 ns units; identical for every output of a frame

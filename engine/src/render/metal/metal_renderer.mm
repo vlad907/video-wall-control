@@ -41,6 +41,7 @@ public:
 
         patternPso_ = makePipeline(lib, @"ps_pattern");
         texturedPso_ = makePipeline(lib, @"ps_textured");
+        uyvyPso_ = makePipeline(lib, @"ps_uyvy");
 
         MTLSamplerDescriptor* sd = [MTLSamplerDescriptor new];
         sd.minFilter = MTLSamplerMinMagFilterLinear;
@@ -162,6 +163,7 @@ public:
     void drawTestPattern(const Uniforms& u) override { draw(patternPso_, nil, u); }
 
     void drawTextured(TexId src, const Uniforms& u) override { draw(texturedPso_, textures_.at(src), u); }
+    void drawUYVY(TexId src, const Uniforms& u) override { draw(uyvyPso_, textures_.at(src), u); }
 
     void endPass() override {
         [enc_ endEncoding];
@@ -251,7 +253,7 @@ private:
 
     id<MTLDevice> device_;
     id<MTLCommandQueue> queue_;
-    id<MTLRenderPipelineState> patternPso_, texturedPso_;
+    id<MTLRenderPipelineState> patternPso_, texturedPso_, uyvyPso_;
     id<MTLSamplerState> sampler_;
     dispatch_semaphore_t inflight_;
 

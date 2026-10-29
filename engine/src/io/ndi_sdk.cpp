@@ -49,7 +49,7 @@ public:
         NDIlib_video_frame_v2_t v;
         v.xres = f.width;
         v.yres = f.height;
-        v.FourCC = NDIlib_FourCC_video_type_BGRA;
+        v.FourCC = f.format == FrameFormat::UYVY ? NDIlib_FourCC_video_type_UYVY : NDIlib_FourCC_video_type_BGRA;
         v.frame_rate_N = static_cast<int>(std::lround(f.fps * 1000.0));
         v.frame_rate_D = 1000;
         v.picture_aspect_ratio = static_cast<float>(f.width) / static_cast<float>(f.height);

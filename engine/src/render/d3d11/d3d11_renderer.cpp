@@ -141,9 +141,11 @@ public:
         auto vs = compile(src, "vs_main", "vs_5_0");
         auto psPattern = compile(src, "ps_pattern", "ps_5_0");
         auto psTextured = compile(src, "ps_textured", "ps_5_0");
+        auto psUyvy = compile(src, "ps_uyvy", "ps_5_0");
         check(device_->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &vs_), "CreateVertexShader");
         check(device_->CreatePixelShader(psPattern->GetBufferPointer(), psPattern->GetBufferSize(), nullptr, &psPattern_), "CreatePixelShader");
         check(device_->CreatePixelShader(psTextured->GetBufferPointer(), psTextured->GetBufferSize(), nullptr, &psTextured_), "CreatePixelShader");
+        check(device_->CreatePixelShader(psUyvy->GetBufferPointer(), psUyvy->GetBufferSize(), nullptr, &psUyvy_), "CreatePixelShader");
 
         D3D11_BUFFER_DESC cb{};
         cb.ByteWidth = sizeof(Uniforms);
@@ -308,6 +310,7 @@ public:
 
     void drawTestPattern(const Uniforms& u) override { draw(psPattern_.Get(), nullptr, u); }
     void drawTextured(TexId src, const Uniforms& u) override { draw(psTextured_.Get(), textures_.at(src).srv.Get(), u); }
+    void drawUYVY(TexId src, const Uniforms& u) override { draw(psUyvy_.Get(), textures_.at(src).srv.Get(), u); }
 
     void endPass() override { ctx_->OMSetRenderTargets(0, nullptr, nullptr); }
 
@@ -467,7 +470,7 @@ private:
     std::string deviceName_ = "unknown adapter";
 
     ComPtr<ID3D11VertexShader> vs_;
-    ComPtr<ID3D11PixelShader> psPattern_, psTextured_;
+    ComPtr<ID3D11PixelShader> psPattern_, psTextured_, psUyvy_;
     ComPtr<ID3D11Buffer> cbuffer_;
     ComPtr<ID3D11SamplerState> sampler_;
     ComPtr<ID3D11RasterizerState> raster_;

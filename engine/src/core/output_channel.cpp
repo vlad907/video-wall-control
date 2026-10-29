@@ -2,14 +2,19 @@
 
 #include <cstring>
 
+#include "util/realtime.hpp"
+
 namespace mosaic {
 
-OutputChannel::OutputChannel(std::string id_, int w, int h, std::string ndi, double fps, Renderer& renderer,
-                             std::unique_ptr<VideoSink> sink)
-    : id(std::move(id_)), width(w), height(h), ndiName(std::move(ndi)), renderer_(renderer), sink_(std::move(sink)),
-      fps_(fps), meta_(kSlots) {
+OutputChannel::OutputChannel(std::string id_, int w, int h, std::string ndi, double fps, bool packUyvy,
+                             Renderer& renderer, std::unique_ptr<VideoSink> sink)
+    : id(std::move(id_)), width(w), height(h), ndiName(std::move(ndi)), uyvy(packUyvy), renderer_(renderer),
+      sink_(std::move(sink)), fps_(fps), meta_(kSlots) {
     target_ = renderer_.createTexture(width, height, TexUsage::RenderTarget);
-    readback_ = renderer_.createReadback(width, height, kSlots);
+    // UYVY: one BGRA8 texel carries two pixels, so the readback is half as wide.
+    int rbWidth = uyvy ? width / 2 : width;
+    if (uyvy) packed_ = renderer_.createTexture(rbWidth, height, TexUsage::RenderTarget);
+    readback_ = renderer_.createReadback(rbWidth, height, kSlots);
     thread_ = std::thread([this] { run(); });
 }
 
@@ -56,6 +61,7 @@ void OutputChannel::onReadback(int slot, const ReadbackView& view) {
 }
 
 void OutputChannel::run() {
+    raiseThreadPriority(ThreadRole::Sender);
     int held = -1;  // slot the sink may still be reading (async NDI)
     for (;;) {
         ReadyFrame f;
@@ -71,8 +77,9 @@ void OutputChannel::run() {
         VideoFrameView v;
         v.data = f.view.data;
         v.stride = f.view.stride;
-        v.width = f.view.width;
-        v.height = f.view.height;
+        v.width = width;
+        v.height = height;
+        v.format = uyvy ? FrameFormat::UYVY : FrameFormat::BGRA;
         v.fps = fps_;
         v.frameId = f.meta.frameId;
         v.timecode = f.meta.timecode;
@@ -84,10 +91,10 @@ void OutputChannel::run() {
         {
             std::lock_guard l(snapMutex_);
             if (snapWanted_) {
-                snapData_.resize(static_cast<size_t>(v.width) * v.height * 4);
+                size_t row = static_cast<size_t>(v.width) * (uyvy ? 2 : 4);
+                snapData_.resize(row * v.height);
                 for (int y = 0; y < v.height; ++y)
-                    std::memcpy(snapData_.data() + static_cast<size_t>(y) * v.width * 4,
-                                v.data + static_cast<size_t>(y) * v.stride, static_cast<size_t>(v.width) * 4);
+                    std::memcpy(snapData_.data() + y * row, v.data + static_cast<size_t>(y) * v.stride, row);
                 snapW_ = v.width;
                 snapH_ = v.height;
                 snapFrame_ = v.frameId;
@@ -132,7 +139,8 @@ void OutputChannel::destroyGpuResources() {
     drainReleases();
     renderer_.destroyReadback(readback_);
     renderer_.destroyTexture(target_);
-    readback_ = target_ = 0;
+    if (packed_) renderer_.destroyTexture(packed_);
+    readback_ = target_ = packed_ = 0;
 }
 
 OutputMetrics OutputChannel::metrics() {
