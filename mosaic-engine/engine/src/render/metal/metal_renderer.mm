@@ -275,7 +275,7 @@ private:
 
 }  // namespace
 
-std::unique_ptr<Renderer> createRenderer(std::string& error) {
+std::unique_ptr<Renderer> createRenderer(const RendererOptions&, std::string& error) {
     try {
         @autoreleasepool {
             return std::make_unique<MetalRenderer>();

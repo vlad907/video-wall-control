@@ -24,8 +24,14 @@ layout = {
 }
 
 def fetch(output):
-    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/outputs/{output}/frame.bgra") as r:
-        return int(r.headers["X-Width"]), int(r.headers["X-Height"]), r.read()
+    # Retry: a software GPU (WARP, in CI) can take a while to produce frames.
+    for _ in range(60):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/outputs/{output}/frame.bgra", timeout=10) as r:
+                return int(r.headers["X-Width"]), int(r.headers["X-Height"]), r.read()
+        except Exception:
+            time.sleep(0.5)
+    sys.exit(f"no frame from output {output}")
 
 with tempfile.TemporaryDirectory() as tmp:
     os.makedirs(f"{tmp}/layouts")
@@ -34,7 +40,6 @@ with tempfile.TemporaryDirectory() as tmp:
     proc = subprocess.Popen([ENGINE, "--data", f"{tmp}/data", "--layouts", f"{tmp}/layouts", "--port", str(PORT),
                              "--layout", "uyvy-check"], stderr=subprocess.DEVNULL)
     try:
-        time.sleep(2)
         w, h, a = fetch("bgra")
         w2, h2, b = fetch("uyvy")
     finally:

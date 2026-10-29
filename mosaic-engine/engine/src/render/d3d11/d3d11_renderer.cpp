@@ -25,6 +25,7 @@
 #include <cstring>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <deque>
 #include <mutex>
 #include <stdexcept>
@@ -113,10 +114,10 @@ private:
 
 class D3D11Renderer final : public Renderer {
 public:
-    D3D11Renderer() {
+    explicit D3D11Renderer(bool warp) {
         UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
         const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
-        check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels, 2, D3D11_SDK_VERSION,
+        check(D3D11CreateDevice(nullptr, warp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels, 2, D3D11_SDK_VERSION,
                                 &device_, nullptr, &ctx_),
               "D3D11CreateDevice");
 
@@ -492,9 +493,9 @@ private:
 
 }  // namespace
 
-std::unique_ptr<Renderer> createRenderer(std::string& error) {
+std::unique_ptr<Renderer> createRenderer(const RendererOptions& options, std::string& error) {
     try {
-        return std::make_unique<D3D11Renderer>();
+        return std::make_unique<D3D11Renderer>(options.softwareGpu);
     } catch (const std::exception& e) {
         error = e.what();
         return nullptr;

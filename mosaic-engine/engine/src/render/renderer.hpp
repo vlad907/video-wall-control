@@ -85,6 +85,12 @@ public:
     virtual void releaseSlot(ReadbackId, int slot) = 0;
 };
 
-std::unique_ptr<Renderer> createRenderer(std::string& error);
+struct RendererOptions {
+    // Windows: use WARP (the CPU rasterizer that ships with Windows) instead of
+    // a hardware GPU. For CI machines without a GPU; correctness only, not speed.
+    bool softwareGpu = false;
+};
+
+std::unique_ptr<Renderer> createRenderer(const RendererOptions& options, std::string& error);
 
 }  // namespace mosaic

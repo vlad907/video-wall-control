@@ -1,9 +1,10 @@
 // mosaic_engine: GPU NDI mosaic renderer with a REST API and web editor.
 //
 //   mosaic_engine [--port 8090] [--host 0.0.0.0] [--data ./data] [--layouts ./layouts]
-//                 [--ui ./ui/dist] [--run-seconds N] [--snapshot-dir DIR] [--layout ID]
+//                 [--ui ./ui/dist] [--run-seconds N] [--snapshot-dir DIR] [--layout ID] [--software-gpu]
 #include <atomic>
 #include <csignal>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -29,10 +30,13 @@ struct Options {
     fs::path data = "data", layouts = "layouts", ui = "ui/dist", snapshotDir;
     double runSeconds = 0;
     std::string layout;
+    bool softwareGpu = false;
 };
 
 Options parse(int argc, char** argv) {
     Options o;
+    // Also settable from the environment so test scripts don't need to pass it.
+    if (const char* env = std::getenv("MOSAIC_SOFTWARE_GPU")) o.softwareGpu = std::string(env) == "1";
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -47,9 +51,10 @@ Options parse(int argc, char** argv) {
         else if (a == "--run-seconds") o.runSeconds = std::stod(next());
         else if (a == "--snapshot-dir") o.snapshotDir = next();
         else if (a == "--layout") o.layout = next();
+        else if (a == "--software-gpu") o.softwareGpu = true;
         else if (a == "--help" || a == "-h") {
             std::cout << "usage: mosaic_engine [--port N] [--host ADDR] [--data DIR] [--layouts DIR] [--ui DIR]\n"
-                         "                     [--layout ID] [--run-seconds N] [--snapshot-dir DIR]\n";
+                         "                     [--layout ID] [--run-seconds N] [--snapshot-dir DIR] [--software-gpu]\n";
             std::exit(0);
         } else throw std::runtime_error("unknown option " + a);
     }
@@ -74,7 +79,9 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, onSignal);
 
     std::string err;
-    auto renderer = createRenderer(err);
+    RendererOptions ro;
+    ro.softwareGpu = opt.softwareGpu;
+    auto renderer = createRenderer(ro, err);
     if (!renderer) {
         std::cerr << "GPU init failed: " << err << "\n";
         return 1;

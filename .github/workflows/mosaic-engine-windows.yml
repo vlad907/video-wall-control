@@ -1,0 +1,66 @@
+# Builds the mosaic engine with MSVC on Windows and runs its Direct3D 11 path
+# on WARP (Windows' software rasterizer; CI machines have no GPU). This checks
+# that it compiles, that the HLSL compiles in D3DCompile, and that outputs map
+# correctly pixel-for-pixel. It does not measure real GPU speed or test NDI.
+name: mosaic-engine (Windows)
+
+on:
+  push:
+    paths:
+      - "mosaic-engine/**"
+      - ".github/workflows/mosaic-engine-windows.yml"
+  pull_request:
+    paths:
+      - "mosaic-engine/**"
+      - ".github/workflows/mosaic-engine-windows.yml"
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: mosaic-engine
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure (MSVC, no NDI SDK)
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build engine
+        run: cmake --build build --config Release --parallel
+
+      - name: Build editor
+        working-directory: mosaic-engine/ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Pixel checks on Direct3D 11 (WARP)
+        env:
+          MOSAIC_SOFTWARE_GPU: "1"
+        run: python tools/ci_check.py --engine build/Release/mosaic_engine.exe --out ci-out
+
+      - name: UYVY accuracy on Direct3D 11 (WARP)
+        env:
+          MOSAIC_SOFTWARE_GPU: "1"
+        run: |
+          python -m pip install --quiet numpy
+          python tools/check_uyvy.py build/Release/mosaic_engine.exe
+
+      - name: Upload snapshots and metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-warp-results
+          path: mosaic-engine/ci-out
+          if-no-files-found: warn
