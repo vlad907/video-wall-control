@@ -3,6 +3,10 @@
 A background service plus web dashboard for a 4-panel NDI mosaic driven by
 4 instances of **NDI Studio Monitor** on a Windows Mini PC.
 
+> This repo also contains [`mosaic-engine/`](mosaic-engine/), an experimental GPU mosaic
+> engine that cuts one NDI canvas into separate NDI outputs, to replace Resolume's
+> Advanced Output. It is independent of the dashboard below; see its own README.
+
 - Starts hidden at Windows logon (no console window on the wall)
 - Waits 10 s for the network and displays, then launches any missing Studio Monitor
   instances 2 s apart so they bind to ports 80, 81, 82 and 83

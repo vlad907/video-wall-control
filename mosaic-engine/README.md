@@ -37,8 +37,8 @@ Requirements: Windows 10 1703+ or 11, Visual Studio 2022 (Desktop C++ workload),
 CMake 3.24+, Node.js 18+, Git, and optionally the NDI 6 SDK.
 
 ```powershell
-git clone <this repo> ndi-mosaic-engine
-cd ndi-mosaic-engine
+git clone https://github.com/vlad907/video-wall-control.git
+cd video-wall-control\mosaic-engine
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DNDI_SDK_DIR="C:/Program Files/NDI/NDI 6 SDK"
 cmake --build build --config Release
 cd ui && npm ci && npm run build && cd ..
