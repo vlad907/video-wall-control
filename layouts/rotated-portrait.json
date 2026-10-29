@@ -1,0 +1,99 @@
+{
+  "id": "rotated-portrait",
+  "name": "Rotated - two portrait displays beside a landscape pair",
+  "frameRate": 60,
+  "canvas": {
+    "width": 6000,
+    "height": 2160,
+    "background": [
+      0,
+      0,
+      0,
+      1
+    ]
+  },
+  "sources": [
+    {
+      "id": "pattern",
+      "name": "Test pattern",
+      "type": "test_pattern",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 6000,
+        "h": 2160
+      },
+      "enabled": true
+    }
+  ],
+  "outputs": [
+    {
+      "id": "out-1",
+      "name": "Portrait left (panel mounted 90 deg counter-clockwise)",
+      "ndiName": "Mosaic_Output_01",
+      "width": 1920,
+      "height": 1080,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "w": 1080,
+        "h": 1920
+      },
+      "rotation": 90,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true
+    },
+    {
+      "id": "out-2",
+      "name": "Landscape top",
+      "ndiName": "Mosaic_Output_02",
+      "width": 1920,
+      "height": 1080,
+      "crop": {
+        "x": 1080,
+        "y": 0,
+        "w": 3840,
+        "h": 1080
+      },
+      "rotation": 0,
+      "scaleMode": "fit",
+      "source": "canvas",
+      "enabled": true
+    },
+    {
+      "id": "out-3",
+      "name": "Landscape bottom",
+      "ndiName": "Mosaic_Output_03",
+      "width": 1920,
+      "height": 1080,
+      "crop": {
+        "x": 1080,
+        "y": 1080,
+        "w": 3840,
+        "h": 1080
+      },
+      "rotation": 0,
+      "scaleMode": "fit",
+      "source": "canvas",
+      "enabled": true
+    },
+    {
+      "id": "out-4",
+      "name": "Portrait right (panel mounted 90 deg clockwise)",
+      "ndiName": "Mosaic_Output_04",
+      "width": 1920,
+      "height": 1080,
+      "crop": {
+        "x": 4920,
+        "y": 0,
+        "w": 1080,
+        "h": 1920
+      },
+      "rotation": 270,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true
+    }
+  ]
+}
