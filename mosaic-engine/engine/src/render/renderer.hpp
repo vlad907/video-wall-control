@@ -28,8 +28,9 @@ struct alignas(16) Uniforms {
     float bg[4];       // background / letterbox colour (RGBA)
     float fparams[4];  // time (s), tile width, tile height, opacity (drawTextured; blended over the target)
     uint32_t iparams[4];  // frame id, rotation (deg), scale mode, flags
+    float xform[4];    // cos, sin of the crop's free angle (clockwise about its centre), unused, unused
 };
-static_assert(sizeof(Uniforms) == 96, "Uniforms layout must match shaders");
+static_assert(sizeof(Uniforms) == 112, "Uniforms layout must match shaders");
 
 // A finished GPU->CPU copy. `data` stays valid until releaseSlot() for it.
 struct ReadbackView {

@@ -39,7 +39,8 @@ struct OutputConfig {
     std::string ndiName;                      // published NDI stream name
     int width = 1920, height = 1080;          // output resolution
     Rect crop;                                // region of the sampled image, in its pixels
-    int rotation = 0;                         // 0, 90, 180, 270 (clockwise)
+    int rotation = 0;                         // 0, 90, 180, 270 (clockwise): how the panel is mounted
+    float angle = 0.f;                        // free tilt of the crop on the canvas, degrees clockwise about its centre
     ScaleMode scaleMode = ScaleMode::Stretch;
     std::string source = "canvas";            // "canvas" or a source id (crop is then in source pixels)
     PixelFormat pixelFormat = PixelFormat::Uyvy;

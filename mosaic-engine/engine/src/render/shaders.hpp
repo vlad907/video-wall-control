@@ -17,6 +17,7 @@ struct Uniforms {
     float4 bg;        // background colour
     float4 fparams;   // time, tile w, tile h, opacity (textured draws)
     uint4  iparams;   // frame id, rotation, scale mode, flags
+    float4 xform;     // cos, sin of the crop's free angle, -, -
 };
 
 // ---------------------------------------------------------------------------
@@ -49,9 +50,13 @@ float3 mapOutputUV(float2 uv, uint rot, uint mode, float2 cropSize, float2 outSi
 
 // Where output position uv (0..1) samples the source: xy is the texture
 // coordinate, z is 1 inside the picture and 0 in letterbox / outside the source.
-float3 outputSampleUV(float2 uv, uint rot, uint mode, float4 crop, float2 srcSize, float2 outSize) {
+// The crop rectangle is tilted by its free angle (cs = cos, sin) about its centre,
+// clockwise on screen, for panels mounted at an angle.
+float3 outputSampleUV(float2 uv, uint rot, uint mode, float4 crop, float2 srcSize, float2 outSize, float2 cs) {
     float3 m = mapOutputUV(uv, rot, mode, crop.zw, outSize);
-    float2 suv = (crop.xy + m.xy * crop.zw) / srcSize;
+    float2 local = (m.xy - 0.5) * crop.zw;  // pixels from the crop's centre
+    float2 p = crop.xy + crop.zw * 0.5 + float2(local.x * cs.x - local.y * cs.y, local.x * cs.y + local.y * cs.x);
+    float2 suv = p / srcSize;
     float ok = (m.z > 0.5 && suv.x >= 0.0 && suv.y >= 0.0 && suv.x <= 1.0 && suv.y <= 1.0) ? 1.0 : 0.0;
     return float3(suv.x, suv.y, ok);
 }
@@ -230,7 +235,7 @@ fragment float4 ps_pattern(VOut in [[stage_in]], constant Uniforms& u [[buffer(0
 // Colour of the output at uv (0..1): the mapped source pixel, or the background.
 float3 outColor(float2 uv, constant Uniforms& u, texture2d<float> tex, sampler smp) {
     if ((u.iparams.w & 1u) != 0u) return u.bg.rgb;  // solid colour
-    float3 s = outputSampleUV(uv, u.iparams.y, u.iparams.z, u.crop, u.sizes.xy, u.sizes.zw);
+    float3 s = outputSampleUV(uv, u.iparams.y, u.iparams.z, u.crop, u.sizes.xy, u.sizes.zw, u.xform.xy);
     return s.z > 0.5 ? tex.sample(smp, s.xy, level(0)).rgb : u.bg.rgb;  // no mips; explicit LOD keeps it valid in branches
 }
 
@@ -271,7 +276,7 @@ float4 ps_pattern(float4 pos : SV_Position) : SV_Target {
 
 float3 outColor(float2 uv) {
     if ((u.iparams.w & 1u) != 0u) return u.bg.rgb;
-    float3 s = outputSampleUV(uv, u.iparams.y, u.iparams.z, u.crop, u.sizes.xy, u.sizes.zw);
+    float3 s = outputSampleUV(uv, u.iparams.y, u.iparams.z, u.crop, u.sizes.xy, u.sizes.zw, u.xform.xy);
     return s.z > 0.5 ? tex.SampleLevel(smp, s.xy, 0).rgb : u.bg.rgb;
 }
 

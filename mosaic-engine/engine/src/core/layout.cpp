@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <set>
 
@@ -103,7 +104,7 @@ void from_json(const json& j, SourceConfig& s) {
 void to_json(json& j, const OutputConfig& o) {
     j = json{{"id", o.id},           {"name", o.name},         {"ndiName", o.ndiName},
              {"width", o.width},     {"height", o.height},     {"crop", o.crop},
-             {"rotation", o.rotation}, {"scaleMode", toString(o.scaleMode)},
+             {"rotation", o.rotation}, {"angle", o.angle}, {"scaleMode", toString(o.scaleMode)},
              {"source", o.source},   {"pixelFormat", toString(o.pixelFormat)}, {"enabled", o.enabled}};
     if (!o.group.empty()) j["group"] = o.group;
 }
@@ -124,6 +125,7 @@ void patchOutput(OutputConfig& o, const json& p) {
         o.crop = r;
     }
     o.rotation = p.value("rotation", o.rotation);
+    o.angle = p.value("angle", o.angle);
     if (p.contains("scaleMode")) o.scaleMode = scaleModeFrom(p.at("scaleMode").get<std::string>());
     o.source = p.value("source", o.source);
     if (p.contains("pixelFormat")) o.pixelFormat = pixelFormatFrom(p.at("pixelFormat").get<std::string>());
@@ -240,6 +242,8 @@ std::vector<std::string> normalize(Layout& l) {
         if (o.pixelFormat == PixelFormat::Uyvy && o.width % 2) o.width += 1;
         o.rotation = ((o.rotation % 360) + 360) % 360;
         o.rotation = (o.rotation / 90) * 90;
+        if (!std::isfinite(o.angle)) o.angle = 0.f;
+        o.angle = std::remainder(o.angle, 360.f);  // -180..180
         if (o.crop.w <= 0 || o.crop.h <= 0) o.crop = {0, 0, o.width, o.height};
         o.crop.w = clampDim(o.crop.w);
         o.crop.h = clampDim(o.crop.h);
@@ -326,6 +330,7 @@ void applyWall(Layout& l, WallConfig w) {
             o.width = w.outputWidth;
             o.height = w.outputHeight;
             o.rotation = w.rotation;
+            o.angle = 0.f;
             o.scaleMode = ScaleMode::Stretch;
             o.source = "canvas";
             o.pixelFormat = w.pixelFormat;

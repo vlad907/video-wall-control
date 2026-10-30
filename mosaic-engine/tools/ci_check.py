@@ -4,6 +4,7 @@
 Runs the engine on a frozen test pattern and checks real pixels:
   - every output's corner markers have the right colours in the right corners
   - a 90-degree output has its corners rotated clockwise
+  - a free angle tilts the sampled region about its centre
   - PATCHing an output's crop over the REST API changes what it renders
   - a half-transparent source blends over the one below it
   - scenes recall, and crossfade when asked to
@@ -121,6 +122,22 @@ with tempfile.TemporaryDirectory() as tmp:
         # Clockwise: the source's bottom-left becomes the top-left, top-left becomes top-right.
         for k, want in {"TL": BLUE, "TR": RED, "BR": GREEN, "BL": WHITE}.items():
             check(close(c[k], want), f"out-5 {k} marker {c[k]} ~ {want}")
+
+        print("free angle (tilted panels):", flush=True)
+        centre = (960, 540)
+        straight = pixel(frame("out-1"), *centre)
+        call("PATCH", "/api/outputs/out-1", {"angle": 180})
+        time.sleep(1.0)
+        c = corners(frame("out-1"))
+        for k, want in {"TL": WHITE, "TR": BLUE, "BL": GREEN, "BR": RED}.items():
+            check(close(c[k], want), f"angle 180: out-1 {k} marker {c[k]} ~ {want}")
+        call("PATCH", "/api/outputs/out-1", {"angle": 12.5})
+        time.sleep(1.0)
+        img = frame("out-1")
+        check(close(pixel(img, *centre), straight, 30), f"angle 12.5: centre pixel stays {pixel(img, *centre)} ~ {straight}")
+        check(not close(pixel(img, 60, 60), RED, 48), "angle 12.5: the corner marker moved away from the corner")
+        call("PATCH", "/api/outputs/out-1", {"angle": 0})
+        time.sleep(1.0)
 
         print("live crop change over REST:", flush=True)
         probe = [(330, 330), (1500, 330), (330, 800), (1500, 800)]  # inside grid cells: the tile's own colour

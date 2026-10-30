@@ -27,6 +27,7 @@ in the style of Resolume's Advanced Output drives the running engine through a R
 | Direct3D 11 backend (Windows) | **Working on Windows hardware** (AMD Radeon 610M): a 2-hour run with an NDI input and 4 NDI outputs, no tearing seen. CI builds it with MSVC and pixel-checks it on WARP on every push. |
 | NDI send / receive / discovery | **Working on Windows** with the NDI 6 SDK; streams play in NDI Studio Monitor. See [docs/NDI.md](docs/NDI.md). |
 | Video wall tool (grid of panels, bezel gaps in px or mm, portrait panels) | **Working, pixel-checked** (`tools/ci_check.py`) |
+| Free-form mosaics: any position, gap and tilt angle per panel | **Working, pixel-checked**; rotate handle and `[` `]` keys in the editor |
 | Layered sources with opacity and source crop; scenes with crossfade | **Working, pixel-checked** on Metal; checked on Direct3D 11 by CI |
 | Starts at boot with the video-wall dashboard, restarted if it stops | **Working** (tested on macOS with mock Studio Monitors) |
 | 24 outputs (6 × 4 wall of 1080p) | **Measured**: 60 fps, no drops, on Apple M4 with the null sink. Not yet measured with real NDI or on Windows. |
@@ -96,7 +97,8 @@ Example layouts are in [layouts/](layouts):
 
 Output fields: `id`, `name`, `ndiName`, `width`/`height` (output resolution), `pixelFormat` (`uyvy`, the default, or `bgra`), `crop`
 (region in canvas pixels, or in source pixels when `source` is a source id),
-`rotation` (0/90/180/270, clockwise), `scaleMode` (`stretch` | `fit` | `fill`),
+`rotation` (0/90/180/270, clockwise: how the panel is mounted), `angle` (free tilt in degrees,
+clockwise, of the crop about its centre: for panels hung at an angle), `scaleMode` (`stretch` | `fit` | `fill`),
 `source` (`"canvas"` or a source id), `enabled`, and `group` (`"wall"` for outputs made by the wall tool).
 
 Source fields: `id`, `name`, `type` (`test_pattern`, `ndi`, `solid`), `ndiName`, `rect` (where it sits
@@ -114,6 +116,14 @@ width plus the gap between pictures; it converts using the panel's pixel pitch).
 stay straight across panels. It can also resize the canvas to fit. Running it again keeps
 each `out-N`'s NDI stream name, so receivers don't need re-pointing. Outputs that aren't
 part of the wall are left alone.
+
+**Mosaics with angles and uneven gaps.** Each output is placed independently, so gaps can
+be anything: start from the wall tool (or add outputs by hand) and drag each region onto
+where its panel really is. For a tilted panel, drag the round handle above the selected region,
+type the tilt in the inspector, or press `[` / `]` (0.1°; with Shift, 1°). The region turns about
+its centre on the canvas, and the output counter-rotates the picture so that, on the tilted panel,
+the content lines up with its neighbours. Measure each panel's position and angle on the real
+wall (or from a photo) and enter them; resizing a tilted region keeps the opposite edge in place.
 
 **Layering.** Every source has a position, an optional crop, and an opacity. Use *Edit sources*
 in the top bar to drag them on the canvas. Translucent sources are alpha-blended over the

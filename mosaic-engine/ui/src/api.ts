@@ -26,6 +26,7 @@ export interface Output {
   height: number;
   crop: Rect;
   rotation: 0 | 90 | 180 | 270;
+  angle: number; // free tilt of the crop on the canvas, degrees clockwise
   scaleMode: ScaleMode;
   source: string;
   pixelFormat: "uyvy" | "bgra";

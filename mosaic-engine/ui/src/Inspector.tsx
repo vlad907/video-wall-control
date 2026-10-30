@@ -11,11 +11,24 @@ const RESOLUTIONS: [string, number, number][] = [
 ];
 
 // Number field that commits on blur / Enter, so typing doesn't spam the engine.
-export function NumberField({ label, value, onCommit, min = 0 }: { label: string; value: number; onCommit: (v: number) => void; min?: number }) {
+export function NumberField({
+  label,
+  value,
+  onCommit,
+  min = 0,
+  decimals = 0,
+}: {
+  label: string;
+  value: number;
+  onCommit: (v: number) => void;
+  min?: number;
+  decimals?: number;
+}) {
   const [text, setText] = useState(String(value));
   useEffect(() => setText(String(value)), [value]);
   const commit = () => {
-    const v = Math.round(Number(text));
+    const f = 10 ** decimals;
+    const v = Math.round(Number(text) * f) / f;
     if (Number.isFinite(v) && v >= min && v !== value) onCommit(v);
     else setText(String(value));
   };
@@ -145,6 +158,12 @@ export function Inspector({
             </button>
           ))}
         </div>
+        <NumberField label="Tilt (° clockwise)" value={+(output.angle ?? 0).toFixed(2)} min={-360} decimals={2} onCommit={(angle) => onPatch({ angle })} />
+        <div className="row buttons">
+          <button onClick={() => onPatch({ angle: Math.round(((output.angle ?? 0) - 0.5) * 100) / 100 })}>↺ 0.5°</button>
+          <button onClick={() => onPatch({ angle: Math.round(((output.angle ?? 0) + 0.5) * 100) / 100 })}>↻ 0.5°</button>
+        </div>
+        <small className="wide-note muted">Tilt matches a panel mounted at an angle; mount rotation above is for portrait panels.</small>
         <div className="seg">
           {(["stretch", "fit", "fill"] as const).map((m) => (
             <button key={m} className={output.scaleMode === m ? "on" : ""} onClick={() => onPatch({ scaleMode: m })}>

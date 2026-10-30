@@ -64,6 +64,7 @@ Uniforms makeUniforms(float dx, float dy, float dw, float dh) {
     u.sizes[3] = dh;
     u.bg[3] = 1.f;
     u.fparams[3] = 1.f;  // opaque
+    u.xform[0] = 1.f;    // no tilt
     return u;
 }
 }  // namespace
@@ -235,7 +236,6 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
         view_ = {canvas_, float(canvasW_), float(canvasH_)};
         renderCanvas(layout, needed, tick);
     }
-    const float kx = view_.w / float(canvasW_), ky = view_.h / float(canvasH_);
 
     // Outputs: each samples the canvas (or one source) into its own target.
     int64_t timecode = std::chrono::duration_cast<std::chrono::nanoseconds>(tick - start_).count() / 100;
@@ -258,9 +258,10 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
             ch->countNoSlotDrop();
             continue;
         }
+        // Crop is in canvas pixels; the view's texture covers exactly the canvas
+        // (whatever its own resolution), so normalise by the canvas size.
         TexId src = view_.tex;
-        float sw = view_.w, sh = view_.h;
-        float cx = kx, cy = ky;  // canvas pixels -> sampled texture pixels
+        float sw = float(canvasW_), sh = float(canvasH_);
         bool solid = false;
         if (o->source != "canvas") {
             auto it = sources_.find(o->source);
@@ -268,16 +269,18 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
                 src = it->second.tex[it->second.current];
                 sw = float(it->second.w);
                 sh = float(it->second.h);
-                cx = cy = 1.f;
             } else {
                 solid = true;
             }
         }
         Uniforms u = makeUniforms(0, 0, float(ch->width), float(ch->height));
-        u.crop[0] = float(o->crop.x) * cx;
-        u.crop[1] = float(o->crop.y) * cy;
-        u.crop[2] = float(o->crop.w) * cx;
-        u.crop[3] = float(o->crop.h) * cy;
+        u.crop[0] = float(o->crop.x);
+        u.crop[1] = float(o->crop.y);
+        u.crop[2] = float(o->crop.w);
+        u.crop[3] = float(o->crop.h);
+        const float rad = o->angle * 3.14159265f / 180.f;
+        u.xform[0] = std::cos(rad);
+        u.xform[1] = std::sin(rad);
         u.sizes[0] = sw;
         u.sizes[1] = sh;
         std::copy(layout.canvas.background.begin(), layout.canvas.background.end(), u.bg);

@@ -38,7 +38,7 @@ export function App() {
   }, [reload]);
 
   // Drag edits are throttled to ~20 updates/s; the final one always goes out.
-  const pending = useRef<{ kind: EditMode; id: string; rect: Rect } | null>(null);
+  const pending = useRef<{ kind: EditMode; id: string; rect?: Rect; angle?: number } | null>(null);
   const lastSent = useRef(0);
   const timer = useRef<number | undefined>(undefined);
   const flush = useCallback(() => {
@@ -46,7 +46,8 @@ export function App() {
     pending.current = null;
     lastSent.current = performance.now();
     if (!p) return;
-    if (p.kind === "outputs") api.patchOutput(p.id, { crop: p.rect }).catch(onError);
+    if (p.angle !== undefined) api.patchOutput(p.id, { angle: p.angle }).catch(onError);
+    else if (p.kind === "outputs") api.patchOutput(p.id, { crop: p.rect }).catch(onError);
     else api.patchSource(p.id, { rect: p.rect }).catch(onError);
   }, [onError]);
 
@@ -60,6 +61,18 @@ export function App() {
             : { ...l, sources: l.sources.map((s) => (s.id === id ? { ...s, rect } : s)) },
       );
       pending.current = { kind, id, rect };
+      window.clearTimeout(timer.current);
+      const wait = 50 - (performance.now() - lastSent.current);
+      if (final || wait <= 0) flush();
+      else timer.current = window.setTimeout(flush, wait);
+    },
+    [flush],
+  );
+
+  const onAngleChange = useCallback(
+    (id: string, angle: number, final: boolean) => {
+      setLayout((l) => (l ? { ...l, outputs: l.outputs.map((o) => (o.id === id ? { ...o, angle } : o)) } : l));
+      pending.current = { kind: "outputs", id, angle };
       window.clearTimeout(timer.current);
       const wait = 50 - (performance.now() - lastSent.current);
       if (final || wait <= 0) flush();
@@ -99,11 +112,19 @@ export function App() {
     if (id) (setMode("sources"), setWallOpen(false));
   }, []);
 
-  // Arrow keys nudge the selected rectangle (Shift = 10 px).
+  // Arrow keys nudge the selected rectangle (Shift = 10 px); [ and ] tilt an output (0.1°, Shift 1°).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       if (!layout || tag === "INPUT" || tag === "SELECT") return;
+      const tilt = e.code === "BracketLeft" ? -1 : e.code === "BracketRight" ? 1 : 0;
+      const out = layout.outputs.find((x) => x.id === selectedId);
+      if (tilt && mode === "outputs" && out) {
+        e.preventDefault();
+        const a = Math.round(((out.angle ?? 0) + tilt * (e.shiftKey ? 1 : 0.1)) * 10) / 10;
+        onAngleChange(out.id, a, true);
+        return;
+      }
       const d = e.shiftKey ? 10 : 1;
       const delta: Record<string, [number, number]> = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, -d], ArrowDown: [0, d] };
       if (!delta[e.key]) return;
@@ -117,7 +138,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [layout, mode, selectedId, sourceId, onRectChange]);
+  }, [layout, mode, selectedId, sourceId, onRectChange, onAngleChange]);
 
   const onCanvasRect = useCallback((id: string, rect: Rect, final: boolean) => onRectChange(mode, id, rect, final), [mode, onRectChange]);
 
@@ -238,6 +259,7 @@ export function App() {
         <div className="canvas-info">
           Canvas {layout.canvas.width} × {layout.canvas.height} ·{" "}
           {mode === "outputs" ? "editing what each display shows" : "editing where each source sits"} · drag to move, drag handles to resize, arrow keys nudge
+          {mode === "outputs" ? ", round handle or [ ] tilts" : ""}
         </div>
         <CanvasEditor
           layout={layout}
@@ -246,6 +268,7 @@ export function App() {
           snap={snap}
           onSelect={mode === "outputs" ? selectOutput : selectSource}
           onRectChange={onCanvasRect}
+          onAngleChange={onAngleChange}
         />
       </main>
       <aside className="right">{right}</aside>
