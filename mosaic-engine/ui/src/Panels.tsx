@@ -26,12 +26,20 @@ export function LayoutBar({
 
   const run = (p: Promise<unknown>) => p.then(() => (refresh(), onChanged())).catch(onError);
   const presets: [string, number, number][] = [
-    ["3840 × 2160", 3840, 2160],
-    ["7680 × 4320", 7680, 4320],
-    ["15360 × 2160", 15360, 2160],
-    ["7680 × 2160", 7680, 2160],
+    ["4K UHD · 3840 × 2160", 3840, 2160],
+    ["8K UHD · 7680 × 4320 (2×2 of 4K)", 7680, 4320],
+    ["2 × 4K side by side · 7680 × 2160", 7680, 2160],
+    ["4 × 4K in a row · 15360 × 2160", 15360, 2160],
   ];
   const canvasKey = `${layout.canvas.width}x${layout.canvas.height}`;
+  // Sources that covered the whole old canvas keep covering it (as the wall tool does).
+  const resizeCanvas = (width: number, height: number) => {
+    const { width: ow, height: oh } = layout.canvas;
+    const sources = layout.sources.map((s) =>
+      s.rect.x === 0 && s.rect.y === 0 && s.rect.w === ow && s.rect.h === oh ? { ...s, rect: { x: 0, y: 0, w: width, h: height } } : s,
+    );
+    run(api.putLayout({ canvas: { ...layout.canvas, width, height }, sources }));
+  };
 
   return (
     <header className="topbar">
@@ -78,11 +86,11 @@ export function LayoutBar({
           value={presets.some(([, w, h]) => `${w}x${h}` === canvasKey) ? canvasKey : "custom"}
           onChange={(e) => {
             const p = presets.find(([, w, h]) => `${w}x${h}` === e.target.value);
-            if (p) run(api.putLayout({ canvas: { ...layout.canvas, width: p[1], height: p[2] } }));
+            if (p) resizeCanvas(p[1], p[2]);
             else {
               const v = prompt("Canvas size (W x H):", `${layout.canvas.width}x${layout.canvas.height}`);
               const m = v?.match(/(\d+)\s*[x×]\s*(\d+)/);
-              if (m) run(api.putLayout({ canvas: { ...layout.canvas, width: +m[1], height: +m[2] } }));
+              if (m) resizeCanvas(+m[1], +m[2]);
             }
           }}
         >
