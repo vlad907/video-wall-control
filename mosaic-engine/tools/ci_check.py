@@ -5,6 +5,9 @@ Runs the engine on a frozen test pattern and checks real pixels:
   - every output's corner markers have the right colours in the right corners
   - a 90-degree output has its corners rotated clockwise
   - PATCHing an output's crop over the REST API changes what it renders
+  - a half-transparent source blends over the one below it
+  - scenes recall, and crossfade when asked to
+  - the wall tool generates outputs with bezel gaps and resizes the canvas
   - every rendered frame reached every output (no partial frames)
 
     python tools/ci_check.py [--engine PATH] [--out DIR]
@@ -56,6 +59,12 @@ def check(cond, msg):
 def get(path, timeout=10):
     with urllib.request.urlopen(BASE + path, timeout=timeout) as r:
         return r.headers, r.read()
+
+def call(method, path, body=None):
+    data = json.dumps(body).encode() if body is not None else b"{}"
+    req = urllib.request.Request(BASE + path, method=method, data=data, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read() or b"null")
 
 def frame(oid):
     for _ in range(30):  # WARP can be slow to produce the first frames
@@ -125,6 +134,45 @@ with tempfile.TemporaryDirectory() as tmp:
         time.sleep(1.5)
         after = [pixel(frame("out-1"), x, y) for x, y in probe]
         check(all(close(a, b, 10) for a, b in zip(after, target)), f"out-1 now matches out-2 {after} ~ {target}")
+
+        print("source opacity (alpha blending):", flush=True)
+        spot = (330, 330)
+        base = pixel(frame("out-1"), *spot)
+        red = call("POST", "/api/sources", {"name": "red", "type": "solid", "color": [1, 0, 0, 1], "opacity": 0.5})
+        time.sleep(1.0)
+        got = pixel(frame("out-1"), *spot)
+        want = tuple(round(0.5 * a + 0.5 * b) for a, b in zip(base, (255, 0, 0)))
+        check(close(got, want, 12), f"50% red over the pattern {got} ~ {want}")
+        call("DELETE", f"/api/sources/{red['id']}")
+
+        print("scenes:", flush=True)
+        call("POST", "/api/scenes", {"name": "pattern only"})
+        call("POST", "/api/sources", {"name": "blue", "type": "solid", "color": [0, 0, 1, 1]})
+        call("POST", "/api/scenes", {"name": "all blue"})
+        time.sleep(1.0)
+        check(close(pixel(frame("out-1"), *spot), (0, 0, 255), 12), "blue source covers the canvas")
+        call("POST", "/api/scenes/pattern-only/recall")
+        time.sleep(1.0)
+        check(close(pixel(frame("out-1"), *spot), base, 12), "recalling 'pattern only' restores the pattern")
+        call("POST", "/api/scenes/all-blue/recall", {"transitionMs": 4000})
+        time.sleep(1.2)
+        mid = pixel(frame("out-1"), *spot)
+        check(not close(mid, base, 20) and not close(mid, (0, 0, 255), 20), f"mid-crossfade is a mix {mid}")
+        time.sleep(4.0)
+        check(close(pixel(frame("out-1"), *spot), (0, 0, 255), 12), "crossfade ends on the new scene")
+        call("POST", "/api/scenes/pattern-only/recall")
+
+        print("wall tool (bezel gaps):", flush=True)
+        lay = call("PUT", "/api/wall", {"cols": 2, "rows": 1, "outputWidth": 1920, "outputHeight": 1080, "gapX": 100, "fitCanvas": True})
+        crops = {o["id"]: o["crop"] for o in lay["outputs"]}
+        check(lay["canvas"]["width"] == 3940 and lay["canvas"]["height"] == 1080, f"canvas fits the wall ({lay['canvas']['width']}x{lay['canvas']['height']})")
+        check(crops["out-1"]["x"] == 0 and crops["out-2"]["x"] == 2020, f"panel 2 starts after the 100 px bezel (x={crops['out-2']['x']})")
+        check(all(o["group"] == "wall" for o in lay["outputs"] if o["id"] in ("out-1", "out-2")), "wall outputs are grouped")
+        check(len(lay["outputs"]) == 5, f"other outputs kept ({len(lay['outputs'])} outputs)")
+        check(lay["sources"][0]["rect"]["w"] == 3940, "full-canvas source follows the new canvas")
+        time.sleep(1.5)
+        img = frame("out-2")
+        check(img[0] == 1920 and img[1] == 1080, "wall output renders")
 
         print("frame delivery:", flush=True)
         time.sleep(2)

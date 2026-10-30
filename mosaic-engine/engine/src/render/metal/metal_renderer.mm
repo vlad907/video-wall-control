@@ -41,7 +41,8 @@ public:
 
         patternPso_ = makePipeline(lib, @"ps_pattern");
         texturedPso_ = makePipeline(lib, @"ps_textured");
-        uyvyPso_ = makePipeline(lib, @"ps_uyvy");
+        texturedBlendPso_ = makePipeline(lib, @"ps_textured", true);
+        uyvyPso_ = makePipeline(lib, @"ps_textured_uyvy");
 
         MTLSamplerDescriptor* sd = [MTLSamplerDescriptor new];
         sd.minFilter = MTLSamplerMinMagFilterLinear;
@@ -162,8 +163,11 @@ public:
 
     void drawTestPattern(const Uniforms& u) override { draw(patternPso_, nil, u); }
 
-    void drawTextured(TexId src, const Uniforms& u) override { draw(texturedPso_, textures_.at(src), u); }
-    void drawUYVY(TexId src, const Uniforms& u) override { draw(uyvyPso_, textures_.at(src), u); }
+    void drawTextured(TexId src, const Uniforms& u) override {
+        // Blending reads the target back; skip it for opaque draws (bandwidth matters on integrated GPUs).
+        draw(u.fparams[3] < 0.999f ? texturedBlendPso_ : texturedPso_, textures_.at(src), u);
+    }
+    void drawTexturedUYVY(TexId src, const Uniforms& u) override { draw(uyvyPso_, textures_.at(src), u); }
 
     void endPass() override {
         [enc_ endEncoding];
@@ -214,11 +218,20 @@ private:
         ReadbackView view;
     };
 
-    id<MTLRenderPipelineState> makePipeline(id<MTLLibrary> lib, NSString* fragment) {
+    id<MTLRenderPipelineState> makePipeline(id<MTLLibrary> lib, NSString* fragment, bool blend = false) {
         MTLRenderPipelineDescriptor* d = [MTLRenderPipelineDescriptor new];
         d.vertexFunction = [lib newFunctionWithName:@"vs_main"];
         d.fragmentFunction = [lib newFunctionWithName:fragment];
-        d.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+        auto* ca = d.colorAttachments[0];
+        ca.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        if (blend) {
+            // Straight alpha "over": opaque draws (alpha 1) simply replace the target.
+            ca.blendingEnabled = YES;
+            ca.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+            ca.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+            ca.sourceAlphaBlendFactor = MTLBlendFactorOne;
+            ca.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        }
         NSError* err = nil;
         id<MTLRenderPipelineState> pso = [device_ newRenderPipelineStateWithDescriptor:d error:&err];
         if (!pso) throw std::runtime_error(std::string("pipeline creation failed: ") + err.localizedDescription.UTF8String);
@@ -253,7 +266,7 @@ private:
 
     id<MTLDevice> device_;
     id<MTLCommandQueue> queue_;
-    id<MTLRenderPipelineState> patternPso_, texturedPso_, uyvyPso_;
+    id<MTLRenderPipelineState> patternPso_, texturedPso_, texturedBlendPso_, uyvyPso_;
     id<MTLSamplerState> sampler_;
     dispatch_semaphore_t inflight_;
 

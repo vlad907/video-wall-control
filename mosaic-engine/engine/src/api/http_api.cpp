@@ -1,5 +1,6 @@
 #include "api/http_api.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -213,6 +214,72 @@ struct HttpApi::Impl {
             res.set_content(jpeg, "image/jpeg");
         }));
 
+        // ---- video wall: a grid of panels with bezel gaps, generating the outputs ----
+        s.Get("/api/wall", guard([this](const httplib::Request&, httplib::Response& res) {
+            auto l = store.active();
+            sendJson(res, l->wall ? json(*l->wall) : json(nullptr));
+        }));
+        s.Put("/api/wall", guard([this](const httplib::Request& req, httplib::Response& res) {
+            json body = parseBody(req);
+            std::vector<std::string> problems;
+            store.mutateActive(
+                [&](Layout& l) {
+                    WallConfig w = l.wall.value_or(WallConfig{});
+                    from_json(body, w);
+                    applyWall(l, w);
+                    return true;
+                },
+                &problems);
+            sendJson(res, withProblems(*store.active(), problems));
+        }));
+        // Forgets the wall definition; its outputs stay as ordinary outputs.
+        s.Delete("/api/wall", guard([this](const httplib::Request&, httplib::Response& res) {
+            store.mutateActive([&](Layout& l) {
+                l.wall.reset();
+                for (auto& o : l.outputs) o.group.clear();
+                return true;
+            });
+            sendJson(res, {{"deleted", "wall"}});
+        }));
+
+        // ---- scenes: saved source arrangements, recalled with an optional crossfade ----
+        s.Get("/api/scenes", guard([this](const httplib::Request&, httplib::Response& res) {
+            sendJson(res, {{"scenes", store.active()->scenes}});
+        }));
+        s.Post("/api/scenes", guard([this](const httplib::Request& req, httplib::Response& res) {
+            json body = parseBody(req);
+            std::string id;
+            store.mutateActive([&](Layout& l) {
+                id = saveScene(l, body.value("name", ""));
+                return true;
+            });
+            for (auto& sc : store.active()->scenes)
+                if (sc.id == id) return sendJson(res, sc, 201);
+            sendError(res, 500, "scene not saved");
+        }));
+        s.Post(R"(/api/scenes/([A-Za-z0-9_\-]+)/recall)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            json body = parseBody(req);
+            auto l = store.active();
+            if (std::none_of(l->scenes.begin(), l->scenes.end(), [&](auto& sc) { return sc.id == id; }))
+                return sendError(res, 404, "no such scene");
+            int ms = body.value("transitionMs", 0);
+            if (ms > 0) engine.captureForTransition(ms);
+            std::vector<std::string> problems;
+            store.mutateActive([&](Layout& lay) { return recallScene(lay, id); }, &problems);
+            sendJson(res, withProblems({{"recalled", id}, {"transitionMs", ms}}, problems));
+        }));
+        s.Delete(R"(/api/scenes/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            bool ok = store.mutateActive([&](Layout& l) {
+                auto n = l.scenes.size();
+                std::erase_if(l.scenes, [&](auto& sc) { return sc.id == id; });
+                return l.scenes.size() != n;
+            });
+            if (!ok) return sendError(res, 404, "no such scene");
+            sendJson(res, {{"deleted", id}});
+        }));
+
         // ---- active layout as a whole ----
         s.Get("/api/layout", guard([this](const httplib::Request&, httplib::Response& res) { sendJson(res, *store.active()); }));
         s.Put("/api/layout", guard([this](const httplib::Request& req, httplib::Response& res) {
@@ -258,7 +325,11 @@ struct HttpApi::Impl {
             normalize(l);
             sendJson(res, withProblems(*store.get(l.id), problems), 201);
         }));
+        // Optional body {"transitionMs": N} crossfades (only when the canvas size stays the same).
         s.Post(R"(/api/layouts/([A-Za-z0-9_\-]+)/activate)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            if (!store.get(req.matches[1])) return sendError(res, 404, "no such layout");
+            int ms = parseBody(req).value("transitionMs", 0);
+            if (ms > 0) engine.captureForTransition(ms);
             if (!store.activate(req.matches[1])) return sendError(res, 404, "no such layout");
             sendJson(res, {{"active", std::string(req.matches[1])}});
         }));

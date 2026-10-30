@@ -11,7 +11,7 @@ const RESOLUTIONS: [string, number, number][] = [
 ];
 
 // Number field that commits on blur / Enter, so typing doesn't spam the engine.
-function NumberField({ label, value, onCommit, min = 0 }: { label: string; value: number; onCommit: (v: number) => void; min?: number }) {
+export function NumberField({ label, value, onCommit, min = 0 }: { label: string; value: number; onCommit: (v: number) => void; min?: number }) {
   const [text, setText] = useState(String(value));
   useEffect(() => setText(String(value)), [value]);
   const commit = () => {
@@ -33,7 +33,7 @@ function NumberField({ label, value, onCommit, min = 0 }: { label: string; value
   );
 }
 
-function TextField({ label, value, onCommit }: { label: string; value: string; onCommit: (v: string) => void }) {
+export function TextField({ label, value, onCommit }: { label: string; value: string; onCommit: (v: string) => void }) {
   const [text, setText] = useState(value);
   useEffect(() => setText(value), [value]);
   const commit = () => (text.trim() && text !== value ? onCommit(text.trim()) : setText(value));

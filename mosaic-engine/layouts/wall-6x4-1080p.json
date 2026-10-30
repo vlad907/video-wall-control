@@ -1,0 +1,509 @@
+{
+  "canvas": {
+    "background": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "height": 4440,
+    "width": 11720
+  },
+  "frameRate": 60.0,
+  "id": "wall-6x4-1080p",
+  "name": "6x4 wall - 24 x 1080p panels with 40 px bezels",
+  "outputs": [
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 0,
+        "y": 0
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-1",
+      "name": "Panel R1 C1",
+      "ndiName": "Mosaic_Output_01",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 1960,
+        "y": 0
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-2",
+      "name": "Panel R1 C2",
+      "ndiName": "Mosaic_Output_02",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 3920,
+        "y": 0
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-3",
+      "name": "Panel R1 C3",
+      "ndiName": "Mosaic_Output_03",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 5880,
+        "y": 0
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-4",
+      "name": "Panel R1 C4",
+      "ndiName": "Mosaic_Output_04",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 7840,
+        "y": 0
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-5",
+      "name": "Panel R1 C5",
+      "ndiName": "Mosaic_Output_05",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 9800,
+        "y": 0
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-6",
+      "name": "Panel R1 C6",
+      "ndiName": "Mosaic_Output_06",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 0,
+        "y": 1120
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-7",
+      "name": "Panel R2 C1",
+      "ndiName": "Mosaic_Output_07",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 1960,
+        "y": 1120
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-8",
+      "name": "Panel R2 C2",
+      "ndiName": "Mosaic_Output_08",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 3920,
+        "y": 1120
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-9",
+      "name": "Panel R2 C3",
+      "ndiName": "Mosaic_Output_09",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 5880,
+        "y": 1120
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-10",
+      "name": "Panel R2 C4",
+      "ndiName": "Mosaic_Output_10",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 7840,
+        "y": 1120
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-11",
+      "name": "Panel R2 C5",
+      "ndiName": "Mosaic_Output_11",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 9800,
+        "y": 1120
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-12",
+      "name": "Panel R2 C6",
+      "ndiName": "Mosaic_Output_12",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 0,
+        "y": 2240
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-13",
+      "name": "Panel R3 C1",
+      "ndiName": "Mosaic_Output_13",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 1960,
+        "y": 2240
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-14",
+      "name": "Panel R3 C2",
+      "ndiName": "Mosaic_Output_14",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 3920,
+        "y": 2240
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-15",
+      "name": "Panel R3 C3",
+      "ndiName": "Mosaic_Output_15",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 5880,
+        "y": 2240
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-16",
+      "name": "Panel R3 C4",
+      "ndiName": "Mosaic_Output_16",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 7840,
+        "y": 2240
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-17",
+      "name": "Panel R3 C5",
+      "ndiName": "Mosaic_Output_17",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 9800,
+        "y": 2240
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-18",
+      "name": "Panel R3 C6",
+      "ndiName": "Mosaic_Output_18",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 0,
+        "y": 3360
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-19",
+      "name": "Panel R4 C1",
+      "ndiName": "Mosaic_Output_19",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 1960,
+        "y": 3360
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-20",
+      "name": "Panel R4 C2",
+      "ndiName": "Mosaic_Output_20",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 3920,
+        "y": 3360
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-21",
+      "name": "Panel R4 C3",
+      "ndiName": "Mosaic_Output_21",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 5880,
+        "y": 3360
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-22",
+      "name": "Panel R4 C4",
+      "ndiName": "Mosaic_Output_22",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 7840,
+        "y": 3360
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-23",
+      "name": "Panel R4 C5",
+      "ndiName": "Mosaic_Output_23",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    },
+    {
+      "crop": {
+        "h": 1080,
+        "w": 1920,
+        "x": 9800,
+        "y": 3360
+      },
+      "enabled": true,
+      "group": "wall",
+      "height": 1080,
+      "id": "out-24",
+      "name": "Panel R4 C6",
+      "ndiName": "Mosaic_Output_24",
+      "pixelFormat": "uyvy",
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "width": 1920
+    }
+  ],
+  "scenes": [],
+  "sources": [
+    {
+      "animated": true,
+      "crop": {
+        "h": 0,
+        "w": 0,
+        "x": 0,
+        "y": 0
+      },
+      "enabled": true,
+      "id": "pattern",
+      "name": "Test pattern",
+      "opacity": 1.0,
+      "rect": {
+        "h": 4440,
+        "w": 11720,
+        "x": 0,
+        "y": 0
+      },
+      "type": "test_pattern"
+    }
+  ],
+  "wall": {
+    "cols": 6,
+    "fitCanvas": true,
+    "gapX": 40,
+    "gapY": 40,
+    "outputHeight": 1080,
+    "outputWidth": 1920,
+    "pixelFormat": "uyvy",
+    "rotation": 0,
+    "rows": 4,
+    "x": 0,
+    "y": 0
+  }
+}

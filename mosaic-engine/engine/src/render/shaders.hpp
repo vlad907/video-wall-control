@@ -15,7 +15,7 @@ struct Uniforms {
     float4 crop;      // sampled region x, y, w, h (source pixels)
     float4 sizes;     // source w, source h, dst w, dst h
     float4 bg;        // background colour
-    float4 fparams;   // time, tile w, tile h, -
+    float4 fparams;   // time, tile w, tile h, opacity (textured draws)
     uint4  iparams;   // frame id, rotation, scale mode, flags
 };
 
@@ -45,6 +45,15 @@ float3 mapOutputUV(float2 uv, uint rot, uint mode, float2 cropSize, float2 outSi
     else if (rot == 180u) c = float2(1.0 - p.x, 1.0 - p.y);
     else if (rot == 270u) c = float2(1.0 - p.y, p.x);
     return float3(c.x, c.y, inside);
+}
+
+// Where output position uv (0..1) samples the source: xy is the texture
+// coordinate, z is 1 inside the picture and 0 in letterbox / outside the source.
+float3 outputSampleUV(float2 uv, uint rot, uint mode, float4 crop, float2 srcSize, float2 outSize) {
+    float3 m = mapOutputUV(uv, rot, mode, crop.zw, outSize);
+    float2 suv = (crop.xy + m.xy * crop.zw) / srcSize;
+    float ok = (m.z > 0.5 && suv.x >= 0.0 && suv.y >= 0.0 && suv.x <= 1.0 && suv.y <= 1.0) ? 1.0 : 0.0;
+    return float3(suv.x, suv.y, ok);
 }
 
 // ---------------------------------------------------------------------------
@@ -218,21 +227,27 @@ fragment float4 ps_pattern(VOut in [[stage_in]], constant Uniforms& u [[buffer(0
     return testPattern(in.pos.xy - u.dstRect.xy, u.dstRect.zw, u.fparams.yz, u.iparams.x, u.fparams.x);
 }
 
-fragment float4 ps_textured(VOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
-                            texture2d<float> tex [[texture(0)]], sampler smp [[sampler(0)]]) {
-    if ((u.iparams.w & 1u) != 0u) return float4(u.bg.rgb, 1.0);  // solid colour
-    float2 uv = (in.pos.xy - u.dstRect.xy) / u.dstRect.zw;
-    float3 m = mapOutputUV(uv, u.iparams.y, u.iparams.z, u.crop.zw, u.dstRect.zw);
-    float2 suv = (u.crop.xy + m.xy * u.crop.zw) / u.sizes.xy;
-    if (m.z < 0.5 || suv.x < 0.0 || suv.y < 0.0 || suv.x > 1.0 || suv.y > 1.0) return float4(u.bg.rgb, 1.0);
-    return float4(tex.sample(smp, suv).rgb, 1.0);
+// Colour of the output at uv (0..1): the mapped source pixel, or the background.
+float3 outColor(float2 uv, constant Uniforms& u, texture2d<float> tex, sampler smp) {
+    if ((u.iparams.w & 1u) != 0u) return u.bg.rgb;  // solid colour
+    float3 s = outputSampleUV(uv, u.iparams.y, u.iparams.z, u.crop, u.sizes.xy, u.sizes.zw);
+    return s.z > 0.5 ? tex.sample(smp, s.xy, level(0)).rgb : u.bg.rgb;  // no mips; explicit LOD keeps it valid in branches
 }
 
-// Target is half the source width; each texel packs source pixels 2x and 2x+1.
-fragment float4 ps_uyvy(VOut in [[stage_in]], texture2d<float> tex [[texture(0)]]) {
-    uint2 p = uint2(in.pos.xy);
-    float3 a = tex.read(uint2(p.x * 2u, p.y)).rgb;
-    float3 b = tex.read(uint2(p.x * 2u + 1u, p.y)).rgb;
+// Alpha is the draw's opacity (fparams.w); translucent draws are blended over the target.
+fragment float4 ps_textured(VOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
+                            texture2d<float> tex [[texture(0)]], sampler smp [[sampler(0)]]) {
+    float2 uv = (in.pos.xy - u.dstRect.xy) / u.sizes.zw;
+    return float4(outColor(uv, u, tex, smp), u.fparams.w);
+}
+
+// Renders an output straight into UYVY: the target is half the output's width
+// (sizes.zw), and each texel packs output pixels 2x and 2x+1.
+fragment float4 ps_textured_uyvy(VOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
+                                 texture2d<float> tex [[texture(0)]], sampler smp [[sampler(0)]]) {
+    float2 p = floor(in.pos.xy - u.dstRect.xy);
+    float3 a = outColor(float2(p.x * 2.0 + 0.5, p.y + 0.5) / u.sizes.zw, u, tex, smp);
+    float3 b = outColor(float2(p.x * 2.0 + 1.5, p.y + 0.5) / u.sizes.zw, u, tex, smp);
     return packUYVY(a, b);
 }
 )SHADER";
@@ -254,19 +269,21 @@ float4 ps_pattern(float4 pos : SV_Position) : SV_Target {
     return testPattern(pos.xy - u.dstRect.xy, u.dstRect.zw, u.fparams.yz, u.iparams.x, u.fparams.x);
 }
 
-float4 ps_textured(float4 pos : SV_Position) : SV_Target {
-    if ((u.iparams.w & 1u) != 0u) return float4(u.bg.rgb, 1.0);
-    float2 uv = (pos.xy - u.dstRect.xy) / u.dstRect.zw;
-    float3 m = mapOutputUV(uv, u.iparams.y, u.iparams.z, u.crop.zw, u.dstRect.zw);
-    float2 suv = (u.crop.xy + m.xy * u.crop.zw) / u.sizes.xy;
-    if (m.z < 0.5 || suv.x < 0.0 || suv.y < 0.0 || suv.x > 1.0 || suv.y > 1.0) return float4(u.bg.rgb, 1.0);
-    return float4(tex.Sample(smp, suv).rgb, 1.0);
+float3 outColor(float2 uv) {
+    if ((u.iparams.w & 1u) != 0u) return u.bg.rgb;
+    float3 s = outputSampleUV(uv, u.iparams.y, u.iparams.z, u.crop, u.sizes.xy, u.sizes.zw);
+    return s.z > 0.5 ? tex.SampleLevel(smp, s.xy, 0).rgb : u.bg.rgb;
 }
 
-float4 ps_uyvy(float4 pos : SV_Position) : SV_Target {
-    int2 p = int2(pos.xy);
-    float3 a = tex.Load(int3(p.x * 2, p.y, 0)).rgb;
-    float3 b = tex.Load(int3(p.x * 2 + 1, p.y, 0)).rgb;
+float4 ps_textured(float4 pos : SV_Position) : SV_Target {
+    float2 uv = (pos.xy - u.dstRect.xy) / u.sizes.zw;
+    return float4(outColor(uv), u.fparams.w);
+}
+
+float4 ps_textured_uyvy(float4 pos : SV_Position) : SV_Target {
+    float2 p = floor(pos.xy - u.dstRect.xy);
+    float3 a = outColor(float2(p.x * 2.0 + 0.5, p.y + 0.5) / u.sizes.zw);
+    float3 b = outColor(float2(p.x * 2.0 + 1.5, p.y + 0.5) / u.sizes.zw);
     return packUYVY(a, b);
 }
 )SHADER";

@@ -17,4 +17,6 @@ Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe' OR Name = 'python.ex
 
 Get-NetFirewallRule -DisplayName "Video Wall Control Dashboard ($DashboardPort)" -ErrorAction SilentlyContinue |
     Remove-NetFirewallRule
-Write-Host "Done. Studio Monitor instances were left running."
+Get-NetFirewallRule -DisplayName "Mosaic Engine Editor (8090)", "Mosaic Engine NDI" -ErrorAction SilentlyContinue |
+    Remove-NetFirewallRule
+Write-Host "Done. Studio Monitor instances and the mosaic engine were left running."

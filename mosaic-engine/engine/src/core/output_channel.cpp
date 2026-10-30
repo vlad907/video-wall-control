@@ -10,10 +10,10 @@ OutputChannel::OutputChannel(std::string id_, int w, int h, std::string ndi, dou
                              Renderer& renderer, std::unique_ptr<VideoSink> sink)
     : id(std::move(id_)), width(w), height(h), ndiName(std::move(ndi)), uyvy(packUyvy), renderer_(renderer),
       sink_(std::move(sink)), fps_(fps), meta_(kSlots) {
-    target_ = renderer_.createTexture(width, height, TexUsage::RenderTarget);
-    // UYVY: one BGRA8 texel carries two pixels, so the readback is half as wide.
+    // UYVY: one BGRA8 texel carries two pixels, so the target and readback are half as wide.
     int rbWidth = uyvy ? width / 2 : width;
     if (uyvy) packed_ = renderer_.createTexture(rbWidth, height, TexUsage::RenderTarget);
+    else target_ = renderer_.createTexture(width, height, TexUsage::RenderTarget);
     readback_ = renderer_.createReadback(rbWidth, height, kSlots);
     thread_ = std::thread([this] { run(); });
 }
@@ -138,7 +138,7 @@ void OutputChannel::shutdown() {
 void OutputChannel::destroyGpuResources() {
     drainReleases();
     renderer_.destroyReadback(readback_);
-    renderer_.destroyTexture(target_);
+    if (target_) renderer_.destroyTexture(target_);
     if (packed_) renderer_.destroyTexture(packed_);
     readback_ = target_ = packed_ = 0;
 }

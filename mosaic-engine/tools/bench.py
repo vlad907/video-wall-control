@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Milestone 2 benchmark: runs each layout in BGRA and UYVY and prints a table.
 
-    python tools/bench.py [--engine PATH] [--seconds 30] [--layouts quad-1080p,wall-2x2-4k] [--out bench.json]
+    python tools/bench.py [--engine PATH] [--seconds 30] [--layouts quad-1080p,wall-2x2-4k,wall-6x4-1080p] [--out bench.json]
 
 Uses the engine's headless mode (--run-seconds). Results include render fps,
 tick lateness, CPU/GPU time, readback bandwidth, per-output drops and whether

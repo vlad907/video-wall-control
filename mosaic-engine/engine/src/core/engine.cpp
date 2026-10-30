@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <set>
 
 #include "util/image.hpp"
 #include "util/realtime.hpp"
@@ -21,6 +22,38 @@ const float kNoSignal[4] = {0.08f, 0.08f, 0.1f, 1.f};
 
 uint32_t scaleModeIndex(ScaleMode m) { return m == ScaleMode::Fit ? 1u : m == ScaleMode::Fill ? 2u : 0u; }
 
+bool covers(const Rect& a, const Rect& b) {
+    return a.x <= b.x && a.y <= b.y && a.x + a.w >= b.x + b.w && a.y + a.h >= b.y + b.h;
+}
+
+// Sources that contribute to the picture: enabled, not transparent, on the
+// canvas and not completely hidden under an opaque source drawn after them,
+// plus any source an output samples directly. Everything else is skipped.
+std::set<std::string> neededSources(const Layout& l) {
+    std::set<std::string> needed;
+    const Rect canvas{0, 0, l.canvas.width, l.canvas.height};
+    for (size_t i = 0; i < l.sources.size(); ++i) {
+        const SourceConfig& s = l.sources[i];
+        if (!s.enabled || s.opacity <= 0.f) continue;
+        Rect r = s.rect;
+        r.x = std::max(r.x, 0);
+        r.y = std::max(r.y, 0);
+        r.w = std::min(s.rect.x + s.rect.w, canvas.w) - r.x;
+        r.h = std::min(s.rect.y + s.rect.h, canvas.h) - r.y;
+        if (r.w <= 0 || r.h <= 0) continue;
+        bool hidden = false;
+        for (size_t j = i + 1; j < l.sources.size() && !hidden; ++j) {
+            const SourceConfig& o = l.sources[j];
+            bool opaque = o.enabled && o.opacity >= 1.f && (o.type != SourceType::Solid || o.color[3] >= 1.f);
+            hidden = opaque && covers(o.rect, r);
+        }
+        if (!hidden) needed.insert(s.id);
+    }
+    for (auto& o : l.outputs)
+        if (o.enabled && o.source != "canvas") needed.insert(o.source);
+    return needed;
+}
+
 Uniforms makeUniforms(float dx, float dy, float dw, float dh) {
     Uniforms u{};
     u.dstRect[0] = dx;
@@ -30,6 +63,7 @@ Uniforms makeUniforms(float dx, float dy, float dw, float dh) {
     u.sizes[2] = dw;
     u.sizes[3] = dh;
     u.bg[3] = 1.f;
+    u.fparams[3] = 1.f;  // opaque
     return u;
 }
 }  // namespace
@@ -96,6 +130,15 @@ void Engine::stop() {
     sources_.clear();
     if (canvas_) renderer_.destroyTexture(canvas_);
     canvas_ = 0;
+    if (fadeTex_) renderer_.destroyTexture(fadeTex_);
+    fadeTex_ = 0;
+}
+
+bool Engine::captureForTransition(int ms) {
+    std::unique_lock l(transitionMutex_);
+    transitionRequestMs_ = std::clamp(ms, 1, 10000);
+    transitionCaptured_ = false;
+    return transitionCv_.wait_for(l, std::chrono::milliseconds(250), [this] { return transitionCaptured_; });
 }
 
 // ---------------------------------------------------------------------------
@@ -146,28 +189,53 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
     auto t0 = Clock::now();
     waitMs_.add(msBetween(w0, t0));
 
-    updateSources(layout, frameId, seconds);
+    const std::set<std::string> needed = neededSources(layout);
+    updateSources(layout, needed, frameId, seconds);
 
-    // Canvas: every enabled source drawn into its rectangle.
-    renderer_.beginPass(canvas_, layout.canvas.background.data());
-    for (auto& sc : layout.sources) {
-        if (!sc.enabled) continue;
-        auto it = sources_.find(sc.id);
-        if (it == sources_.end()) continue;
-        SourceState& s = it->second;
-        Uniforms u = makeUniforms(float(sc.rect.x), float(sc.rect.y), float(sc.rect.w), float(sc.rect.h));
-        if (sc.type == SourceType::Solid || !s.hasFrame) {
-            const float* c = sc.type == SourceType::Solid ? sc.color.data() : kNoSignal;
-            std::copy(c, c + 4, u.bg);
-            u.iparams[3] = 1;  // solid
-            renderer_.drawTextured(canvas_, u);
-            continue;
-        }
-        u.crop[2] = u.sizes[0] = float(s.w);
-        u.crop[3] = u.sizes[1] = float(s.h);
-        renderer_.drawTextured(s.tex[s.current], u);
+    // Transition: freeze what the canvas shows now; it fades out over the new content.
+    int transitionMs = 0;
+    {
+        std::lock_guard l(transitionMutex_);
+        std::swap(transitionMs, transitionRequestMs_);
     }
-    renderer_.endPass();
+    if (transitionMs > 0 && view_.tex) {
+        if (!fadeTex_) fadeTex_ = renderer_.createTexture(canvasW_, canvasH_, TexUsage::RenderTarget);
+        Uniforms u = makeUniforms(0, 0, float(canvasW_), float(canvasH_));
+        u.crop[2] = u.sizes[0] = view_.w;
+        u.crop[3] = u.sizes[1] = view_.h;
+        renderer_.beginPass(fadeTex_, nullptr);
+        renderer_.drawTextured(view_.tex, u);
+        renderer_.endPass();
+        fadeStart_ = tick;
+        fadeMs_ = transitionMs;
+        std::lock_guard l(transitionMutex_);
+        transitionCaptured_ = true;
+        transitionCv_.notify_all();
+    }
+
+    // Direct path: one opaque, uncropped source covering exactly the canvas is
+    // sampled by the outputs as is, saving a full-canvas pass per frame.
+    const SourceConfig* only = nullptr;
+    int drawn = 0;
+    for (auto& sc : layout.sources)
+        if (needed.count(sc.id) && sc.enabled && sc.opacity > 0.f) {
+            only = &sc;
+            ++drawn;
+        }
+    const SourceState* direct = nullptr;
+    if (drawn == 1 && fadeMs_ <= 0 && only->opacity >= 1.f && only->type != SourceType::Solid && only->crop.w == 0 &&
+        only->rect.x == 0 && only->rect.y == 0 && only->rect.w == canvasW_ && only->rect.h == canvasH_) {
+        auto it = sources_.find(only->id);
+        if (it != sources_.end() && it->second.hasFrame) direct = &it->second;
+    }
+    if (direct) {
+        view_ = {direct->tex[direct->current], float(direct->w), float(direct->h)};
+        directFrames_++;
+    } else {
+        view_ = {canvas_, float(canvasW_), float(canvasH_)};
+        renderCanvas(layout, needed, tick);
+    }
+    const float kx = view_.w / float(canvasW_), ky = view_.h / float(canvasH_);
 
     // Outputs: each samples the canvas (or one source) into its own target.
     int64_t timecode = std::chrono::duration_cast<std::chrono::nanoseconds>(tick - start_).count() / 100;
@@ -182,6 +250,7 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
             active.push_back(it->second);
         }
     }
+    outputDraws_.clear();
     for (auto& ch : active) {
         const OutputConfig* o = layout.findOutput(ch->id);
         int slot = ch->acquireSlot({frameId, tick, timecode});
@@ -189,8 +258,9 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
             ch->countNoSlotDrop();
             continue;
         }
-        TexId src = canvas_;
-        float sw = float(canvasW_), sh = float(canvasH_);
+        TexId src = view_.tex;
+        float sw = view_.w, sh = view_.h;
+        float cx = kx, cy = ky;  // canvas pixels -> sampled texture pixels
         bool solid = false;
         if (o->source != "canvas") {
             auto it = sources_.find(o->source);
@@ -198,15 +268,16 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
                 src = it->second.tex[it->second.current];
                 sw = float(it->second.w);
                 sh = float(it->second.h);
+                cx = cy = 1.f;
             } else {
                 solid = true;
             }
         }
         Uniforms u = makeUniforms(0, 0, float(ch->width), float(ch->height));
-        u.crop[0] = float(o->crop.x);
-        u.crop[1] = float(o->crop.y);
-        u.crop[2] = float(o->crop.w);
-        u.crop[3] = float(o->crop.h);
+        u.crop[0] = float(o->crop.x) * cx;
+        u.crop[1] = float(o->crop.y) * cy;
+        u.crop[2] = float(o->crop.w) * cx;
+        u.crop[3] = float(o->crop.h) * cy;
         u.sizes[0] = sw;
         u.sizes[1] = sh;
         std::copy(layout.canvas.background.begin(), layout.canvas.background.end(), u.bg);
@@ -214,15 +285,20 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
         u.iparams[1] = static_cast<uint32_t>(o->rotation);
         u.iparams[2] = scaleModeIndex(o->scaleMode);
         u.iparams[3] = solid ? 1u : 0u;
-        renderer_.beginPass(ch->target(), layout.canvas.background.data());
-        renderer_.drawTextured(src, u);
-        renderer_.endPass();
         if (ch->uyvy) {
-            // Pack to UYVY on the GPU: half the readback bytes, and NDI's native format.
+            // Map, sample and pack to UYVY in one pass: half the readback bytes, NDI's
+            // native format, and no full-size BGRA intermediate. The viewport is the
+            // half-width packed target; sizes[2..3] stay the output's size.
+            Uniforms p = u;
+            p.dstRect[2] = float(ch->width / 2);
             renderer_.beginPass(ch->packed(), nullptr);
-            renderer_.drawUYVY(ch->target(), makeUniforms(0, 0, float(ch->width / 2), float(ch->height)));
-            renderer_.endPass();
+            renderer_.drawTexturedUYVY(src, p);
+        } else {
+            renderer_.beginPass(ch->target(), layout.canvas.background.data());
+            renderer_.drawTextured(src, u);
         }
+        renderer_.endPass();
+        outputDraws_[ch->id] = {src, u};
         renderer_.copyToReadback(ch->readbackSource(), ch->readback(), slot);
         ++expected;
     }
@@ -241,6 +317,48 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
     }
 }
 
+// Canvas: needed sources in order, each blended over the ones before it.
+void Engine::renderCanvas(const Layout& layout, const std::set<std::string>& needed, Clock::time_point tick) {
+    renderer_.beginPass(canvas_, layout.canvas.background.data());
+    for (auto& sc : layout.sources) {
+        if (!needed.count(sc.id) || !sc.enabled || sc.opacity <= 0.f) continue;
+        auto it = sources_.find(sc.id);
+        if (it == sources_.end()) continue;
+        SourceState& s = it->second;
+        Uniforms u = makeUniforms(float(sc.rect.x), float(sc.rect.y), float(sc.rect.w), float(sc.rect.h));
+        u.fparams[3] = sc.opacity;
+        if (sc.type == SourceType::Solid || !s.hasFrame) {
+            const float* c = sc.type == SourceType::Solid ? sc.color.data() : kNoSignal;
+            std::copy(c, c + 3, u.bg);
+            u.fparams[3] = sc.opacity * c[3];
+            u.iparams[3] = 1;  // solid
+            renderer_.drawTextured(canvas_, u);
+            continue;
+        }
+        u.sizes[0] = float(s.w);
+        u.sizes[1] = float(s.h);
+        bool cropped = sc.crop.w > 0 && sc.crop.h > 0;
+        u.crop[0] = cropped ? float(sc.crop.x) : 0.f;
+        u.crop[1] = cropped ? float(sc.crop.y) : 0.f;
+        u.crop[2] = cropped ? float(sc.crop.w) : float(s.w);
+        u.crop[3] = cropped ? float(sc.crop.h) : float(s.h);
+        renderer_.drawTextured(s.tex[s.current], u);
+    }
+    if (fadeMs_ > 0) {
+        double t = msBetween(fadeStart_, tick) / fadeMs_;
+        if (t < 1.0) {
+            Uniforms u = makeUniforms(0, 0, float(canvasW_), float(canvasH_));
+            u.crop[2] = u.sizes[0] = float(canvasW_);
+            u.crop[3] = u.sizes[1] = float(canvasH_);
+            u.fparams[3] = static_cast<float>(1.0 - t * t * (3.0 - 2.0 * t));  // smoothstep fade-out
+            renderer_.drawTextured(fadeTex_, u);
+        } else {
+            fadeMs_ = 0;
+        }
+    }
+    renderer_.endPass();
+}
+
 void Engine::syncDelivered(uint64_t frameId, bool delivered) {
     std::lock_guard l(syncMutex_);
     for (auto it = sync_.rbegin(); it != sync_.rend(); ++it) {
@@ -252,11 +370,19 @@ void Engine::syncDelivered(uint64_t frameId, bool delivered) {
     }
 }
 
-void Engine::updateSources(const Layout& layout, uint64_t frameId, double seconds) {
+void Engine::updateSources(const Layout& layout, const std::set<std::string>& needed, uint64_t frameId, double seconds) {
     json status = json::array();
     for (auto& [id, s] : sources_) {
         json st = {{"id", id}, {"type", toString(s.cfg.type)}, {"width", s.w}, {"height", s.h}};
         if (s.cfg.type == SourceType::TestPattern) {
+            st["status"] = needed.count(id) ? "ok" : "hidden (not rendered)";
+            st["inputFps"] = renderRate_.rate();
+            // A frozen pattern only needs drawing once; a hidden one not at all.
+            if (!needed.count(id) || (!s.cfg.animated && s.patternDrawn)) {
+                status.push_back(st);
+                continue;
+            }
+            s.patternDrawn = true;
             Uniforms u = makeUniforms(0, 0, float(s.w), float(s.h));
             u.fparams[0] = s.cfg.animated ? static_cast<float>(seconds) : 0.f;
             u.fparams[1] = kTileW;
@@ -265,8 +391,6 @@ void Engine::updateSources(const Layout& layout, uint64_t frameId, double second
             renderer_.beginPass(s.tex[0], nullptr);
             renderer_.drawTestPattern(u);
             renderer_.endPass();
-            st["status"] = "ok";
-            st["inputFps"] = renderRate_.rate();
         } else if (s.cfg.type == SourceType::Ndi) {
             if (!s.rx) {
                 st["status"] = ndi_ ? "receiver failed" : "NDI unavailable";
@@ -316,18 +440,19 @@ void Engine::renderPreviews(const Layout& layout) {
     for (auto& target : wanted) {
         TexId src = 0;
         int sw = 0, sh = 0;
+        const OutputDraw* draw = nullptr;  // outputs: redrawn small with this frame's mapping
         if (target == "canvas") {
-            src = canvas_;
+            src = view_.tex;
             sw = canvasW_;
             sh = canvasH_;
         } else {
-            std::lock_guard l(channelsMutex_);
-            auto it = channels_.find(target);
+            auto it = outputDraws_.find(target);
             const OutputConfig* o = layout.findOutput(target);
-            if (it == channels_.end() || !o || !o->enabled) continue;
-            src = it->second->target();
-            sw = it->second->width;
-            sh = it->second->height;
+            if (it == outputDraws_.end() || !o || !o->enabled) continue;
+            draw = &it->second;
+            src = draw->src;
+            sw = static_cast<int>(draw->u.sizes[2]);
+            sh = static_cast<int>(draw->u.sizes[3]);
         }
         int maxW = target == "canvas" ? 960 : 480;
         int pw = std::min(maxW, sw);
@@ -359,8 +484,14 @@ void Engine::renderPreviews(const Layout& layout) {
         int slot = pv->ring.acquire();
         if (slot < 0) continue;
         Uniforms u = makeUniforms(0, 0, float(pw), float(ph));
-        u.crop[2] = u.sizes[0] = float(sw);
-        u.crop[3] = u.sizes[1] = float(sh);
+        if (draw) {
+            u = draw->u;
+            u.dstRect[2] = u.sizes[2] = float(pw);
+            u.dstRect[3] = u.sizes[3] = float(ph);
+        } else {
+            u.crop[2] = u.sizes[0] = view_.w;
+            u.crop[3] = u.sizes[1] = view_.h;
+        }
         renderer_.beginPass(pv->tex, nullptr);
         renderer_.drawTextured(src, u);
         renderer_.endPass();
@@ -411,6 +542,10 @@ void Engine::reconcile(const Layout& layout) {
 
     // Canvas
     if (canvasChanged) {
+        // reached only after the waitIdle above, so the fade texture is not in use
+        if (fadeTex_) renderer_.destroyTexture(fadeTex_);
+        fadeTex_ = 0;
+        fadeMs_ = 0;
         if (canvas_) renderer_.destroyTexture(canvas_);
         canvas_ = renderer_.createTexture(layout.canvas.width, layout.canvas.height, TexUsage::RenderTarget);
         canvasW_ = layout.canvas.width;
@@ -423,6 +558,7 @@ void Engine::reconcile(const Layout& layout) {
         bool keep = c && c->type == it->second.cfg.type && c->ndiName == it->second.cfg.ndiName &&
                     (c->type != SourceType::TestPattern || (c->rect.w == it->second.w && c->rect.h == it->second.h));
         if (keep) {
+            if (c->animated != it->second.cfg.animated) it->second.patternDrawn = false;
             it->second.cfg = *c;
             ++it;
         } else {
@@ -482,6 +618,7 @@ void Engine::reconcile(const Layout& layout) {
         channelByReadback_[ch->readback()] = ch;
         channels_[o.id] = ch;
     }
+    view_ = {};  // may point at a source texture destroyed above; set again next frame
     std::cerr << "[engine] applied layout '" << layout.id << "': canvas " << canvasW_ << "x" << canvasH_ << ", "
               << sources_.size() << " source(s), " << layout.outputs.size() << " output(s)\n";
 }
@@ -559,6 +696,7 @@ json Engine::metrics() {
               {"gpuUtilization", renderer_.gpuUtilization()},
               {"readbackMBps", readbackBytesPerSec / 1e6},
               {"lateFrames", lateFrames_.load()},
+              {"directFrames", directFrames_.load()},
               {"ndi", ndi_ ? ndi_->version() : "unavailable"},
               {"layout", layout->id},
               {"uptimeSec", std::chrono::duration<double>(Clock::now() - start_).count()}}},

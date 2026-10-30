@@ -72,6 +72,26 @@ if (-not (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContin
     Write-Host "Firewall rule added for TCP $DashboardPort."
 }
 
+# --- Mosaic engine (optional; started by the service once built) ------------
+$MosaicExe = Join-Path $AppDir "mosaic-engine\build\Release\mosaic_engine.exe"
+$editorRule = "Mosaic Engine Editor (8090)"
+if (-not (Get-NetFirewallRule -DisplayName $editorRule -ErrorAction SilentlyContinue)) {
+    New-NetFirewallRule -DisplayName $editorRule -Direction Inbound -Protocol TCP `
+        -LocalPort 8090 -Action Allow -Profile Any | Out-Null
+    Write-Host "Firewall rule added for the mosaic editor (TCP 8090)."
+}
+if (Test-Path $MosaicExe) {
+    # NDI senders listen on dynamic ports, so allow the program rather than a port.
+    $ndiRule = "Mosaic Engine NDI"
+    Get-NetFirewallRule -DisplayName $ndiRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    New-NetFirewallRule -DisplayName $ndiRule -Direction Inbound -Program $MosaicExe `
+        -Action Allow -Profile Any | Out-Null
+    Write-Host "Mosaic engine found; it will start with the service. Firewall rule added for its NDI streams."
+} else {
+    Write-Host "Mosaic engine not built yet ($MosaicExe). Once built, it starts with the service automatically;"
+    Write-Host "re-run this installer then to add its firewall rule."
+}
+
 if (-not $NoStart) {
     Start-ScheduledTask -TaskName $TaskName
     Write-Host "Started. Dashboard: http://localhost:$DashboardPort (or http://<this-pc-ip>:$DashboardPort)"

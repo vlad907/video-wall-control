@@ -104,8 +104,8 @@ public:
     const int width, height;
     const std::string ndiName;
     const bool uyvy;
-    TexId target() const { return target_; }        // full-size BGRA render target
-    TexId packed() const { return packed_; }        // W/2 x H UYVY target (uyvy only)
+    TexId target() const { return target_; }        // full-size BGRA render target (BGRA only)
+    TexId packed() const { return packed_; }        // W/2 x H UYVY target (UYVY only)
     TexId readbackSource() const { return uyvy ? packed_ : target_; }
     size_t bytesPerFrame() const { return static_cast<size_t>(width) * height * (uyvy ? 2 : 4); }
     ReadbackId readback() const { return readback_; }

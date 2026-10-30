@@ -2,11 +2,22 @@
 
 ## Status
 
-`engine/src/render/d3d11/d3d11_renderer.cpp` has been:
-- **cross-compiled and linked** into a Windows x64 executable with MinGW-w64 (GCC 16), with no warnings
-- **HLSL-validated**: all three entry points (`vs_main`, `ps_pattern`, `ps_textured`) compile with glslang's HLSL front end
+The Direct3D 11 backend runs on Windows hardware: an AMD Radeon 610M Mini PC ran 4 NDI
+outputs from an NDI input for 2 hours with the NDI 6 SDK. GitHub Actions also builds it with
+MSVC on every push and checks its pixels on WARP (`tools/ci_check.py`, `tools/check_uyvy.py`).
 
-It has **not been run on Windows hardware**. Below is what to check on its first run.
+**Integrated GPUs.** The first run on the 610M was GPU-bound at about 30 fps. Since then the engine
+skips the canvas pass when one source fills the canvas, packs UYVY in the output pass, and skips
+hidden sources (see [NEXT.md](NEXT.md)). If it's still under 60 fps:
+- use an NDI input rather than the animated test pattern, or set the pattern's `animated` to false
+- keep the canvas no larger than the wall needs
+
+**Starting at boot.** Run the dashboard's `install.bat` (repo root) after building. The service
+starts the engine at logon, before the Studio Monitors, restarts it if it stops answering, and
+logs to `logs\mosaic-engine.log`. The dashboard's **Show mosaic on panels** button points each
+Studio Monitor at the matching `Mosaic_Output_NN` stream.
+
+Below is the checklist for a first run on a new machine.
 
 ## Build (Visual Studio 2022)
 
@@ -65,7 +76,7 @@ generated from `engine/src/render/shaders.hpp`.
   `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` timer (Windows 10 1803+; otherwise `timeBeginPeriod(1)`)
   and spins for the last 0.7 ms. It also joins the MMCSS "Games" class. Check that `tickJitterMs`
   in the metrics is well under 1 ms.
-- UYVY outputs add one small pass (`ps_uyvy`) into a half-width target. The staging readback
-  is then half the size.
+- UYVY outputs are rendered by `ps_textured_uyvy` straight into a half-width target (map, sample
+  and pack in one pass), so the staging readback is half the size and there is no BGRA intermediate.
 - NDI input frames are uploaded into `DYNAMIC` textures with `Map(WRITE_DISCARD)`.
   Three textures rotate per source.

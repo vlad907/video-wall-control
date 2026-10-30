@@ -11,6 +11,7 @@
     --warn: #f0b429; --bad: #ef5454;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
@@ -72,6 +73,12 @@
   .stream.live { border-color: #2d5a3f; } .stream.live span { color: var(--ok); }
   .stream.offline { opacity: .6; }
   .muted { color: var(--muted); }
+  .mosaic { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+            margin-bottom: 20px; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+  .mosaic h3 { font-size: 14px; margin: 0; display: flex; align-items: center; }
+  .mosaic .info { flex: 1; min-width: 220px; color: var(--muted); font-size: 13px; }
+  .mosaic .info b { color: var(--text); font-weight: 600; }
+  .mosaic .actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .switch { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; cursor: pointer; }
 </style>
 </head>
@@ -106,6 +113,18 @@
     <div class="banner-row">
       <input type="text" id="exeInput" placeholder="C:\Program Files\NDI\NDI 6 Tools\Studio Monitor\Application.Network.VideoMonitor2.x64.exe">
       <button id="btnExe" class="primary">Save path</button>
+    </div>
+  </section>
+  <section class="mosaic" id="mosaic" hidden>
+    <h3><span class="dot" id="mosaicDot"></span>Mosaic engine</h3>
+    <div class="info" id="mosaicInfo">…</div>
+    <div class="actions">
+      <label class="switch" title="Start the engine at boot and restart it if it stops">
+        <input type="checkbox" id="mosaicEnabled"> Run engine
+      </label>
+      <a id="mosaicEditor" target="_blank" rel="noopener"><button>Open editor</button></a>
+      <button id="btnAssign" class="primary" title="Panel 1 shows Mosaic_Output_01, panel 2 shows _02, …">Show mosaic on panels</button>
+      <button id="btnMosaicRestart" class="danger">Restart engine</button>
     </div>
   </section>
   <section class="streams-wrap">
@@ -298,6 +317,32 @@ async function refreshSources(announce) {
   }
 }
 
+async function refreshMosaic() {
+  let m;
+  try { m = await api("/api/mosaic"); } catch (e) { return; }
+  $("mosaic").hidden = false;
+  $("mosaicEnabled").checked = m.enabled;
+  $("mosaicDot").classList.toggle("on", m.running);
+  $("mosaicEditor").href = m.editor_url;
+  $("mosaicEditor").hidden = !m.running;
+  $("btnAssign").disabled = !m.running;
+  $("btnMosaicRestart").hidden = !m.exe || !m.enabled;
+  const info = $("mosaicInfo");
+  if (!m.exe) {
+    info.textContent = "Not built yet: build mosaic-engine (see mosaic-engine/docs/WINDOWS.md) and it starts automatically.";
+  } else if (!m.enabled) {
+    info.textContent = "Turned off.";
+  } else if (!m.running) {
+    info.textContent = "Starting… (if this persists, see logs/mosaic-engine.log)";
+  } else {
+    const fps = m.render_fps == null ? "?" : m.render_fps.toFixed(1);
+    const low = m.render_fps != null && m.target_fps && m.render_fps < m.target_fps * 0.97;
+    info.innerHTML = `<b style="color:${low ? "var(--warn)" : "inherit"}">${fps}/${m.target_fps} fps</b> · layout <b></b> · ${m.outputs.length} output(s) · NDI <span></span>`;
+    info.querySelector("b:nth-of-type(2)").textContent = m.layout;
+    info.querySelector("span").textContent = m.ndi === "unavailable" ? "unavailable (built without the SDK)" : "on";
+  }
+}
+
 async function refreshLog() {
   const { log } = await api("/api/log");
   const box = $("log");
@@ -347,6 +392,22 @@ $("btnRestart").onclick = async () => {
 };
 $("enforce").onchange = (e) => api("/api/settings", { method: "POST", body: { enforce_mapping: e.target.checked } });
 $("btnLog").onclick = refreshLog;
+$("mosaicEnabled").onchange = async (e) => {
+  try { await api("/api/settings", { method: "POST", body: { mosaic_enabled: e.target.checked } }); }
+  catch (err) { toast(err.message); }
+  setTimeout(refreshMosaic, 1500);
+};
+$("btnAssign").onclick = async () => {
+  if (!confirm("Point each panel at the matching mosaic output (panel 1 → output 1, …)?")) return;
+  try { reportResults((await api("/api/mosaic/assign", { method: "POST" })).results); }
+  catch (e) { toast("Assign failed: " + e.message, 7000); }
+  setTimeout(() => { refreshStatus(); refreshLog(); }, 600);
+};
+$("btnMosaicRestart").onclick = async () => {
+  if (!confirm("Restart the mosaic engine? Its streams drop for a few seconds.")) return;
+  try { await api("/api/mosaic/restart", { method: "POST" }); toast("Restarting the engine…"); }
+  catch (e) { toast(e.message); }
+};
 $("btnExe").onclick = async () => {
   try {
     await api("/api/settings", { method: "POST", body: { exe_path: $("exeInput").value } });
@@ -359,6 +420,8 @@ $("btnExe").onclick = async () => {
   await refreshSources(false);
   await refreshStatus();
   refreshLog();
+  refreshMosaic();
+  setInterval(refreshMosaic, 5000);
   setInterval(refreshStatus, 5000);
   setInterval(refreshLog, 10000);
   setInterval(() => refreshSources(false).then(() => status && render()), 10000);

@@ -26,7 +26,7 @@ struct alignas(16) Uniforms {
     float crop[4];     // x, y, w, h of the sampled region in source pixels
     float sizes[4];    // source width, source height, dst width, dst height
     float bg[4];       // background / letterbox colour (RGBA)
-    float fparams[4];  // time (s), tile width, tile height, unused
+    float fparams[4];  // time (s), tile width, tile height, opacity (drawTextured; blended over the target)
     uint32_t iparams[4];  // frame id, rotation (deg), scale mode, flags
 };
 static_assert(sizeof(Uniforms) == 96, "Uniforms layout must match shaders");
@@ -74,8 +74,9 @@ public:
     virtual void beginPass(TexId dst, const float* clearRGBA) = 0;
     virtual void drawTestPattern(const Uniforms&) = 0;
     virtual void drawTextured(TexId src, const Uniforms&) = 0;
-    // Packs src (W x H BGRA) into the pass target (W/2 x H) as UYVY 4:2:2.
-    virtual void drawUYVY(TexId src, const Uniforms&) = 0;
+    // Like drawTextured for an output of sizes[2] x sizes[3] pixels, but writes it
+    // packed as UYVY 4:2:2 into the pass target, which is half as wide (one pass, no BGRA copy).
+    virtual void drawTexturedUYVY(TexId src, const Uniforms&) = 0;
     virtual void endPass() = 0;
     virtual void copyToReadback(TexId src, ReadbackId dst, int slot) = 0;
     virtual void endFrame() = 0;

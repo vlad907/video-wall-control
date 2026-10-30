@@ -3,6 +3,7 @@ import type { Layout, Rect } from "./api";
 import { LivePreview } from "./LivePreview";
 
 type Handle = "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+export type EditMode = "outputs" | "sources";
 
 interface Drag {
   id: string;
@@ -13,6 +14,7 @@ interface Drag {
 }
 
 export const COLORS = ["#ff5c5c", "#4cc9f0", "#80ed99", "#ffd166", "#c77dff", "#ff9f1c", "#2ec4b6", "#f72585"];
+const SOURCE_COLOR = "#e7e9ee";
 
 const MIN = 16;
 
@@ -31,18 +33,29 @@ function applyDrag(d: Drag, dx: number, dy: number, snap: number): Rect {
   return { x, y, w, h };
 }
 
+interface Item {
+  id: string;
+  label: string;
+  rect: Rect;
+  color: string;
+  enabled: boolean;
+}
+
+// The canvas with draggable rectangles: output crops, or source placements.
 export function CanvasEditor({
   layout,
+  mode,
   selectedId,
   snap,
   onSelect,
-  onCropChange,
+  onRectChange,
 }: {
   layout: Layout;
+  mode: EditMode;
   selectedId: string | null;
   snap: number;
   onSelect: (id: string | null) => void;
-  onCropChange: (id: string, crop: Rect, final: boolean) => void;
+  onRectChange: (id: string, rect: Rect, final: boolean) => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ w: 800, h: 450 });
@@ -63,13 +76,13 @@ export function CanvasEditor({
   useEffect(() => {
     if (!drag) return;
     const move = (e: PointerEvent) => {
-      const crop = applyDrag(drag, (e.clientX - drag.startX) / scale, (e.clientY - drag.startY) / scale, snap);
-      setLive({ [drag.id]: crop });
-      onCropChange(drag.id, crop, false);
+      const rect = applyDrag(drag, (e.clientX - drag.startX) / scale, (e.clientY - drag.startY) / scale, snap);
+      setLive({ [drag.id]: rect });
+      onRectChange(drag.id, rect, false);
     };
     const up = (e: PointerEvent) => {
-      const crop = applyDrag(drag, (e.clientX - drag.startX) / scale, (e.clientY - drag.startY) / scale, snap);
-      onCropChange(drag.id, crop, true);
+      const rect = applyDrag(drag, (e.clientX - drag.startX) / scale, (e.clientY - drag.startY) / scale, snap);
+      onRectChange(drag.id, rect, true);
       setDrag(null);
       setLive({});
     };
@@ -79,7 +92,7 @@ export function CanvasEditor({
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
     };
-  }, [drag, scale, snap, onCropChange]);
+  }, [drag, scale, snap, onRectChange]);
 
   const begin = (e: React.PointerEvent, id: string, handle: Handle, start: Rect) => {
     e.stopPropagation();
@@ -88,32 +101,44 @@ export function CanvasEditor({
     setDrag({ id, handle, startX: e.clientX, startY: e.clientY, start });
   };
 
+  const items: Item[] =
+    mode === "outputs"
+      ? layout.outputs.flatMap((o, i) =>
+          o.source === "canvas"
+            ? [{ id: o.id, label: o.name + (o.rotation ? ` ↻${o.rotation}°` : ""), rect: o.crop, color: COLORS[i % COLORS.length], enabled: o.enabled }]
+            : [],
+        )
+      : layout.sources.map((s) => ({
+          id: s.id,
+          label: s.name + (s.opacity < 1 ? ` · ${Math.round(s.opacity * 100)}%` : ""),
+          rect: s.rect,
+          color: SOURCE_COLOR,
+          enabled: s.enabled,
+        }));
+
   return (
     <div className="stage" ref={stageRef} onPointerDown={() => onSelect(null)}>
       <div className="canvas" style={{ width: cw * scale, height: ch * scale }}>
         <LivePreview target="canvas" className="canvas-preview" />
-        {layout.outputs.map((o, i) => {
-          if (o.source !== "canvas") return null;
-          const r = live[o.id] ?? o.crop;
-          const selected = o.id === selectedId;
-          const color = COLORS[i % COLORS.length];
+        {items.map((it) => {
+          const r = live[it.id] ?? it.rect;
+          const selected = it.id === selectedId;
           return (
             <div
-              key={o.id}
-              className={`slice${selected ? " selected" : ""}${o.enabled ? "" : " disabled"}`}
-              style={{ left: r.x * scale, top: r.y * scale, width: r.w * scale, height: r.h * scale, borderColor: color }}
-              onPointerDown={(e) => begin(e, o.id, "move", o.crop)}
+              key={it.id}
+              className={`slice${selected ? " selected" : ""}${it.enabled ? "" : " disabled"}${mode === "sources" ? " src" : ""}`}
+              style={{ left: r.x * scale, top: r.y * scale, width: r.w * scale, height: r.h * scale, borderColor: it.color }}
+              onPointerDown={(e) => begin(e, it.id, "move", it.rect)}
             >
-              <span className="slice-label" style={{ background: color }}>
-                {o.name}
-                {o.rotation ? ` ↻${o.rotation}°` : ""}
+              <span className="slice-label" style={{ background: it.color }}>
+                {it.label}
               </span>
               <span className="slice-size">
                 {r.x},{r.y} {r.w}×{r.h}
               </span>
               {selected &&
                 (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as Handle[]).map((h) => (
-                  <span key={h} className={`handle h-${h}`} onPointerDown={(e) => begin(e, o.id, h, o.crop)} />
+                  <span key={h} className={`handle h-${h}`} onPointerDown={(e) => begin(e, it.id, h, it.rect)} />
                 ))}
             </div>
           );

@@ -3,10 +3,10 @@
 ## Status
 
 `engine/src/io/ndi_sdk.cpp` implements sending, receiving and discovery against
-the documented NDI SDK C API (v5/v6). It has **not been compiled yet**: the SDK
-wasn't installed on the development Mac, and I didn't fabricate SDK headers to
-make it build. CMake compiles it automatically once it finds the SDK. Until then
-`ndi_none.cpp` is used, and every output goes to a measuring null sink.
+the NDI SDK C API (v5/v6). It is built with the NDI 6 SDK on Windows and has been used
+with an NDI input and 4 NDI outputs playing in NDI Studio Monitor (2-hour run). CMake
+compiles it when it finds the SDK. Otherwise `ndi_none.cpp` is used, and every output goes
+to a measuring null sink (that is how the macOS and CI builds run).
 
 The engine only depends on the small interface in `engine/src/io/video_io.hpp`
 (`VideoSink`, `NdiReceiver`, `NdiSystem`), so if the SDK's API differs from what's
@@ -64,7 +64,7 @@ expected, the fix stays inside `ndi_sdk.cpp`.
 ## Bandwidth and UYVY
 
 A 3840×2160 BGRA frame is 33 MB. At 60 fps that's about 2 GB/s per output, and about 8 GB/s for four 4K outputs.
-The output pass now packs BT.709 limited-range UYVY 4:2:2 on the GPU (`ps_uyvy` in
+The output pass maps, samples and packs BT.709 limited-range UYVY 4:2:2 in one shader (`ps_textured_uyvy` in
 `render/shaders.hpp`). Measured at 4×4K, that halves the readback to 3.98 GB/s, and NDI
 receives its native format, so it does no colour conversion of its own. Set an output's
 `pixelFormat` to `bgra` to compare.

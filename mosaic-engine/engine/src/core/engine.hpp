@@ -4,10 +4,12 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -36,6 +38,10 @@ public:
     std::vector<std::string> discoveredNdiSources();
     bool ndiAvailable() const { return ndi_ != nullptr; }
 
+    // Freezes the current canvas so the next layout change crossfades from it over `ms`.
+    // Call before changing the layout; returns false if the render thread didn't respond.
+    bool captureForTransition(int ms);
+
     // Low-res BGRA preview of "canvas" or an output id, encoded as JPEG.
     bool previewJpeg(const std::string& target, std::string& jpeg);
     // Full-resolution JPEG of the next frame an output sends.
@@ -50,6 +56,7 @@ private:
         int texCount = 0, current = 0;
         int w = 0, h = 0;
         bool hasFrame = false;
+        bool patternDrawn = false;  // test pattern: texture holds a drawn frame
         std::unique_ptr<NdiReceiver> rx;
     };
     struct PreviewState {
@@ -71,7 +78,8 @@ private:
     void loop();
     void reconcile(const Layout& layout);
     void renderFrame(const Layout& layout, uint64_t frameId, Clock::time_point tick, double seconds);
-    void updateSources(const Layout& layout, uint64_t frameId, double seconds);
+    void updateSources(const Layout& layout, const std::set<std::string>& needed, uint64_t frameId, double seconds);
+    void renderCanvas(const Layout& layout, const std::set<std::string>& needed, Clock::time_point tick);
     void renderPreviews(const Layout& layout);
     void destroySource(SourceState& s);
     std::unique_ptr<VideoSink> makeSink(const std::string& ndiName, std::string& kind);
@@ -88,7 +96,18 @@ private:
 
     TexId canvas_ = 0;
     int canvasW_ = 0, canvasH_ = 0;
+    // What the outputs sample this frame: the canvas, or (direct path) the one
+    // source that exactly covers it, w x h pixels stretched over the canvas.
+    struct View {
+        TexId tex = 0;
+        float w = 0, h = 0;
+    } view_;
     std::map<std::string, SourceState> sources_;  // render thread only
+    struct OutputDraw {
+        TexId src;
+        Uniforms u;
+    };
+    std::map<std::string, OutputDraw> outputDraws_;  // this frame's output mappings, for previews (render thread)
 
     std::mutex channelsMutex_;
     std::map<std::string, std::shared_ptr<OutputChannel>> channels_;
@@ -103,13 +122,22 @@ private:
     std::deque<SyncEntry> sync_;
     uint64_t framesComplete_ = 0, framesPartial_ = 0;
 
+    // Crossfade (render thread, except the request handshake)
+    TexId fadeTex_ = 0;
+    Clock::time_point fadeStart_;
+    double fadeMs_ = 0;
+    std::mutex transitionMutex_;
+    std::condition_variable transitionCv_;
+    int transitionRequestMs_ = 0;
+    bool transitionCaptured_ = false;
+
     std::mutex statusMutex_;
     nlohmann::json sourceStatus_ = nlohmann::json::array();
 
     // Metrics
     RateMeter renderRate_;
     Ewma encodeMs_, waitMs_, gpuMs_, frameMs_, jitterMs_;
-    std::atomic<uint64_t> frameId_{0}, lateFrames_{0};
+    std::atomic<uint64_t> frameId_{0}, lateFrames_{0}, directFrames_{0};
     std::atomic<double> targetFps_{60};
 };
 

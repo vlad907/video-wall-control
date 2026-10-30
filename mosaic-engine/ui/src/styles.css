@@ -101,3 +101,21 @@ small, .muted { color: var(--muted); }
 .metrics th, .metrics td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .metrics th { color: var(--muted); font-weight: 500; font-size: 11px; }
 .metrics tr.muted td { color: var(--muted); }
+
+/* sources mode, wall, scenes */
+.slice.src { background: rgba(255, 255, 255, .04); border-style: solid; }
+.slice.src .slice-label { color: #111; }
+.topbar .seg.mode { flex: none; width: auto; }
+.group-head { font-size: 11px; color: var(--muted); padding: 4px 6px; border-left: 2px solid var(--accent); margin: 2px 0 4px; cursor: pointer; }
+.group-head:hover { color: var(--text); }
+.list-item.grouped { padding-left: 12px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chips button { padding: 2px 8px; font-size: 12px; }
+.slider { display: flex; align-items: center; gap: 8px; }
+.slider input { flex: 1; }
+.slider span { width: 38px; text-align: right; font-variant-numeric: tabular-nums; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; padding: 6px 10px; }
+button:disabled { opacity: .45; cursor: default; }
+.wall-diagram { width: 100%; max-height: 180px; background: #000; border: 1px solid var(--border); border-radius: 4px; }
+.wall-diagram rect { fill: rgba(76, 141, 255, .25); stroke: var(--accent); stroke-width: 1; }
+.wall-diagram text { fill: var(--text); font-size: 12px; text-anchor: middle; dominant-baseline: middle; }

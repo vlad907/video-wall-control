@@ -1,6 +1,7 @@
 """
 Video Wall Control - background service + web dashboard for a 4-panel
-NDI Studio Monitor mosaic.
+NDI Studio Monitor mosaic. Also starts and supervises the GPU mosaic engine
+(mosaic-engine/) when it has been built.
 
 Pure Python standard library (3.8+), no pip install needed.
 Run with pythonw.exe on Windows so no console window appears.
@@ -65,6 +66,9 @@ DEFAULT_CONFIG = {
     "layout_columns": 2,
     "window_options": {"hide_border": True, "always_on_top": True},
     "decorations": {"hw_accel": True},
+    # GPU mosaic engine (mosaic-engine/): started before the Studio Monitors and
+    # restarted if it stops answering. exe_path empty = the build in mosaic-engine/build.
+    "mosaic": {"enabled": True, "exe_path": "", "port": 8090, "args": []},
     "panels": [
         {"name": "Panel 1", "port": 80, "ndi_source": "", "display_device": ""},
         {"name": "Panel 2", "port": 81, "ndi_source": "", "display_device": ""},
@@ -147,6 +151,13 @@ def cfg(key):
 def panels():
     with config_lock:
         return [dict(p) for p in config["panels"]]
+
+
+def mosaic_cfg():
+    with config_lock:
+        merged = dict(DEFAULT_CONFIG["mosaic"])
+        merged.update(config.get("mosaic") or {})
+        return merged
 
 
 # --------------------------------------------------------------------------
@@ -644,6 +655,185 @@ def launch_instances(count):
 
 
 # --------------------------------------------------------------------------
+# GPU mosaic engine (mosaic-engine/)
+# --------------------------------------------------------------------------
+
+MOSAIC_DIR = BASE_DIR / "mosaic-engine"
+mosaic_state = {"proc": None, "last_start": 0.0, "down_streak": 0, "warned": 0.0}
+
+
+def find_mosaic_exe():
+    configured = (mosaic_cfg().get("exe_path") or "").strip().strip('"')
+    if configured:
+        return configured if os.path.isfile(configured) else None
+    name = "mosaic_engine.exe" if IS_WINDOWS else "mosaic_engine"
+    for rel in ("build/Release", "build", "build/RelWithDebInfo"):
+        candidate = MOSAIC_DIR / rel / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def mosaic_url(path):
+    return "http://127.0.0.1:%d%s" % (int(mosaic_cfg()["port"]), path)
+
+
+def mosaic_get(path, timeout=1.5):
+    try:
+        return http_json("GET", mosaic_url(path), timeout=timeout)
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def mosaic_alive():
+    result = mosaic_get("/api/health")
+    return isinstance(result, dict) and result.get("ok") is True
+
+
+def mosaic_root(exe):
+    # The engine finds layouts/, data/ and ui/dist relative to its working directory.
+    exe_dir = Path(exe).resolve().parent
+    for d in (exe_dir, *exe_dir.parents):
+        if (d / "layouts").is_dir() and (d / "ui").is_dir():
+            return d
+    return MOSAIC_DIR if MOSAIC_DIR.is_dir() else exe_dir
+
+
+def start_mosaic():
+    """Starts the engine unless one is already answering on its port. Returns True when it's up."""
+    mc = mosaic_cfg()
+    if not mc.get("enabled"):
+        return False
+    if mosaic_alive():
+        return True
+    exe = find_mosaic_exe()
+    if not exe:
+        if time.time() - mosaic_state["warned"] > 300:
+            mosaic_state["warned"] = time.time()
+            log.warning("Mosaic engine not built yet (looked in %s); skipping it", MOSAIC_DIR / "build")
+        return False
+    stop_mosaic()
+    LOG_DIR.mkdir(exist_ok=True)
+    log_path = LOG_DIR / "mosaic-engine.log"
+    if log_path.exists() and log_path.stat().st_size > 5_000_000:
+        os.replace(log_path, log_path.with_suffix(".log.1"))
+    out = open(log_path, "ab")
+    args = [exe, "--port", str(int(mc["port"]))] + [str(a) for a in mc.get("args") or []]
+    kwargs = dict(cwd=str(mosaic_root(exe)), stdin=subprocess.DEVNULL, stdout=out, stderr=out, close_fds=True)
+    log.info("Starting mosaic engine: %s", " ".join(args))
+    mosaic_state["last_start"] = time.time()
+    try:
+        if IS_WINDOWS:
+            flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+            try:
+                # Like the monitors, survive a restart of this service (it re-adopts the engine).
+                mosaic_state["proc"] = subprocess.Popen(args, creationflags=flags | CREATE_BREAKAWAY_FROM_JOB, **kwargs)
+            except OSError:
+                mosaic_state["proc"] = subprocess.Popen(args, creationflags=flags, **kwargs)
+        else:
+            mosaic_state["proc"] = subprocess.Popen(args, **kwargs)
+    except OSError as exc:
+        log.error("Could not start the mosaic engine: %s", exc)
+        return False
+    finally:
+        out.close()
+    for _ in range(40):
+        time.sleep(0.5)
+        if mosaic_alive():
+            log.info("Mosaic engine is up on port %d", int(mc["port"]))
+            mosaic_state["down_streak"] = 0
+            return True
+        if mosaic_state["proc"].poll() is not None:
+            log.error("Mosaic engine exited with code %s (see logs/mosaic-engine.log)", mosaic_state["proc"].returncode)
+            return False
+    log.error("Mosaic engine did not answer within 20 s (see logs/mosaic-engine.log)")
+    return False
+
+
+def stop_mosaic():
+    proc = mosaic_state["proc"]
+    mosaic_state["proc"] = None
+    if proc and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    elif IS_WINDOWS:
+        # One we didn't start (e.g. left over from a previous run of this service).
+        subprocess.run(["taskkill", "/F", "/IM", "mosaic_engine.exe"],
+                       capture_output=True, timeout=15, creationflags=CREATE_NO_WINDOW)
+
+
+def mosaic_watchdog():
+    if not mosaic_cfg().get("enabled") or not find_mosaic_exe():
+        return
+    if mosaic_alive():
+        mosaic_state["down_streak"] = 0
+        return
+    mosaic_state["down_streak"] += 1
+    # Two missed checks in a row, and not right after a start: restart it.
+    if mosaic_state["down_streak"] >= 2 and time.time() - mosaic_state["last_start"] > 30:
+        log.warning("Mosaic engine is not answering; restarting it")
+        start_mosaic()
+
+
+def mosaic_status(host):
+    mc = mosaic_cfg()
+    metrics = mosaic_get("/api/metrics") if mc.get("enabled") else None
+    engine = (metrics or {}).get("engine") or {}
+    outputs = [{"id": o.get("id"), "name": o.get("name"), "ndiName": o.get("ndiName"),
+                "enabled": o.get("enabled"), "fps": o.get("fps"), "sink": o.get("sink"),
+                "connections": o.get("connections")} for o in (metrics or {}).get("outputs") or []]
+    return {
+        "enabled": bool(mc.get("enabled")),
+        "exe": find_mosaic_exe(),
+        "running": metrics is not None,
+        "editor_url": "http://%s:%d/" % (host, int(mc["port"])),
+        "render_fps": engine.get("renderFps"),
+        "target_fps": engine.get("targetFps"),
+        "gpu": engine.get("device"),
+        "ndi": engine.get("ndi"),
+        "layout": engine.get("layout"),
+        "outputs": outputs,
+    }
+
+
+def mosaic_stream_names():
+    """Full NDI names ("MACHINE (Mosaic_Output_01)") of the engine's enabled outputs, in order."""
+    result = mosaic_get("/api/outputs", timeout=3)
+    if not isinstance(result, dict):
+        raise RuntimeError("The mosaic engine is not running")
+    outs = [o for o in result.get("outputs") or [] if o.get("enabled", True)]
+    try:
+        discovered = get_sources()
+    except RuntimeError:
+        discovered = []
+    host = socket.gethostname().split(".")[0].upper()
+    names = []
+    for o in outs:
+        suffix = "(%s)" % o["ndiName"]
+        matches = [n for n in discovered if n.endswith(suffix)]
+        local = [n for n in matches if n.upper().startswith(host + " ")]
+        names.append((local or matches or ["%s %s" % (host, suffix)])[0])
+    return names
+
+
+def assign_mosaic_to_panels():
+    """Points panel 1 at the engine's first output, panel 2 at the second, and so on."""
+    names = mosaic_stream_names()
+    if not names:
+        raise RuntimeError("The mosaic engine has no enabled outputs")
+    targets = panels()
+    updates = [{"port": p["port"], "ndi_source": n} for p, n in zip(targets, names)]
+    update_panels(updates)
+    log.info("Assigned mosaic outputs to panels: %s",
+             ", ".join("%s -> %s" % (p["name"], n) for p, n in zip(targets, names)))
+    with action_lock:
+        return [apply_panel(p) for p in panels() if p["port"] in {u["port"] for u in updates}]
+
+
+# --------------------------------------------------------------------------
 # Supervisor / watchdog
 # --------------------------------------------------------------------------
 
@@ -681,6 +871,10 @@ def initial_startup():
     state["phase"] = "boot-delay"
     log.info("Waiting %.0fs for network and displays to initialize", delay)
     time.sleep(delay)
+    if mosaic_cfg().get("enabled"):
+        # The engine first, so its streams exist when the monitors look for them.
+        state["phase"] = "starting engine"
+        start_mosaic()
     with action_lock:
         state["phase"] = "launching"
         ports = [p["port"] for p in panels()]
@@ -699,6 +893,10 @@ def initial_startup():
 
 
 def watchdog_tick():
+    try:
+        mosaic_watchdog()
+    except Exception:
+        log.exception("Mosaic engine check failed")
     expected = panels()
     if processes_managed():
         running = count_processes()
@@ -913,6 +1111,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"displays": enumerate_displays()})
             elif path == "/api/log":
                 self.send_json({"log": list(recent_log)})
+            elif path == "/api/mosaic":
+                host = (self.headers.get("Host") or "localhost").rsplit(":", 1)[0]
+                self.send_json(mosaic_status(host))
             else:
                 self.send_json({"error": "not found"}, 404)
         except RuntimeError as exc:
@@ -953,6 +1154,18 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 run_in_background(restart_all, "requested from dashboard")
                 self.send_json({"ok": True})
+            elif path == "/api/mosaic/restart":
+                if not find_mosaic_exe():
+                    self.send_json({"error": "Mosaic engine not found; build it or set its path"}, 400)
+                    return
+                def restart():
+                    stop_mosaic()
+                    start_mosaic()
+                run_in_background(restart)
+                self.send_json({"ok": True})
+            elif path == "/api/mosaic/assign":
+                results = assign_mosaic_to_panels()
+                self.send_json({"results": [{"ok": ok, "message": m} for ok, m in results]})
             elif path == "/api/settings":
                 with config_lock:
                     if "enforce_mapping" in body:
@@ -964,7 +1177,20 @@ class Handler(BaseHTTPRequestHandler):
                         config["exe_path"] = exe
                         exe_cache.update(path=None, checked=0.0, warned=0.0)
                         log.info("Studio Monitor path set to '%s'", exe or "(auto-detect)")
+                    if "mosaic_enabled" in body or "mosaic_exe_path" in body:
+                        mc = dict(config.get("mosaic") or {})
+                        if "mosaic_enabled" in body:
+                            mc["enabled"] = bool(body["mosaic_enabled"])
+                        if "mosaic_exe_path" in body:
+                            exe = str(body["mosaic_exe_path"]).strip().strip('"')
+                            if exe and not os.path.isfile(exe):
+                                raise ValueError("File not found: %s" % exe)
+                            mc["exe_path"] = exe
+                        config["mosaic"] = mc
+                        log.info("Mosaic engine %s", "enabled" if mc.get("enabled", True) else "disabled")
                 save_config()
+                if "mosaic_enabled" in body or "mosaic_exe_path" in body:
+                    run_in_background(start_mosaic if mosaic_cfg().get("enabled") else stop_mosaic)
                 self.send_json({"ok": True})
             else:
                 self.send_json({"error": "not found"}, 404)

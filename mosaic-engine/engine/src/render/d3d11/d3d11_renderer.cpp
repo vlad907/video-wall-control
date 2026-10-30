@@ -142,7 +142,7 @@ public:
         auto vs = compile(src, "vs_main", "vs_5_0");
         auto psPattern = compile(src, "ps_pattern", "ps_5_0");
         auto psTextured = compile(src, "ps_textured", "ps_5_0");
-        auto psUyvy = compile(src, "ps_uyvy", "ps_5_0");
+        auto psUyvy = compile(src, "ps_textured_uyvy", "ps_5_0");
         check(device_->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &vs_), "CreateVertexShader");
         check(device_->CreatePixelShader(psPattern->GetBufferPointer(), psPattern->GetBufferSize(), nullptr, &psPattern_), "CreatePixelShader");
         check(device_->CreatePixelShader(psTextured->GetBufferPointer(), psTextured->GetBufferSize(), nullptr, &psTextured_), "CreatePixelShader");
@@ -167,6 +167,19 @@ public:
         rd.ScissorEnable = TRUE;
         rd.DepthClipEnable = TRUE;
         check(device_->CreateRasterizerState(&rd, &raster_), "CreateRasterizerState");
+
+        // Translucent textured draws blend by their alpha (opacity).
+        D3D11_BLEND_DESC bd{};
+        auto& rt = bd.RenderTarget[0];
+        rt.BlendEnable = TRUE;
+        rt.SrcBlend = D3D11_BLEND_SRC_ALPHA;
+        rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+        rt.BlendOp = D3D11_BLEND_OP_ADD;
+        rt.SrcBlendAlpha = D3D11_BLEND_ONE;
+        rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+        rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        check(device_->CreateBlendState(&bd, &blendOver_), "CreateBlendState");
     }
 
     ~D3D11Renderer() override {
@@ -310,8 +323,11 @@ public:
     }
 
     void drawTestPattern(const Uniforms& u) override { draw(psPattern_.Get(), nullptr, u); }
-    void drawTextured(TexId src, const Uniforms& u) override { draw(psTextured_.Get(), textures_.at(src).srv.Get(), u); }
-    void drawUYVY(TexId src, const Uniforms& u) override { draw(psUyvy_.Get(), textures_.at(src).srv.Get(), u); }
+    void drawTextured(TexId src, const Uniforms& u) override {
+        // Blending reads the target back; skip it for opaque draws (bandwidth matters on integrated GPUs).
+        draw(psTextured_.Get(), textures_.at(src).srv.Get(), u, u.fparams[3] < 0.999f);
+    }
+    void drawTexturedUYVY(TexId src, const Uniforms& u) override { draw(psUyvy_.Get(), textures_.at(src).srv.Get(), u); }
 
     void endPass() override { ctx_->OMSetRenderTargets(0, nullptr, nullptr); }
 
@@ -374,7 +390,7 @@ private:
         std::vector<Copy> copies;
     };
 
-    void draw(ID3D11PixelShader* ps, ID3D11ShaderResourceView* srv, const Uniforms& u) {
+    void draw(ID3D11PixelShader* ps, ID3D11ShaderResourceView* srv, const Uniforms& u, bool blend = false) {
         LONG x0 = std::max(0L, static_cast<LONG>(u.dstRect[0]));
         LONG y0 = std::max(0L, static_cast<LONG>(u.dstRect[1]));
         LONG x1 = std::min(static_cast<LONG>(passW_), static_cast<LONG>(u.dstRect[0] + u.dstRect[2]));
@@ -388,6 +404,7 @@ private:
         check(ctx_->Map(cbuffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m), "Map(cbuffer)");
         std::memcpy(m.pData, &u, sizeof(Uniforms));
         ctx_->Unmap(cbuffer_.Get(), 0);
+        ctx_->OMSetBlendState(blend ? blendOver_.Get() : nullptr, nullptr, 0xffffffff);
         ctx_->PSSetShader(ps, nullptr, 0);
         ctx_->PSSetShaderResources(0, 1, &srv);
         ctx_->Draw(3, 0);
@@ -475,6 +492,7 @@ private:
     ComPtr<ID3D11Buffer> cbuffer_;
     ComPtr<ID3D11SamplerState> sampler_;
     ComPtr<ID3D11RasterizerState> raster_;
+    ComPtr<ID3D11BlendState> blendOver_;
 
     std::unordered_map<int, Texture> textures_;               // render thread only
     std::unordered_map<int, std::shared_ptr<Readback>> readbacks_;  // guarded by m_

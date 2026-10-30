@@ -3,9 +3,10 @@
 A background service plus web dashboard for a 4-panel NDI mosaic driven by
 4 instances of **NDI Studio Monitor** on a Windows Mini PC.
 
-> This repo also contains [`mosaic-engine/`](mosaic-engine/), an experimental GPU mosaic
-> engine that cuts one NDI canvas into separate NDI outputs, to replace Resolume's
-> Advanced Output. It is independent of the dashboard below; see its own README.
+> This repo also contains [`mosaic-engine/`](mosaic-engine/), a GPU mosaic engine that
+> cuts one NDI canvas into separate NDI outputs (`Mosaic_Output_01…`), to replace
+> Resolume's Advanced Output. Once it's built, this service starts it at logon too, and the
+> dashboard can point the panels at its outputs in one click. See its own README.
 
 - Starts hidden at Windows logon (no console window on the wall)
 - Waits 10 s for the network and displays, then launches any missing Studio Monitor
@@ -15,6 +16,9 @@ A background service plus web dashboard for a 4-panel NDI mosaic driven by
   to another source, and restarts all instances if an API stays unresponsive
 - Dashboard at `http://<mini-pc-ip>:8080`: every NDI stream on the network, what each
   panel is playing, source selection, apply/save, re-apply, restart, activity log
+- If `mosaic-engine/` has been built: starts the engine before the monitors, restarts it
+  if it stops answering, and shows its status. **Show mosaic on panels** sets panel 1 to
+  `Mosaic_Output_01`, panel 2 to `_02`, and so on. The engine's log is `logs/mosaic-engine.log`
 
 It uses only the Python standard library, so nothing needs to be installed with pip.
 
@@ -84,6 +88,7 @@ Open `http://localhost:8080/api/sources/raw` on the Mini PC. It shows the raw
 | `decorations` | `hw_accel: true` | Sent as the `decorations` object |
 | `layout_columns` | `2` | Dashboard grid. Use `4` for a 1×4 wall |
 | `panels` | ports 80–83 | Panel name, port, saved `ndi_source` (optional `display_device`, sent only if set) |
+| `mosaic` | `enabled: true`, `port: 8090` | Mosaic engine supervision. `exe_path` empty means `mosaic-engine\build\Release\mosaic_engine.exe`; `args` are extra command-line flags (for example `["--layout", "wall-2x2-4k"]`). If the engine isn't built, this does nothing |
 
 Each apply reads the panel's current `/v1/configuration`, changes only these fields, and POSTs the whole object back:
 

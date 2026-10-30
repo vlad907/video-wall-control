@@ -6,9 +6,10 @@ scale and rotation, and publishes each region as its own NDI stream. A web edito
 in the style of Resolume's Advanced Output drives the running engine through a REST API.
 
 ```
- NDI inputs ─┐                       ┌─► output RT ─► readback ring ─► sender thread ─► NDI "Mosaic_Output_01"
- test pattern ┼─► canvas texture ─────┼─► output RT ─► readback ring ─► sender thread ─► NDI "Mosaic_Output_02"
- solid colour ┘   (one GPU pass)      └─► ... one per output, all from the same frame id
+ NDI inputs ─┐  layered, with        ┌─► UYVY pass ─► readback ring ─► sender thread ─► NDI "Mosaic_Output_01"
+ test pattern ┼─► opacity, onto the ──┼─► UYVY pass ─► readback ring ─► sender thread ─► NDI "Mosaic_Output_02"
+ solid colour ┘   canvas texture      └─► ... one per output, all from the same frame id
+                  (skipped when one source exactly fills the canvas)
 
  web editor (React/TS) ◄──REST + SSE──► HTTP server ──► LayoutStore (JSON files) ──► render thread
 ```
@@ -23,8 +24,12 @@ in the style of Resolume's Advanced Output drives the running engine through a R
 | Web editor (drag / resize regions, inspector, live previews, layouts, metrics) | **Working**, verified against the running engine |
 | REST API + server-sent events | **Working**, exercised with curl |
 | Layout persistence across restarts | **Working**, verified |
-| Direct3D 11 backend (Windows) | **Compiles and links** for Windows x64 (MinGW cross-build); HLSL validated with glslang. **Not yet run on Windows hardware.** |
-| NDI send / receive / discovery | **Written, not compiled.** The NDI SDK was not installed on the development machine. Builds automatically when CMake finds the SDK. See [docs/NDI.md](docs/NDI.md). |
+| Direct3D 11 backend (Windows) | **Working on Windows hardware** (AMD Radeon 610M): a 2-hour run with an NDI input and 4 NDI outputs, no tearing seen. CI builds it with MSVC and pixel-checks it on WARP on every push. |
+| NDI send / receive / discovery | **Working on Windows** with the NDI 6 SDK; streams play in NDI Studio Monitor. See [docs/NDI.md](docs/NDI.md). |
+| Video wall tool (grid of panels, bezel gaps in px or mm, portrait panels) | **Working, pixel-checked** (`tools/ci_check.py`) |
+| Layered sources with opacity and source crop; scenes with crossfade | **Working, pixel-checked** on Metal; checked on Direct3D 11 by CI |
+| Starts at boot with the video-wall dashboard, restarted if it stops | **Working** (tested on macOS with mock Studio Monitors) |
+| 24 outputs (6 × 4 wall of 1080p) | **Measured**: 60 fps, no drops, on Apple M4 with the null sink. Not yet measured with real NDI or on Windows. |
 
 Without the NDI SDK, outputs go to a *null sink* that reads the readback memory
 and measures everything except the network send.
@@ -87,13 +92,41 @@ Example layouts are in [layouts/](layouts):
 | `row-1x4-4k.json` | 1×4 horizontal: 15360×2160 canvas |
 | `mixed-resolution.json` | 4K centre plus 1080p sides, using `fit`, `fill` and a 1:1 pixel crop |
 | `rotated-portrait.json` | Portrait displays (`rotation` 90 / 270) beside a landscape pair |
+| `wall-6x4-1080p.json` | 24 × 1080p panels in a 6×4 wall with 40 px bezels (11720×4440 canvas), made with the wall tool |
 
 Output fields: `id`, `name`, `ndiName`, `width`/`height` (output resolution), `pixelFormat` (`uyvy`, the default, or `bgra`), `crop`
 (region in canvas pixels, or in source pixels when `source` is a source id),
 `rotation` (0/90/180/270, clockwise), `scaleMode` (`stretch` | `fit` | `fill`),
-`source` (`"canvas"` or a source id), `enabled`.
+`source` (`"canvas"` or a source id), `enabled`, and `group` (`"wall"` for outputs made by the wall tool).
+
+Source fields: `id`, `name`, `type` (`test_pattern`, `ndi`, `solid`), `ndiName`, `rect` (where it sits
+on the canvas), `crop` (part of the source shown; `w`/`h` 0 = all of it), `opacity` (0–1), `color`
+(solid), `animated` (test pattern), `enabled`. Sources are drawn in order: the last one is on top.
 
 Rotation is clockwise. A display physically mounted 90° counter-clockwise needs `rotation: 90`.
+
+## Video walls, layering and scenes
+
+**Wall tool** (Outputs → *Wall…*, or `PUT /api/wall`). Give it columns, rows, the panel
+resolution, the orientation, and the bezel gap, either in pixels or in millimetres (picture
+width plus the gap between pictures; it converts using the panel's pixel pitch). It creates
+`out-1 … out-N` row by row, with the bezel gaps left out of the canvas so straight lines
+stay straight across panels. It can also resize the canvas to fit. Running it again keeps
+each `out-N`'s NDI stream name, so receivers don't need re-pointing. Outputs that aren't
+part of the wall are left alone.
+
+**Layering.** Every source has a position, an optional crop, and an opacity. Use *Edit sources*
+in the top bar to drag them on the canvas. Translucent sources are alpha-blended over the
+ones below. Opaque ones just replace the pixels.
+
+**Scenes** are saved arrangements of sources, stored with the layout. Recall one with a cut
+or a crossfade of 0.5–2 s (`POST /api/scenes/:id/recall {"transitionMs":1000}`). Outputs
+don't change. Activating another layout can crossfade too, when its canvas is the same size.
+
+**What the GPU skips.** Disabled, fully transparent, and fully covered sources aren't drawn,
+and a test pattern with `animated: false` is drawn once. When a single opaque source exactly
+fills the canvas (the usual setup, with one NDI input), the outputs sample it directly, with
+no canvas pass. UYVY outputs are mapped and packed in one pass, without a full-size BGRA copy.
 
 ## The test pattern
 
@@ -127,7 +160,11 @@ Across the whole source there's also:
 | GET | `/api/layouts` | saved layouts |
 | GET / DELETE | `/api/layouts/:id` | |
 | POST | `/api/layouts` | save a layout (full body), or `{"fromActive":true,"name":"..."}` to save a copy |
-| POST | `/api/layouts/:id/activate` | switch live |
+| POST | `/api/layouts/:id/activate` | switch live; optional `{"transitionMs": N}` crossfade |
+| GET / PUT / DELETE | `/api/wall` | the wall definition; PUT (partial body) regenerates the wall outputs; DELETE keeps them as plain outputs |
+| GET / POST | `/api/scenes` | list scenes / save the current sources as `{"name": ...}` |
+| POST | `/api/scenes/:id/recall` | replace the sources with the scene's; optional `{"transitionMs": N}` |
+| DELETE | `/api/scenes/:id` | |
 | GET | `/api/metrics` | engine, per-output and sync metrics |
 | GET | `/api/events` | server-sent events: metrics + layout version every 500 ms |
 
@@ -157,6 +194,19 @@ From `python3 tools/bench.py --seconds 15`:
 
 Memory stays flat at about 267 MB over a 40 s 4×4K run.
 
+Scaling the number of outputs with the wall tool (1080p panels, UYVY, animated test pattern
+over the whole canvas, 8 s each, after the single-pass UYVY change):
+
+| Outputs | fps | Late frames | CPU / frame | GPU / frame | Readback | Drops | Partial frames |
+|---|---|---|---|---|---|---|---|
+| 4 | 60.0 | 0 | 0.28 ms | 8.5 ms | 995 MB/s | 0 | 0 |
+| 12 (4×3) | 60.0 | 0 | 0.50 ms | 14.4 ms | 2983 MB/s | 0 | 0 |
+| 24 (6×4) | 60.0 | 0 | 1.10 ms | 16.1 ms | 5970 MB/s | 0 | 0 |
+
+At 24 outputs the engine uses about 600 MB of RAM, most of it the 11520×4320 test
+pattern texture and 24 × 4 readback buffers. Before the single-pass UYVY change, 24
+outputs took 21.4 ms of GPU time and missed some frames.
+
 How to read these numbers:
 - **UYVY halves readback bandwidth.** The packing accuracy is checked by `tools/check_uyvy.py`: on pixel pairs of uniform colour (96.7 % of the test frame), the maximum error is 1 level.
 - **Tick lateness** is how late each frame starts compared with its schedule. Before the render thread used the macOS real-time policy, it averaged 3–4 ms (timer coalescing). See `engine/src/util/realtime.cpp`.
@@ -172,7 +222,8 @@ See [docs/SYNC.md](docs/SYNC.md). In short:
 
 ## Limitations / next steps
 
-- The Direct3D 11 backend and NDI integration need their first run on the Windows workstation (run `tools/bench.py` there). See [docs/NEXT.md](docs/NEXT.md).
+- 24 outputs have not yet been measured with real NDI sending or on the Windows machine. See [docs/NEXT.md](docs/NEXT.md).
+- Small integrated GPUs (for example the Radeon 610M) can't render the animated test pattern over a 4K canvas at 60 fps. Use an NDI input, or set the pattern's `animated` to false.
 - No audio.
 - No video-file source.
 - No edge blending or warping.

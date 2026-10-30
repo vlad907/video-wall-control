@@ -57,6 +57,8 @@ static SourceType sourceTypeFrom(const std::string& s) {
     return SourceType::TestPattern;
 }
 
+static PixelFormat pixelFormatFrom(const std::string& s) { return s == "bgra" ? PixelFormat::Bgra : PixelFormat::Uyvy; }
+
 std::string sanitizeId(const std::string& raw) {
     std::string out;
     for (char c : raw) {
@@ -78,7 +80,8 @@ void from_json(const json& j, Rect& r) {
 }
 
 void to_json(json& j, const SourceConfig& s) {
-    j = json{{"id", s.id}, {"name", s.name}, {"type", toString(s.type)}, {"rect", s.rect}, {"enabled", s.enabled}};
+    j = json{{"id", s.id},       {"name", s.name},       {"type", toString(s.type)}, {"rect", s.rect},
+             {"crop", s.crop},   {"opacity", s.opacity}, {"enabled", s.enabled}};
     if (s.type == SourceType::Ndi) j["ndiName"] = s.ndiName;
     if (s.type == SourceType::Solid) j["color"] = s.color;
     if (s.type == SourceType::TestPattern) j["animated"] = s.animated;
@@ -90,6 +93,8 @@ void from_json(const json& j, SourceConfig& s) {
     s.type = sourceTypeFrom(j.value("type", std::string(toString(s.type))));
     s.ndiName = j.value("ndiName", s.ndiName);
     if (j.contains("rect")) s.rect = j.at("rect").get<Rect>();
+    if (j.contains("crop")) from_json(j.at("crop"), s.crop);
+    s.opacity = j.value("opacity", s.opacity);
     if (j.contains("color")) s.color = j.at("color").get<std::array<float, 4>>();
     s.enabled = j.value("enabled", s.enabled);
     s.animated = j.value("animated", s.animated);
@@ -100,6 +105,7 @@ void to_json(json& j, const OutputConfig& o) {
              {"width", o.width},     {"height", o.height},     {"crop", o.crop},
              {"rotation", o.rotation}, {"scaleMode", toString(o.scaleMode)},
              {"source", o.source},   {"pixelFormat", toString(o.pixelFormat)}, {"enabled", o.enabled}};
+    if (!o.group.empty()) j["group"] = o.group;
 }
 
 void from_json(const json& j, OutputConfig& o) {
@@ -120,8 +126,38 @@ void patchOutput(OutputConfig& o, const json& p) {
     o.rotation = p.value("rotation", o.rotation);
     if (p.contains("scaleMode")) o.scaleMode = scaleModeFrom(p.at("scaleMode").get<std::string>());
     o.source = p.value("source", o.source);
-    if (p.contains("pixelFormat")) o.pixelFormat = p.at("pixelFormat").get<std::string>() == "bgra" ? PixelFormat::Bgra : PixelFormat::Uyvy;
+    if (p.contains("pixelFormat")) o.pixelFormat = pixelFormatFrom(p.at("pixelFormat").get<std::string>());
+    o.group = p.value("group", o.group);
     o.enabled = p.value("enabled", o.enabled);
+}
+
+void to_json(json& j, const WallConfig& w) {
+    j = json{{"cols", w.cols},       {"rows", w.rows},         {"outputWidth", w.outputWidth},
+             {"outputHeight", w.outputHeight},                 {"rotation", w.rotation},
+             {"gapX", w.gapX},       {"gapY", w.gapY},         {"x", w.x},
+             {"y", w.y},             {"pixelFormat", toString(w.pixelFormat)}, {"fitCanvas", w.fitCanvas}};
+}
+
+void from_json(const json& j, WallConfig& w) {
+    w.cols = j.value("cols", w.cols);
+    w.rows = j.value("rows", w.rows);
+    w.outputWidth = j.value("outputWidth", w.outputWidth);
+    w.outputHeight = j.value("outputHeight", w.outputHeight);
+    w.rotation = j.value("rotation", w.rotation);
+    w.gapX = j.value("gapX", w.gapX);
+    w.gapY = j.value("gapY", w.gapY);
+    w.x = j.value("x", w.x);
+    w.y = j.value("y", w.y);
+    if (j.contains("pixelFormat")) w.pixelFormat = pixelFormatFrom(j.at("pixelFormat").get<std::string>());
+    w.fitCanvas = j.value("fitCanvas", w.fitCanvas);
+}
+
+void to_json(json& j, const Scene& s) { j = json{{"id", s.id}, {"name", s.name}, {"sources", s.sources}}; }
+
+void from_json(const json& j, Scene& s) {
+    s.id = j.value("id", s.id);
+    s.name = j.value("name", s.name);
+    if (j.contains("sources")) s.sources = j.at("sources").get<std::vector<SourceConfig>>();
 }
 
 void to_json(json& j, const CanvasConfig& c) {
@@ -136,7 +172,8 @@ void from_json(const json& j, CanvasConfig& c) {
 
 void to_json(json& j, const Layout& l) {
     j = json{{"id", l.id},         {"name", l.name},       {"frameRate", l.frameRate},
-             {"canvas", l.canvas}, {"sources", l.sources}, {"outputs", l.outputs}};
+             {"canvas", l.canvas}, {"sources", l.sources}, {"outputs", l.outputs}, {"scenes", l.scenes}};
+    if (l.wall) j["wall"] = *l.wall;
 }
 
 void from_json(const json& j, Layout& l) {
@@ -146,6 +183,11 @@ void from_json(const json& j, Layout& l) {
     if (j.contains("canvas")) l.canvas = j.at("canvas").get<CanvasConfig>();
     if (j.contains("sources")) l.sources = j.at("sources").get<std::vector<SourceConfig>>();
     if (j.contains("outputs")) l.outputs = j.at("outputs").get<std::vector<OutputConfig>>();
+    if (j.contains("wall")) {
+        if (j.at("wall").is_null()) l.wall.reset();
+        else l.wall = j.at("wall").get<WallConfig>();
+    }
+    if (j.contains("scenes")) l.scenes = j.at("scenes").get<std::vector<Scene>>();
 }
 
 static int clampDim(int v) { return std::clamp(v, 1, kMaxDimension); }
@@ -170,6 +212,10 @@ std::vector<std::string> normalize(Layout& l) {
         if (s.rect.w <= 0 || s.rect.h <= 0) s.rect = {0, 0, l.canvas.width, l.canvas.height};
         s.rect.w = clampDim(s.rect.w);
         s.rect.h = clampDim(s.rect.h);
+        s.crop.w = std::clamp(s.crop.w, 0, kMaxDimension);
+        s.crop.h = std::clamp(s.crop.h, 0, kMaxDimension);
+        if (!(s.opacity >= 0.f)) s.opacity = 0.f;  // also catches NaN
+        s.opacity = std::min(s.opacity, 1.f);
         if (s.type == SourceType::Ndi && s.ndiName.empty()) problems.push_back("source '" + s.id + "' has no ndiName");
     }
 
@@ -202,7 +248,121 @@ std::vector<std::string> normalize(Layout& l) {
             o.source = "canvas";
         }
     }
+
+    if (l.wall) {
+        auto& w = *l.wall;
+        w.cols = std::clamp(w.cols, 1, 16);
+        w.rows = std::clamp(w.rows, 1, 16);
+        w.outputWidth = clampDim(w.outputWidth);
+        w.outputHeight = clampDim(w.outputHeight);
+        w.rotation = (((w.rotation % 360) + 360) % 360) / 90 * 90;
+        w.gapX = std::clamp(w.gapX, 0, kMaxDimension);
+        w.gapY = std::clamp(w.gapY, 0, kMaxDimension);
+    }
+
+    ids.clear();
+    n = 0;
+    for (auto& sc : l.scenes) {
+        ++n;
+        sc.id = sanitizeId(sc.id.empty() ? sc.name : sc.id);
+        if (sc.id.empty() || ids.count(sc.id)) sc.id = "scene-" + std::to_string(n);
+        ids.insert(sc.id);
+        if (sc.name.empty()) sc.name = sc.id;
+    }
     return problems;
+}
+
+void applyWall(Layout& l, WallConfig w) {
+    Layout probe;
+    probe.wall = w;
+    normalize(probe);  // clamp the wall's values
+    w = *probe.wall;
+
+    bool sideways = w.rotation == 90 || w.rotation == 270;
+    int cellW = sideways ? w.outputHeight : w.outputWidth;  // panel size on the canvas
+    int cellH = sideways ? w.outputWidth : w.outputHeight;
+    if (w.pixelFormat == PixelFormat::Uyvy && w.outputWidth % 2) w.outputWidth += 1;
+
+    if (w.fitCanvas) {
+        int cw = std::clamp(w.x + w.cols * cellW + (w.cols - 1) * w.gapX, 1, kMaxDimension);
+        int ch = std::clamp(w.y + w.rows * cellH + (w.rows - 1) * w.gapY, 1, kMaxDimension);
+        // Sources that covered the whole old canvas keep covering it.
+        for (auto& s : l.sources)
+            if (s.rect.x == 0 && s.rect.y == 0 && s.rect.w == l.canvas.width && s.rect.h == l.canvas.height)
+                s.rect = {0, 0, cw, ch};
+        l.canvas.width = cw;
+        l.canvas.height = ch;
+    }
+
+    int count = w.cols * w.rows;
+    std::vector<OutputConfig> others;
+    std::vector<OutputConfig> wall(count);
+    for (auto& o : l.outputs) {
+        // out-N within the grid is reused (keeps its name and NDI stream);
+        // other wall outputs are dropped; everything else stays.
+        int idx = 0;
+        if (o.id.rfind("out-", 0) == 0) {
+            try {
+                idx = std::stoi(o.id.substr(4));
+            } catch (...) {
+                idx = 0;
+            }
+        }
+        if (idx >= 1 && idx <= count && std::to_string(idx) == o.id.substr(4)) wall[idx - 1] = o;
+        else if (o.group != "wall") others.push_back(o);
+    }
+    for (int r = 0; r < w.rows; ++r)
+        for (int c = 0; c < w.cols; ++c) {
+            int i = r * w.cols + c;
+            OutputConfig& o = wall[i];
+            if (o.id.empty()) {
+                o.id = "out-" + std::to_string(i + 1);
+                char buf[32];
+                std::snprintf(buf, sizeof buf, "Mosaic_Output_%02d", i + 1);
+                o.ndiName = buf;
+            }
+            // Named by position (the old name may describe another place); the NDI name is kept.
+            o.name = "Panel R" + std::to_string(r + 1) + " C" + std::to_string(c + 1);
+            o.width = w.outputWidth;
+            o.height = w.outputHeight;
+            o.rotation = w.rotation;
+            o.scaleMode = ScaleMode::Stretch;
+            o.source = "canvas";
+            o.pixelFormat = w.pixelFormat;
+            o.group = "wall";
+            o.crop = {w.x + c * (cellW + w.gapX), w.y + r * (cellH + w.gapY), cellW, cellH};
+        }
+    // Wall NDI names win over any other output that happened to use them.
+    for (auto& o : others)
+        for (auto& wo : wall)
+            if (o.ndiName == wo.ndiName) o.ndiName.clear();
+    wall.insert(wall.end(), others.begin(), others.end());
+    l.outputs = std::move(wall);
+    l.wall = w;
+}
+
+std::string saveScene(Layout& l, const std::string& name) {
+    Scene s;
+    s.name = name.empty() ? "Scene " + std::to_string(l.scenes.size() + 1) : name;
+    s.id = sanitizeId(s.name);
+    if (s.id.empty()) s.id = "scene-" + std::to_string(l.scenes.size() + 1);
+    s.sources = l.sources;
+    for (auto& existing : l.scenes)
+        if (existing.id == s.id) {
+            existing = s;
+            return s.id;
+        }
+    l.scenes.push_back(s);
+    return s.id;
+}
+
+bool recallScene(Layout& l, const std::string& id) {
+    for (auto& sc : l.scenes)
+        if (sc.id == id) {
+            l.sources = sc.sources;
+            return true;
+        }
+    return false;
 }
 
 Layout defaultLayout() {
