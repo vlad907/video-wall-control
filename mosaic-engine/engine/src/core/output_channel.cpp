@@ -133,6 +133,10 @@ void OutputChannel::shutdown() {
     }
     cv_.notify_all();
     if (thread_.joinable()) thread_.join();
+    // Destroy the real sink now (the sender thread has flushed it): NDI won't
+    // create a new sender under a name an old one still holds.
+    std::lock_guard l(sinkMutex_);
+    sink_ = createNullSink();
 }
 
 void OutputChannel::destroyGpuResources() {
@@ -158,7 +162,10 @@ OutputMetrics OutputChannel::metrics() {
     m.sendMsMax = sendMs_.takeMax();
     m.latencyMs = latencyMs_.value();
     m.lastFrameId = lastFrameId_;
-    m.connections = sink_->connections();
+    {
+        std::lock_guard l(sinkMutex_);
+        m.connections = sink_->connections();
+    }
     return m;
 }
 

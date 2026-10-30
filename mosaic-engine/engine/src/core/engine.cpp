@@ -508,7 +508,11 @@ void Engine::renderPreviews(const Layout& layout) {
 
 std::unique_ptr<VideoSink> Engine::makeSink(const std::string& ndiName, std::string& kind) {
     if (ndi_) {
-        if (auto s = ndi_->createSender(ndiName)) return s;
+        // A sender that just closed can hold the name for a moment; retry briefly.
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            if (auto s = ndi_->createSender(ndiName)) return s;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
         std::cerr << "[engine] NDI sender '" << ndiName << "' failed; using null sink\n";
     }
     return createNullSink();
@@ -603,9 +607,10 @@ void Engine::reconcile(const Layout& layout) {
         }
     }
     if (!retired.empty()) {
-        for (auto& ch : retired) ch->shutdown();
+        for (auto& ch : retired) ch->shutdown();  // also releases their NDI names
         renderer_.waitIdle();
         for (auto& ch : retired) ch->destroyGpuResources();
+        retired.clear();
     }
     for (auto& o : layout.outputs) {
         {

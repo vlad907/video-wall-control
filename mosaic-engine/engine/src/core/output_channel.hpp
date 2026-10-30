@@ -109,7 +109,10 @@ public:
     TexId readbackSource() const { return uyvy ? packed_ : target_; }
     size_t bytesPerFrame() const { return static_cast<size_t>(width) * height * (uyvy ? 2 : 4); }
     ReadbackId readback() const { return readback_; }
-    std::string sinkKind() const { return sink_->kind(); }
+    std::string sinkKind() const {
+        std::lock_guard l(sinkMutex_);
+        return sink_->kind();
+    }
 
     // Render thread.
     int acquireSlot(const FrameMeta& meta);
@@ -119,7 +122,8 @@ public:
     // GPU completion (any thread).
     void onReadback(int slot, const ReadbackView& view);
 
-    // Stops the sender, then waits for every slot to be released. Render thread.
+    // Stops the sender thread and closes the sink, so its NDI stream name is free
+    // for a replacement channel straight away. Render thread.
     void shutdown();
     // Frees GPU resources. Call after shutdown() and renderer.waitIdle().
     void destroyGpuResources();
@@ -141,6 +145,7 @@ private:
 
     Renderer& renderer_;
     std::unique_ptr<VideoSink> sink_;
+    mutable std::mutex sinkMutex_;  // sink_ is swapped on shutdown while metrics may read it
     double fps_;
     TexId target_ = 0, packed_ = 0;
     ReadbackId readback_ = 0;
