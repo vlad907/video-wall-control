@@ -11,6 +11,7 @@ Runs the engine on a frozen test pattern and checks real pixels:
   - the wall tool generates outputs with bezel gaps and resizes the canvas
   - wall groups: a second (1x1) group, moving it, deleting it with its outputs
   - group presets: save, clear, recall with a crossfade limited to the group
+  - endpoints: check-in, assignment and status of a receiving PC
   - every rendered frame reached every output (no partial frames)
 
     python tools/ci_check.py [--engine PATH] [--out DIR]
@@ -236,6 +237,20 @@ with tempfile.TemporaryDirectory() as tmp:
         rect = next(x["rect"] for x in lay["sources"] if x.get("group") == "side")
         check(rect["x"] == 2020 and rect["y"] == 1080, "group content moves with the group")
         call("DELETE", "/api/walls/side?outputs=delete")
+
+        print("endpoints:", flush=True)
+        r = call("POST", "/api/endpoints/checkin", {"host": "WALL-PC.example.org", "screens": [], "panels": []})
+        check(r["endpoint"] is None, "an unknown PC gets no assignment")
+        unassigned = [u["host"] for u in json.loads(get("/api/endpoints")[1])["unassigned"]]
+        check("WALL-PC.example.org" in unassigned, "it is listed as a PC to set up")
+        call("POST", "/api/endpoints", {"name": "Wall PC", "host": "wall-pc", "displays": [{"output": "out-1"}, {"output": "out-2"}]})
+        r = call("POST", "/api/endpoints/checkin", {"host": "WALL-PC.example.org", "screens": [],
+                                                    "panels": [{"index": 1, "reachable": True, "playing": "X"}]})
+        streams = [d.get("stream", "") for d in r["displays"]]
+        check(r["endpoint"]["id"] == "wall-pc" and len(streams) == 2 and streams[0].endswith("(Mosaic_Output_01)"),
+              f"its check-in returns its displays ({streams})")
+        e = next(x for x in json.loads(get("/api/endpoints")[1])["endpoints"] if x["id"] == "wall-pc")
+        check(e["online"] and not e["displays"][0]["ok"], "status shows it online, display 1 playing the wrong stream")
 
         print("frame delivery:", flush=True)
         time.sleep(2)

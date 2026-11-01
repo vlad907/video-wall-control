@@ -28,6 +28,7 @@ in the style of Resolume's Advanced Output drives the running engine through a R
 | NDI send / receive / discovery | **Working on Windows** with the NDI 6 SDK; streams play in NDI Studio Monitor. See [docs/NDI.md](docs/NDI.md). |
 | Wall groups: several walls and single displays per layout (grids with bezel gaps in px or mm, portrait panels, 1 × 1 for one display) | **Working, pixel-checked** (`tools/ci_check.py`) |
 | Editor: layer list (drag to reorder, bring to front / send to back), snapping to other frames' edges and centres (can be turned off) | **Working**, tested in the browser |
+| Endpoints: receiving PCs set up from the editor (which output on which screen), with online / playing status | **Working**, tested with the dashboard and mock Studio Monitors on macOS |
 | Presets per wall group, one-call "show this NDI stream on this group", control API ([docs/CONTROL_API.md](docs/CONTROL_API.md)) | **Working, pixel-checked** (with colour sources; NDI switching not yet tried on Windows) |
 | Free-form mosaics: any position, gap and tilt angle per panel | **Working, pixel-checked**; rotate handle and `[` `]` keys in the editor |
 | Layered sources with opacity and source crop; scenes with crossfade | **Working, pixel-checked** on Metal; checked on Direct3D 11 by CI |
@@ -152,6 +153,14 @@ streams as layers (placed with *Left ½*, *Top-right ¼* and so on), and save pr
 preset changes only that group, and its crossfade stays inside the group. Control systems
 recall presets over HTTP: see [docs/CONTROL_API.md](docs/CONTROL_API.md).
 
+**Endpoints** are the receiving PCs (they run the video-wall dashboard with NDI Studio Monitor).
+Under *Endpoints* in the sidebar, give each one its displays: an output each, optionally pinned to one of
+the PC's screens. A whole wall group can be spread over a PC's displays in one step. The PC's dashboard
+checks in every 5 s (`POST /api/endpoints/checkin`), gets its assignment and sets up its Studio
+Monitors to match; it also reports its screens and what each display is playing, so the editor shows
+which PCs are online and which displays play the right stream. PCs that check in but aren't set up
+yet are listed with a *Set up* button. Endpoints are saved with the layout. See the top-level README.
+
 **Scenes** are saved arrangements of sources, stored with the layout. Recall one with a cut
 or a crossfade of 0.5–2 s (`POST /api/scenes/:id/recall {"transitionMs":1000}`). Outputs
 don't change. Activating another layout can crossfade too, when its canvas is the same size.
@@ -202,6 +211,9 @@ Across the whole source there's also:
 | DELETE | `/api/walls/:id/presets/:preset` | |
 | POST | `/api/walls/:id/show` | fill the group with one NDI stream: `{"ndiName": "PC (Stream)", "transitionMs": N}` |
 | POST | `/api/walls/:id/clear` | remove the group's content; optional `{"transitionMs": N}` |
+| GET / POST | `/api/endpoints` | list endpoints with live status, plus PCs that checked in but aren't set up (`unassigned`) / create one: `{"name", "host", "displays": [{"output", "screen"}]}` |
+| PUT / DELETE | `/api/endpoints/:id` | change `name`, `host` or `displays` / remove it (the PC keeps showing what it shows) |
+| POST | `/api/endpoints/checkin` | used by the receiving PC's dashboard: `{host, screens, panels}`, reply is its assignment |
 | GET | `/api/control` | summary for control systems: groups with presets and what's on, scenes, layouts, NDI streams |
 | GET / PUT / DELETE | `/api/wall` | the group `wall` (the single-wall API from before groups) |
 | GET / POST | `/api/scenes` | list scenes / save the current sources as `{"name": ...}` |

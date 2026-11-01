@@ -82,6 +82,21 @@ struct Scene {
     std::vector<SourceConfig> sources;
 };
 
+// A receiving PC (it runs the video-wall dashboard and NDI Studio Monitor). Each display
+// slot puts one output on one of its screens; the PC's dashboard fetches this on check-in
+// and sets itself up to match.
+struct EndpointDisplay {
+    std::string screen;  // Windows display device ("\\.\DISPLAY2"); empty = the next free screen
+    std::string output;  // output id
+};
+
+struct Endpoint {
+    std::string id;
+    std::string name;
+    std::string host;  // the PC's name, matched without case and domain
+    std::vector<EndpointDisplay> displays;
+};
+
 struct CanvasConfig {
     int width = 3840, height = 2160;
     std::array<float, 4> background{0.f, 0.f, 0.f, 1.f};
@@ -96,6 +111,7 @@ struct Layout {
     std::vector<OutputConfig> outputs;
     std::vector<WallConfig> walls;
     std::vector<Scene> scenes;
+    std::vector<Endpoint> endpoints;
 
     const SourceConfig* findSource(const std::string& sid) const;
     const OutputConfig* findOutput(const std::string& oid) const;
@@ -112,6 +128,8 @@ std::vector<std::string> normalize(Layout& layout);
 std::string sanitizeId(const std::string& raw);
 // An id made from a display name: sanitized, with runs of "-" collapsed ("Camera + slides" -> "camera-slides").
 std::string idFromName(const std::string& name);
+// A PC name as endpoints match it: upper case, without the domain.
+std::string hostKey(const std::string& host);
 Layout defaultLayout();
 
 void to_json(nlohmann::json& j, const Rect& r);
@@ -126,6 +144,10 @@ void to_json(nlohmann::json& j, const WallConfig& w);
 void from_json(const nlohmann::json& j, WallConfig& w);
 void to_json(nlohmann::json& j, const GroupPreset& p);
 void from_json(const nlohmann::json& j, GroupPreset& p);
+void to_json(nlohmann::json& j, const EndpointDisplay& d);
+void from_json(const nlohmann::json& j, EndpointDisplay& d);
+void to_json(nlohmann::json& j, const Endpoint& e);
+void from_json(const nlohmann::json& j, Endpoint& e);
 void to_json(nlohmann::json& j, const Scene& s);
 void from_json(const nlohmann::json& j, Scene& s);
 void to_json(nlohmann::json& j, const Layout& l);

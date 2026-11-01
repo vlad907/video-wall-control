@@ -69,6 +69,55 @@ export function wallBounds(w: Wall): Rect {
   return { x: w.x, y: w.y, w: w.cols * cw + (w.cols - 1) * w.gapX, h: w.rows * ch + (w.rows - 1) * w.gapY };
 }
 
+// A receiving PC and which output goes on each of its screens.
+export interface EndpointDisplay {
+  screen: string; // Windows display device ("\\.\DISPLAY2"); "" = next free screen
+  output: string; // output id
+}
+
+export interface Endpoint {
+  id: string;
+  name: string;
+  host: string; // the PC's name
+  displays: EndpointDisplay[];
+}
+
+export interface Screen {
+  device: string;
+  short: string;
+  monitor?: string;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  primary?: boolean;
+}
+
+// An endpoint with the status from its last check-in.
+export interface EndpointView extends Omit<Endpoint, "displays"> {
+  online: boolean;
+  lastSeenSecondsAgo: number | null;
+  address: string;
+  version: string;
+  screens: Screen[];
+  displays: (EndpointDisplay & {
+    index: number;
+    label?: string;
+    stream?: string;
+    error?: string;
+    reachable?: boolean;
+    playing?: string;
+    onScreen?: string;
+    ok: boolean;
+  })[];
+}
+
+export interface EndpointsInfo {
+  endpoints: EndpointView[];
+  unassigned: { host: string; address: string; screens: Screen[]; online: boolean }[];
+  engineHost: string;
+}
+
 export interface Scene {
   id: string;
   name: string;
@@ -84,6 +133,7 @@ export interface Layout {
   outputs: Output[];
   walls: Wall[];
   scenes: Scene[];
+  endpoints: Endpoint[];
 }
 
 export interface LayoutSummary {
@@ -175,6 +225,10 @@ export const api = {
   deleteGroupPreset: (group: string, id: string) => call("DELETE", `/api/walls/${group}/presets/${id}`),
   showOnGroup: (group: string, ndiName: string, transitionMs: number) => call("POST", `/api/walls/${group}/show`, { ndiName, transitionMs }),
   clearGroup: (group: string, transitionMs: number) => call("POST", `/api/walls/${group}/clear`, { transitionMs }),
+  endpoints: () => call<EndpointsInfo>("GET", "/api/endpoints"),
+  createEndpoint: (e: Partial<Endpoint>) => call<EndpointView>("POST", "/api/endpoints", e),
+  putEndpoint: (id: string, e: Partial<Endpoint>) => call<EndpointView>("PUT", `/api/endpoints/${id}`, e),
+  deleteEndpoint: (id: string) => call("DELETE", `/api/endpoints/${id}`),
   saveScene: (name: string) => call<Scene>("POST", "/api/scenes", { name }),
   recallScene: (id: string, transitionMs: number) => call("POST", `/api/scenes/${id}/recall`, { transitionMs }),
   deleteScene: (id: string) => call("DELETE", `/api/scenes/${id}`),

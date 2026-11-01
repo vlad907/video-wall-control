@@ -93,6 +93,7 @@
       <span id="procWrap">Studio Monitors: <b id="procs">…</b></span>
       <span>Watchdog: <b id="lastCheck">–</b></span>
       <span>Sources: <b id="srcCount">–</b></span>
+      <span title="Endpoints are set up in the mosaic editor (Endpoints), by this PC's name">Endpoint: <b id="endpoint">–</b></span>
     </div>
   </div>
   <div class="toolbar">
@@ -262,9 +263,16 @@ function renderStreams() {
 function render() {
   const grid = $("grid");
   grid.style.setProperty("--cols", status.layout_columns || 2);
+  // The panel list can change (endpoint mode); drop cards of panels that are gone.
+  const ports = new Set(status.panels.map((p) => String(p.port)));
+  for (const c of grid.querySelectorAll(".card")) if (!ports.has(c.dataset.port)) c.remove();
+  const managed = !!status.endpoint?.managed;
   for (const p of status.panels) {
     let card = grid.querySelector(`.card[data-port="${p.port}"]`);
     if (!card) { card = buildCard(p); grid.appendChild(card); }
+    card.querySelector(".name").textContent = p.name;
+    card.querySelector(".src").disabled = managed;
+    card.querySelector(".apply").hidden = managed;
     card.querySelector(".dot").classList.toggle("on", p.reachable);
     card.querySelector(".cur-src").textContent = p.reachable ? (p.current_source || "(none)") : "offline";
     const screen = (status.screens || []).find((s) => s.device === p.screen);
@@ -307,6 +315,12 @@ async function refreshStatus() {
     $("btnRestart").hidden = !status.processes_managed;
     $("exeBanner").hidden = !status.processes_managed || !!status.exe_path;
     $("exeRoots").textContent = (status.exe_search_roots || []).join(", ") || "Program Files";
+    const ep = status.endpoint || {};
+    $("endpoint").textContent = ep.managed ? `${ep.name} (set in the mosaic editor)` : ep.error ? "engine not reachable" : `not set up (PC name ${status.hostname})`;
+    $("endpoint").style.color = ep.managed ? "var(--ok)" : ep.error ? "var(--warn)" : "inherit";
+    $("endpoint").title = ep.error || "";
+    $("btnApplyAll").hidden = !!ep.managed;
+    $("btnAssign").hidden = !!ep.managed;
     render();
   } catch (e) {
     $("phase").textContent = "unreachable";

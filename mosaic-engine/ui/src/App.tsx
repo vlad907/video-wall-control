@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Layout, type Metrics, type Output, type Rect, type Source } from "./api";
+import { api, type EndpointsInfo, type Layout, type Metrics, type Output, type Rect, type Screen, type Source } from "./api";
 import { CanvasEditor, type EditMode } from "./CanvasEditor";
+import { EndpointList, EndpointPanel } from "./Endpoints";
 import { Inspector } from "./Inspector";
 import { LayoutBar, MetricsPanel, OutputList, ScenesPanel, SourcesPanel } from "./Panels";
 import { SourceInspector } from "./SourceInspector";
@@ -12,6 +13,8 @@ export function App() {
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [mode, setMode] = useState<EditMode>("outputs");
   const [wallEdit, setWallEdit] = useState<{ id: string | null } | null>(null); // id null = new group
+  const [endpointId, setEndpointId] = useState<string | null>(null);
+  const [endpoints, setEndpoints] = useState<EndpointsInfo | null>(null);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [snap, setSnap] = useState(10);
@@ -38,6 +41,14 @@ export function App() {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  // Endpoint health changes without layout changes (PCs check in every few seconds).
+  const loadEndpoints = useCallback(() => api.endpoints().then(setEndpoints).catch(() => {}), []);
+  useEffect(() => {
+    loadEndpoints();
+    const t = window.setInterval(loadEndpoints, 3000);
+    return () => window.clearInterval(t);
+  }, [loadEndpoints, layout]);
 
   // Live metrics; a layout version change (from any client) triggers a reload.
   useEffect(() => {
@@ -120,11 +131,11 @@ export function App() {
 
   const selectOutput = useCallback((id: string | null) => {
     setSelectedId(id);
-    if (id) (setMode("outputs"), setWallEdit(null));
+    if (id) (setMode("outputs"), setWallEdit(null), setEndpointId(null));
   }, []);
   const selectSource = useCallback((id: string | null) => {
     setSourceId(id);
-    if (id) (setMode("sources"), setWallEdit(null));
+    if (id) (setMode("sources"), setWallEdit(null), setEndpointId(null));
   }, []);
 
   // Arrow keys nudge the selected rectangle (Shift = 10 px); [ and ] tilt an output (0.1°, Shift 1°).
@@ -180,8 +191,36 @@ export function App() {
     api.putLayout({ sources: list }).then(reload).catch(onError);
   };
 
+  // A PC that checked in (or a name typed in): one display slot per screen, the main screen left
+  // out when there are others (it's usually the control screen).
+  const setUpEndpoint = (host: string, screens: Screen[]) => {
+    const pcName = host || prompt("PC name of the receiving PC (as shown in its dashboard):")?.trim();
+    if (!pcName) return;
+    const name = prompt("Name for this endpoint:", pcName)?.trim();
+    if (!name) return;
+    const usable = screens.length > 1 ? screens.filter((s) => !s.primary) : screens;
+    api
+      .createEndpoint({ name, host: pcName, displays: usable.map((s) => ({ screen: s.device, output: "" })) })
+      .then((e) => (setEndpointId(e.id), setWallEdit(null), reload(), loadEndpoints()))
+      .catch(onError);
+  };
+  const selectedEndpoint = endpoints?.endpoints.find((e) => e.id === endpointId) ?? null;
+  const shownOn = (outputId: string) =>
+    (endpoints?.endpoints ?? []).flatMap((e) => e.displays.filter((d) => d.output === outputId).map((d) => `${e.name} · Display ${d.index}`));
+
   let right: React.ReactNode;
-  if (wallEdit) {
+  if (selectedEndpoint) {
+    right = (
+      <EndpointPanel
+        key={selectedEndpoint.id}
+        layout={layout}
+        endpoint={selectedEndpoint}
+        onChanged={() => (loadEndpoints(), reload())}
+        onError={onError}
+        onClose={() => setEndpointId(null)}
+      />
+    );
+  } else if (wallEdit) {
     const wall = wallEdit.id ? layout.walls.find((w) => w.id === wallEdit.id) ?? null : null;
     right = (
       <WallPanel
@@ -227,6 +266,7 @@ export function App() {
       <Inspector
         layout={layout}
         output={selected}
+        shownOn={shownOn(selected.id)}
         onPatch={(p) => patch(selected.id, p)}
         onDelete={() => {
           if (!confirm(`Remove ${selected.name}?`)) return;
@@ -279,6 +319,12 @@ export function App() {
           onReorder={reorderSource}
           onChanged={reload}
           onError={onError}
+        />
+        <EndpointList
+          info={endpoints}
+          selectedId={endpointId}
+          onSelect={(id) => (setEndpointId(id), setWallEdit(null))}
+          onSetUp={setUpEndpoint}
         />
         <ScenesPanel layout={layout} onChanged={reload} onError={onError} />
         <div className="snap-opts">

@@ -19,6 +19,8 @@ A background service plus web dashboard for a 4-panel NDI mosaic driven by
 - If `mosaic-engine/` has been built: starts the engine before the monitors, restarts it
   if it stops answering, and shows its status. **Show mosaic on panels** sets panel 1 to
   `Mosaic_Output_01`, panel 2 to `_02`, and so on. The engine's log is `logs/mosaic-engine.log`
+- **Endpoint mode**: a receiving PC can be set up from the mosaic editor instead of here
+  (see [Endpoint mode](#endpoint-mode-set-up-from-the-mosaic-editor))
 
 It uses only the Python standard library, so nothing needs to be installed with pip.
 
@@ -69,6 +71,29 @@ machine on the LAN.
 
 Open `http://localhost:8080/api/sources/raw` on the Mini PC. It shows the raw
 `/v1/sources` reply from Studio Monitor, which helps when the list comes back empty.
+
+## Endpoint mode: set up from the mosaic editor
+
+With several receiving PCs, set them all up in one place: the mosaic editor on the media server.
+
+1. On each receiving PC, install this dashboard as usual and enter the media server's
+   name or IP under **Engine PC** (Mosaic engine section), then click **Save**.
+2. The PC now checks in with the engine every 5 seconds. In the editor
+   (`http://<media-server>:8090`) it appears under **Endpoints** as "not set up", with its screens.
+   Click **Set up**.
+3. Pick the output for each display, or use **+ Whole group…** to add one display per panel of a
+   wall group. A display can be pinned to one of the PC's screens, or take the next free one.
+   When the PC has several screens, the main screen (usually the control screen) is left out at first.
+
+Within a few seconds the PC starts one Studio Monitor per display, full screen on its screen, playing that output's
+stream. Changes in the editor reach it on its next check-in. The editor shows each endpoint as online or offline, and
+whether each display is playing the right stream.
+
+While a PC is managed this way, its dashboard shows **Endpoint: <name> (set in the mosaic editor)**, and its source
+pickers and *Save & apply all* are locked. Its panel list is saved in `config.json` as usual, so if the
+media server is unreachable, the PC keeps showing what it showed last, and it starts the same way after a reboot.
+Endpoints are matched by PC name: a replacement PC with the same name picks up the same setup.
+Removing the endpoint in the editor hands the PC back to manual control.
 
 ## config.json
 

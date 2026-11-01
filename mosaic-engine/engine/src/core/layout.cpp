@@ -183,6 +183,33 @@ void from_json(const json& j, WallConfig& w) {
     w.activePreset = j.value("activePreset", w.activePreset);
 }
 
+void to_json(json& j, const EndpointDisplay& d) { j = json{{"screen", d.screen}, {"output", d.output}}; }
+
+void from_json(const json& j, EndpointDisplay& d) {
+    d.screen = j.value("screen", d.screen);
+    d.output = j.value("output", d.output);
+}
+
+void to_json(json& j, const Endpoint& e) {
+    j = json{{"id", e.id}, {"name", e.name}, {"host", e.host}, {"displays", e.displays}};
+}
+
+void from_json(const json& j, Endpoint& e) {
+    e.id = j.value("id", e.id);
+    e.name = j.value("name", e.name);
+    e.host = j.value("host", e.host);
+    if (j.contains("displays")) e.displays = j.at("displays").get<std::vector<EndpointDisplay>>();
+}
+
+std::string hostKey(const std::string& host) {
+    std::string out;
+    for (char c : host) {
+        if (c == '.') break;
+        out += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    return out;
+}
+
 void to_json(json& j, const Scene& s) { j = json{{"id", s.id}, {"name", s.name}, {"sources", s.sources}}; }
 
 void from_json(const json& j, Scene& s) {
@@ -204,7 +231,7 @@ void from_json(const json& j, CanvasConfig& c) {
 void to_json(json& j, const Layout& l) {
     j = json{{"id", l.id},         {"name", l.name},       {"frameRate", l.frameRate},
              {"canvas", l.canvas}, {"sources", l.sources}, {"outputs", l.outputs}, {"walls", l.walls},
-             {"scenes", l.scenes}};
+             {"scenes", l.scenes}, {"endpoints", l.endpoints}};
 }
 
 void from_json(const json& j, Layout& l) {
@@ -222,6 +249,7 @@ void from_json(const json& j, Layout& l) {
         for (auto& w : l.walls) w.id = "wall";
     }
     if (j.contains("scenes")) l.scenes = j.at("scenes").get<std::vector<Scene>>();
+    if (j.contains("endpoints")) l.endpoints = j.at("endpoints").get<std::vector<Endpoint>>();
 }
 
 static int clampDim(int v) { return std::clamp(v, 1, kMaxDimension); }
@@ -309,6 +337,16 @@ std::vector<std::string> normalize(Layout& l) {
             presetIds.insert(p.id);
             if (p.name.empty()) p.name = p.id;
         }
+    }
+
+    ids.clear();
+    n = 0;
+    for (auto& e : l.endpoints) {
+        ++n;
+        e.id = e.id.empty() ? idFromName(e.name.empty() ? e.host : e.name) : sanitizeId(e.id);
+        if (e.id.empty() || ids.count(e.id)) e.id = "endpoint-" + std::to_string(n);
+        ids.insert(e.id);
+        if (e.name.empty()) e.name = e.host.empty() ? e.id : e.host;
     }
 
     ids.clear();

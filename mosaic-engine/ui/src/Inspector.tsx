@@ -63,11 +63,13 @@ export function Inspector({
   output,
   onPatch,
   onDelete,
+  shownOn = [],
 }: {
   layout: Layout;
   output: Output;
   onPatch: (patch: Partial<Output>) => void;
   onDelete: () => void;
+  shownOn?: string[]; // "Endpoint · Display N" for each endpoint display showing it
 }) {
   const crop = (k: keyof Rect) => (v: number) => onPatch({ crop: { ...output.crop, [k]: v } });
   const resKey = `${output.width}x${output.height}`;
@@ -93,6 +95,7 @@ export function Inspector({
         </label>
       </div>
 
+      <small className="muted">{shownOn.length ? `Shown on ${shownOn.join(", ")}` : "Not on any endpoint display yet"}</small>
       <LivePreview target={output.id} className="output-preview" />
 
       <div className="group">

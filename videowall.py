@@ -877,6 +877,117 @@ def assign_mosaic_to_panels():
 
 
 # --------------------------------------------------------------------------
+# Endpoint mode: the mosaic engine says which output goes on which screen
+# --------------------------------------------------------------------------
+
+ENDPOINT_INTERVAL = 5  # seconds between check-ins
+endpoint_state = {"endpoint": None, "error": None, "last_ok": None, "displays": []}
+
+
+def endpoint_managed():
+    return endpoint_state["endpoint"] is not None
+
+
+def endpoint_report():
+    """This PC's screens and what each panel plays, for the engine's endpoint view."""
+    report = []
+    for i, p in enumerate(panels(), start=1):
+        current = get_configuration(p["port"])
+        report.append({"index": i, "port": p["port"], "name": p["name"], "screen": p.get("screen") or "",
+                       "playing": (current or {}).get("NDI_source") or "", "reachable": current is not None})
+    return report
+
+
+def desired_panels(displays, old, devices):
+    """Panel list for the engine's display slots. Unpinned slots keep the screen they got last time.
+    A slot pinned to a screen this PC doesn't have is treated as unpinned."""
+    base = old[0]["port"] if old else 80
+    by_port = {p["port"]: p for p in old}
+    pin = lambda d: d.get("screen") if d.get("screen") in devices else ""
+    pinned = {pin(d) for d in displays if pin(d)}
+    result = []
+    for i, d in enumerate(displays):
+        port = base + i
+        prev = by_port.get(port) or {}
+        screen = pin(d)
+        if not screen and not prev.get("screen_pinned") and prev.get("screen") not in pinned:
+            screen = prev.get("screen") or ""
+        panel = {"name": d.get("label") or "Display %d" % (i + 1), "port": port,
+                 "ndi_source": d["stream"], "display_device": prev.get("display_device", ""),
+                 "screen_pinned": bool(pin(d))}
+        if screen:
+            panel["screen"] = screen
+        result.append(panel)
+    return result
+
+
+def sync_endpoint(displays):
+    """Makes the panels match the engine's assignment: count, streams and screens."""
+    wanted = [d for d in displays if d.get("stream")]
+    devices = {d["device"] for d in enumerate_displays()}
+    for d in wanted:
+        if d.get("screen") and d["screen"] not in devices and d["screen"] not in endpoint_state.setdefault("warned", set()):
+            endpoint_state["warned"].add(d["screen"])
+            log.warning("Display %s: this PC has no screen %s; using the next free one", d.get("index"), d["screen"])
+    with action_lock:
+        old = panels()
+        new = desired_panels(wanted, old, devices)
+        key = lambda p: (p["port"], p["name"], p["ndi_source"], p.get("screen") or "", p["screen_pinned"])
+        if [key(p) for p in new] == [key(dict(p, screen_pinned=p.get("screen_pinned", False))) for p in old]:
+            return
+        with config_lock:
+            config["panels"] = new
+        save_config()
+        log.info("Endpoint assignment: %s", ", ".join("%s -> %s" % (p["name"], p["ndi_source"]) for p in new) or "no displays")
+    if len(new) != len(old):
+        # Studio Monitor instances can't be told apart before they answer, so start over.
+        if processes_managed():
+            restart_all("endpoint now has %d display(s)" % len(new))
+        else:
+            with action_lock:
+                apply_all()
+        return
+    changed = [p for p, o in zip(new, old) if key(p) != key(dict(o, screen_pinned=o.get("screen_pinned", False)))]
+    with action_lock:
+        for p in changed:
+            apply_panel(p)
+
+
+def endpoint_checkin():
+    body = {"host": socket.gethostname(), "version": "videowall/1", "dashboardPort": int(cfg("dashboard_port")),
+            "screens": enumerate_displays(), "panels": endpoint_report()}
+    try:
+        reply = http_json("POST", mosaic_url("/api/endpoints/checkin"), body, timeout=3)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        # Engine unreachable: keep showing what we have.
+        endpoint_state["error"] = "mosaic engine not reachable (%s)" % getattr(exc, "reason", exc)
+        return
+    endpoint_state["error"] = None
+    endpoint_state["last_ok"] = time.strftime("%H:%M:%S")
+    was = endpoint_state["endpoint"]
+    endpoint_state["endpoint"] = reply.get("endpoint")
+    endpoint_state["displays"] = reply.get("displays") or []
+    if reply.get("endpoint") is None:
+        if was:
+            log.info("No longer an endpoint in the mosaic engine; panels stay as they are")
+        return
+    if not was:
+        log.info("Managed by the mosaic engine as endpoint '%s'", reply["endpoint"].get("name"))
+    sync_endpoint(endpoint_state["displays"])
+
+
+def endpoint_loop():
+    while state["phase"] != "running":  # after the startup sequence
+        time.sleep(1)
+    while True:
+        try:
+            endpoint_checkin()
+        except Exception:
+            log.exception("Endpoint check-in failed")
+        time.sleep(ENDPOINT_INTERVAL)
+
+
+# --------------------------------------------------------------------------
 # Supervisor / watchdog
 # --------------------------------------------------------------------------
 
@@ -1096,6 +1207,9 @@ def status_payload():
         "layout_columns": cfg("layout_columns"),
         "fullscreen": cfg("fullscreen"),
         "screens": enumerate_displays(),
+        "hostname": socket.gethostname(),
+        "endpoint": {"managed": endpoint_managed(), "name": (endpoint_state["endpoint"] or {}).get("name"),
+                     "error": endpoint_state["error"], "last_ok": endpoint_state["last_ok"]},
     }
 
 
@@ -1169,6 +1283,11 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         try:
             body = self.read_body()
+            if path in ("/api/apply", "/api/mosaic/assign") and endpoint_managed():
+                self.send_json({"error": "This PC is managed by the mosaic engine as endpoint '%s'; "
+                                         "change its displays in the mosaic editor (Endpoints)"
+                                         % endpoint_state["endpoint"].get("name")}, 409)
+                return
             if path == "/api/apply":
                 # body: {"panels": [{"port": 80, "ndi_source": "...", "display_device": "..."}]}
                 updates = body.get("panels") or []
@@ -1265,6 +1384,7 @@ def main():
     server.daemon_threads = True
     log.info("Video Wall Control started; dashboard on http://%s:%d", host, port)
     run_in_background(supervisor_loop)
+    run_in_background(endpoint_loop)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

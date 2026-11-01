@@ -147,3 +147,14 @@ button:disabled { opacity: .45; cursor: default; }
 .showing { display: flex; flex-wrap: wrap; gap: 6px; }
 button.link { background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; padding: 2px 8px; border-radius: 10px; }
 .group code { font-size: 11px; color: var(--text); }
+
+/* endpoints */
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #555; flex: none; }
+.dot.on { background: #3ecf6e; }
+.dot.warn { background: #ffb020; }
+.dot.off { background: #666; }
+.endpoint-slot { display: flex; flex-direction: column; gap: 4px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.slot-head { display: flex; align-items: center; gap: 6px; }
+.slot-head .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list-item.new-pc { border: 1px dashed var(--border); }
+small.warn { color: #ffb020; }

@@ -89,6 +89,9 @@ show which preset is on.
       "showing": []
     }
   ],
+  "endpoints": [
+    { "id": "wall-pc-1", "name": "Wall PC 1", "online": true, "displays": 4, "displaysOk": 4 }
+  ],
   "scenes": [ { "id": "opening", "name": "Opening" } ],
   "layouts": [ { "id": "venue", "name": "Venue", "active": true } ],
   "ndi": {
@@ -102,6 +105,8 @@ show which preset is on.
   `show` or `clear` call. It doesn't change when someone edits the group by hand in the editor.
 - `showing` lists the group's current layers, bottom first. An empty list means the group shows
   nothing of its own, only the canvas background under it.
+- `endpoints` are the receiving PCs set up in the editor: whether each is online, and how many of
+  its displays play the stream they should (`displaysOk` of `displays`). Use it for a status page.
 - `ndi.streams` are the streams NDI discovery currently sees on the network.
 
 ### `POST /api/walls/{group}/presets/{preset}/recall`

@@ -3,10 +3,20 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <map>
+#include <mutex>
+#include <set>
 #include <thread>
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
+
+#ifdef _WIN32
+#include <windows.h>  // GetComputerNameA (after httplib, which sets up winsock first)
+#else
+#include <unistd.h>
+#endif
 
 #include "core/engine.hpp"
 #include "core/layout_store.hpp"
@@ -42,6 +52,25 @@ std::string uniqueId(const Layout& l, const std::string& prefix, bool output) {
     }
 }
 
+// This PC's name as NDI puts it in front of stream names: "MEDIASERVER (Mosaic_Output_01)".
+std::string machineName() {
+#ifdef _WIN32
+    char buf[256];
+    DWORD len = sizeof buf;
+    if (GetComputerNameA(buf, &len)) return hostKey(std::string(buf, len));
+#else
+    char buf[256] = {};
+    if (gethostname(buf, sizeof buf - 1) == 0) return hostKey(buf);
+#endif
+    return "LOCALHOST";
+}
+
+double nowSeconds() {
+    return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+constexpr double kEndpointOnlineSeconds = 20;  // endpoints check in every 5 s
+
 }  // namespace
 
 struct HttpApi::Impl {
@@ -49,6 +78,77 @@ struct HttpApi::Impl {
     LayoutStore& store;
     httplib::Server server;
     std::atomic<bool> running{true};
+    const std::string machine = machineName();
+
+    // Last check-in of each receiving PC, by hostKey (not saved; they check in every few seconds).
+    std::mutex checkinMutex;
+    std::map<std::string, json> checkins;
+
+    // Full NDI name of one of our outputs, as receivers see it on the network.
+    std::string fullStreamName(const std::string& ndiName, const std::vector<std::string>& discovered) const {
+        std::string suffix = " (" + ndiName + ")";
+        std::string any;
+        for (auto& n : discovered)
+            if (n.size() > suffix.size() && n.compare(n.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                if (hostKey(n.substr(0, n.size() - suffix.size())) == machine) return n;
+                if (any.empty()) any = n;
+            }
+        return any.empty() ? machine + suffix : any;
+    }
+
+    // What each display slot of an endpoint should show.
+    json endpointDisplays(const Layout& l, const Endpoint& e, const std::vector<std::string>& discovered) const {
+        json out = json::array();
+        int index = 0;
+        for (auto& d : e.displays) {
+            ++index;
+            json j = {{"index", index}, {"screen", d.screen}, {"output", d.output}};
+            if (const OutputConfig* o = l.findOutput(d.output)) {
+                j["label"] = o->name;
+                j["ndiName"] = o->ndiName;
+                j["stream"] = fullStreamName(o->ndiName, discovered);
+                j["width"] = o->width;
+                j["height"] = o->height;
+                j["enabled"] = o->enabled;
+            } else {
+                j["error"] = d.output.empty() ? "no output assigned" : "no such output '" + d.output + "'";
+            }
+            out.push_back(j);
+        }
+        return out;
+    }
+
+    // Config plus live status (from its last check-in) of one endpoint.
+    json endpointView(const Layout& l, const Endpoint& e, const std::vector<std::string>& discovered) {
+        json j = e;
+        json displays = endpointDisplays(l, e, discovered);
+        json last;
+        {
+            std::lock_guard lock(checkinMutex);
+            auto it = checkins.find(hostKey(e.host));
+            if (it != checkins.end()) last = it->second;
+        }
+        double ago = last.is_null() ? -1 : nowSeconds() - last.value("time", 0.0);
+        j["online"] = ago >= 0 && ago < kEndpointOnlineSeconds;
+        j["lastSeenSecondsAgo"] = ago < 0 ? json(nullptr) : json(std::round(ago));
+        j["address"] = last.value("address", "");
+        j["version"] = last.value("version", "");
+        j["screens"] = last.value("screens", json::array());
+        json panels = last.value("panels", json::array());
+        for (auto& d : displays) {
+            // The dashboard numbers its panels like the display slots.
+            for (auto& p : panels)
+                if (p.value("index", 0) == d["index"]) {
+                    d["reachable"] = p.value("reachable", false);
+                    d["playing"] = p.value("playing", "");
+                    d["onScreen"] = p.value("screen", "");
+                }
+            d["ok"] = j["online"].get<bool>() && d.value("reachable", false) && d.contains("stream") &&
+                      d.value("playing", "") == d.value("stream", "");
+        }
+        j["displays"] = displays;
+        return j;
+    }
 
     Impl(Engine& e, LayoutStore& s) : engine(e), store(s) {}
 
@@ -342,6 +442,104 @@ struct HttpApi::Impl {
             sendJson(res, {{"group", id}, {"cleared", true}, {"transitionMs", ms}});
         }));
 
+        // ---- endpoints: receiving PCs and which output goes on each of their screens ----
+        s.Get("/api/endpoints", guard([this](const httplib::Request&, httplib::Response& res) {
+            auto l = store.active();
+            auto discovered = engine.discoveredNdiSources();
+            json list = json::array(), unassigned = json::array();
+            std::set<std::string> known;
+            for (auto& e : l->endpoints) {
+                list.push_back(endpointView(*l, e, discovered));
+                known.insert(hostKey(e.host));
+            }
+            {
+                // PCs that checked in recently but aren't set up as endpoints yet.
+                std::lock_guard lock(checkinMutex);
+                double now = nowSeconds();
+                for (auto& [key, c] : checkins)
+                    if (!known.count(key) && now - c.value("time", 0.0) < 600)
+                        unassigned.push_back({{"host", c.value("host", key)},
+                                              {"address", c.value("address", "")},
+                                              {"screens", c.value("screens", json::array())},
+                                              {"online", now - c.value("time", 0.0) < kEndpointOnlineSeconds}});
+            }
+            sendJson(res, {{"endpoints", list}, {"unassigned", unassigned}, {"engineHost", machine}});
+        }));
+        s.Post("/api/endpoints", guard([this](const httplib::Request& req, httplib::Response& res) {
+            json body = parseBody(req);
+            std::string newId;
+            std::vector<std::string> problems;
+            store.mutateActive(
+                [&](Layout& l) {
+                    Endpoint e;
+                    from_json(body, e);
+                    std::string base = idFromName(e.name.empty() ? e.host : e.name);
+                    if (base.empty()) base = "endpoint";
+                    newId = base;
+                    for (int k = 2; std::any_of(l.endpoints.begin(), l.endpoints.end(), [&](auto& x) { return x.id == newId; }); ++k)
+                        newId = base + "-" + std::to_string(k);
+                    e.id = newId;
+                    l.endpoints.push_back(e);
+                    return true;
+                },
+                &problems);
+            auto l = store.active();
+            for (auto& e : l->endpoints)
+                if (e.id == newId) return sendJson(res, withProblems(endpointView(*l, e, engine.discoveredNdiSources()), problems), 201);
+            sendError(res, 500, "endpoint not saved");
+        }));
+        // Partial update: {name, host, displays}.
+        s.Put(R"(/api/endpoints/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            json body = parseBody(req);
+            bool ok = store.mutateActive([&](Layout& l) {
+                for (auto& e : l.endpoints)
+                    if (e.id == id) {
+                        from_json(body, e);
+                        e.id = id;
+                        return true;
+                    }
+                return false;
+            });
+            if (!ok) return sendError(res, 404, "no such endpoint");
+            auto l = store.active();
+            for (auto& e : l->endpoints)
+                if (e.id == id) return sendJson(res, endpointView(*l, e, engine.discoveredNdiSources()));
+            sendError(res, 404, "no such endpoint");
+        }));
+        s.Delete(R"(/api/endpoints/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            bool ok = store.mutateActive([&](Layout& l) {
+                auto n = l.endpoints.size();
+                std::erase_if(l.endpoints, [&](auto& e) { return e.id == id; });
+                return l.endpoints.size() != n;
+            });
+            if (!ok) return sendError(res, 404, "no such endpoint");
+            sendJson(res, {{"deleted", id}});
+        }));
+        // A receiving PC's dashboard calls this every few seconds with its screens and what each
+        // panel plays: {host, version, screens: [...], panels: [{index, screen, playing, reachable}]}.
+        // The reply is its assignment (endpoint null = not set up; it then leaves its panels alone).
+        s.Post("/api/endpoints/checkin", guard([this](const httplib::Request& req, httplib::Response& res) {
+            json body = parseBody(req);
+            std::string host = body.value("host", "");
+            if (host.empty()) return sendError(res, 400, "host is required");
+            body["time"] = nowSeconds();
+            body["address"] = req.remote_addr;
+            {
+                std::lock_guard lock(checkinMutex);
+                checkins[hostKey(host)] = body;
+            }
+            auto l = store.active();
+            for (auto& e : l->endpoints)
+                if (hostKey(e.host) == hostKey(host))
+                    return sendJson(res, {{"endpoint", {{"id", e.id}, {"name", e.name}}},
+                                          {"layout", l->id},
+                                          {"engineHost", machine},
+                                          {"displays", endpointDisplays(*l, e, engine.discoveredNdiSources())}});
+            sendJson(res, {{"endpoint", nullptr}, {"layout", l->id}, {"engineHost", machine}, {"displays", json::array()}});
+        }));
+
         // ---- one-call summary for control systems ----
         s.Get("/api/control", guard([this](const httplib::Request&, httplib::Response& res) {
             auto l = store.active();
@@ -362,8 +560,17 @@ struct HttpApi::Impl {
             json scenes = json::array(), layouts = json::array();
             for (auto& sc : l->scenes) scenes.push_back({{"id", sc.id}, {"name", sc.name}});
             for (auto& x : store.list()) layouts.push_back({{"id", x.id}, {"name", x.name}, {"active", x.active}});
+            json endpoints = json::array();
+            auto discovered = engine.discoveredNdiSources();
+            for (auto& e : l->endpoints) {
+                json v = endpointView(*l, e, discovered);
+                int ok = 0;
+                for (auto& d : v["displays"]) ok += d.value("ok", false) ? 1 : 0;
+                endpoints.push_back({{"id", e.id}, {"name", e.name}, {"online", v["online"]}, {"displays", e.displays.size()}, {"displaysOk", ok}});
+            }
             sendJson(res, {{"layout", {{"id", l->id}, {"name", l->name}}},
                            {"groups", groups},
+                           {"endpoints", endpoints},
                            {"scenes", scenes},
                            {"layouts", layouts},
                            {"ndi", {{"available", engine.ndiAvailable()}, {"streams", engine.discoveredNdiSources()}}}});
