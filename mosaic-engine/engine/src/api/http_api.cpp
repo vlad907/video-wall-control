@@ -229,7 +229,7 @@ struct HttpApi::Impl {
                     w.id.clear();
                     w.fitCanvas = false;
                     from_json(body, w);
-                    std::string base = sanitizeId(w.id.empty() ? w.name : w.id);
+                    std::string base = w.id.empty() ? idFromName(w.name) : sanitizeId(w.id);
                     if (base.empty()) base = "group";
                     newId = base;
                     for (int k = 2; l.findWall(newId); ++k) newId = base + "-" + std::to_string(k);
@@ -276,6 +276,99 @@ struct HttpApi::Impl {
             if (!ok) return sendError(res, 404, "no such wall group");
             sendJson(res, {{"deleted", id}});
         }));
+        // ---- group content: presets per wall group, or one NDI stream on a group ----
+        s.Get(R"(/api/walls/([A-Za-z0-9_\-]+)/presets)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            auto l = store.active();
+            const WallConfig* w = l->findWall(req.matches[1]);
+            if (!w) return sendError(res, 404, "no such wall group");
+            sendJson(res, {{"group", w->id}, {"activePreset", w->activePreset}, {"presets", w->presets}});
+        }));
+        // Saves what the group shows now as a preset {name}; the same name overwrites it.
+        s.Post(R"(/api/walls/([A-Za-z0-9_\-]+)/presets)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            json body = parseBody(req);
+            std::string pid;
+            store.mutateActive([&](Layout& l) {
+                pid = saveGroupPreset(l, id, body.value("name", ""));
+                return !pid.empty();
+            });
+            if (pid.empty()) return sendError(res, 404, "no such wall group");
+            for (auto& p : store.active()->findWall(id)->presets)
+                if (p.id == pid) return sendJson(res, p, 201);
+            sendError(res, 500, "preset not saved");
+        }));
+        s.Post(R"(/api/walls/([A-Za-z0-9_\-]+)/presets/([A-Za-z0-9_\-]+)/recall)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1], pid = req.matches[2];
+            json body = parseBody(req);
+            auto l = store.active();
+            const WallConfig* w = l->findWall(id);
+            if (!w) return sendError(res, 404, "no such wall group");
+            if (std::none_of(w->presets.begin(), w->presets.end(), [&](auto& p) { return p.id == pid; }))
+                return sendError(res, 404, "no such preset in group '" + id + "'");
+            int ms = body.value("transitionMs", 0);
+            if (ms > 0) engine.captureForTransition(ms, wallBounds(*w));
+            std::vector<std::string> problems;
+            store.mutateActive([&](Layout& lay) { return recallGroupPreset(lay, id, pid); }, &problems);
+            sendJson(res, withProblems({{"group", id}, {"recalled", pid}, {"transitionMs", ms}}, problems));
+        }));
+        s.Delete(R"(/api/walls/([A-Za-z0-9_\-]+)/presets/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1], pid = req.matches[2];
+            bool ok = store.mutateActive([&](Layout& l) { return deleteGroupPreset(l, id, pid); });
+            if (!ok) return sendError(res, 404, "no such wall group or preset");
+            sendJson(res, {{"deleted", pid}});
+        }));
+        // Fills the group with one NDI stream: {"ndiName": "PC (Camera 1)", "transitionMs": 500}.
+        s.Post(R"(/api/walls/([A-Za-z0-9_\-]+)/show)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            json body = parseBody(req);
+            std::string ndiName = body.value("ndiName", "");
+            if (ndiName.empty()) return sendError(res, 400, "ndiName is required (use /clear to blank a group)");
+            const WallConfig* w = store.active()->findWall(id);
+            if (!w) return sendError(res, 404, "no such wall group");
+            int ms = body.value("transitionMs", 0);
+            if (ms > 0) engine.captureForTransition(ms, wallBounds(*w));
+            store.mutateActive([&](Layout& l) { return showOnGroup(l, id, ndiName); });
+            sendJson(res, {{"group", id}, {"showing", ndiName}, {"transitionMs", ms}});
+        }));
+        // Removes the group's content (it then shows whatever lies under it, usually the background).
+        s.Post(R"(/api/walls/([A-Za-z0-9_\-]+)/clear)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            json body = parseBody(req);
+            const WallConfig* w = store.active()->findWall(id);
+            if (!w) return sendError(res, 404, "no such wall group");
+            int ms = body.value("transitionMs", 0);
+            if (ms > 0) engine.captureForTransition(ms, wallBounds(*w));
+            store.mutateActive([&](Layout& l) { return showOnGroup(l, id, ""); });
+            sendJson(res, {{"group", id}, {"cleared", true}, {"transitionMs", ms}});
+        }));
+
+        // ---- one-call summary for control systems ----
+        s.Get("/api/control", guard([this](const httplib::Request&, httplib::Response& res) {
+            auto l = store.active();
+            json groups = json::array();
+            for (auto& w : l->walls) {
+                json presets = json::array(), showing = json::array();
+                for (auto& p : w.presets) presets.push_back({{"id", p.id}, {"name", p.name}});
+                for (auto& src : l->sources)
+                    if (src.group == w.id)
+                        showing.push_back({{"name", src.name}, {"type", toString(src.type)}, {"ndiName", src.ndiName}});
+                groups.push_back({{"id", w.id},
+                                  {"name", w.name},
+                                  {"displays", w.cols * w.rows},
+                                  {"activePreset", w.activePreset},
+                                  {"presets", presets},
+                                  {"showing", showing}});
+            }
+            json scenes = json::array(), layouts = json::array();
+            for (auto& sc : l->scenes) scenes.push_back({{"id", sc.id}, {"name", sc.name}});
+            for (auto& x : store.list()) layouts.push_back({{"id", x.id}, {"name", x.name}, {"active", x.active}});
+            sendJson(res, {{"layout", {{"id", l->id}, {"name", l->name}}},
+                           {"groups", groups},
+                           {"scenes", scenes},
+                           {"layouts", layouts},
+                           {"ndi", {{"available", engine.ndiAvailable()}, {"streams", engine.discoveredNdiSources()}}}});
+        }));
+
         // The single-wall API from before groups: the group "wall".
         s.Get("/api/wall", guard([this](const httplib::Request&, httplib::Response& res) {
             auto l = store.active();

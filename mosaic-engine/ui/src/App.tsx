@@ -188,6 +188,9 @@ export function App() {
         key={wallEdit.id ?? "new"}
         layout={layout}
         wall={wall}
+        onChanged={reload}
+        onError={onError}
+        onEditSources={(id) => (setWallEdit(null), selectSource(id))}
         onClose={() => setWallEdit(null)}
         onApply={(w) =>
           (wall ? api.putWall(wall.id, w) : api.createWall(w))

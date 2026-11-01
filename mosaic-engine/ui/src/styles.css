@@ -144,3 +144,6 @@ button:disabled { opacity: .45; cursor: default; }
 .layer-btns button { padding: 0 4px; font-size: 9px; line-height: 12px; }
 .presets { display: flex; flex-wrap: wrap; gap: 6px; }
 .group-head.plain { cursor: default; border-left-color: var(--border); }
+.showing { display: flex; flex-wrap: wrap; gap: 6px; }
+button.link { background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; padding: 2px 8px; border-radius: 10px; }
+.group code { font-size: 11px; color: var(--text); }

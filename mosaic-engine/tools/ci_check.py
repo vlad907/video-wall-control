@@ -10,6 +10,7 @@ Runs the engine on a frozen test pattern and checks real pixels:
   - scenes recall, and crossfade when asked to
   - the wall tool generates outputs with bezel gaps and resizes the canvas
   - wall groups: a second (1x1) group, moving it, deleting it with its outputs
+  - group presets: save, clear, recall with a crossfade limited to the group
   - every rendered frame reached every output (no partial frames)
 
     python tools/ci_check.py [--engine PATH] [--out DIR]
@@ -209,6 +210,32 @@ with tempfile.TemporaryDirectory() as tmp:
         call("DELETE", "/api/walls/double-wide?outputs=delete")
         lay = json.loads(get("/api/layout")[1])
         check(not any(o.get("group") == "double-wide" for o in lay["outputs"]) and len(lay["walls"]) == 1, "deleting a group removes its outputs")
+
+        print("group presets:", flush=True)
+        call("POST", "/api/walls", {"name": "Side", "cols": 1, "rows": 1, "x": 0, "y": 1080})
+        time.sleep(1.0)
+        side0, other0 = pixel(frame("side-1"), *spot), pixel(frame("out-2"), *spot)
+        call("POST", "/api/sources", {"name": "Blue", "type": "solid", "color": [0, 0, 1, 1], "group": "side",
+                                      "rect": {"x": 0, "y": 1080, "w": 1920, "h": 1080}})
+        saved = call("POST", "/api/walls/side/presets", {"name": "All blue"})
+        check(saved["id"] == "all-blue" and saved["sources"][0]["rect"]["y"] == 0, "preset saved relative to the group")
+        call("POST", "/api/walls/side/clear")
+        time.sleep(1.0)
+        check(close(pixel(frame("side-1"), *spot), side0, 12), "clearing the group shows what's under it")
+        call("POST", "/api/walls/side/presets/all-blue/recall", {"transitionMs": 4000})
+        time.sleep(1.2)
+        mid = pixel(frame("side-1"), *spot)
+        check(not close(mid, side0, 20) and not close(mid, (0, 0, 255), 20), f"the group crossfades {mid}")
+        check(close(pixel(frame("out-2"), *spot), other0, 12), "outputs outside the group don't fade")
+        time.sleep(3.5)
+        check(close(pixel(frame("side-1"), *spot), (0, 0, 255), 12), "recalled preset fills the group")
+        ctl = json.loads(get("/api/control")[1])
+        g = next(x for x in ctl["groups"] if x["id"] == "side")
+        check(g["activePreset"] == "all-blue" and [p["id"] for p in g["presets"]] == ["all-blue"], "control summary lists the group's presets")
+        lay = call("POST", "/api/walls/side/move", {"x": 2020, "y": 1080})
+        rect = next(x["rect"] for x in lay["sources"] if x.get("group") == "side")
+        check(rect["x"] == 2020 and rect["y"] == 1080, "group content moves with the group")
+        call("DELETE", "/api/walls/side?outputs=delete")
 
         print("frame delivery:", flush=True)
         time.sleep(2)

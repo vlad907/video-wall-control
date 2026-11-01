@@ -66,6 +66,14 @@ static SourceType sourceTypeFrom(const std::string& s) {
 
 static PixelFormat pixelFormatFrom(const std::string& s) { return s == "bgra" ? PixelFormat::Bgra : PixelFormat::Uyvy; }
 
+std::string idFromName(const std::string& name) {
+    std::string out;
+    for (char c : sanitizeId(name))
+        if (c != '-' || (!out.empty() && out.back() != '-')) out += c;
+    while (!out.empty() && out.back() == '-') out.pop_back();
+    return out;
+}
+
 std::string sanitizeId(const std::string& raw) {
     std::string out;
     for (char c : raw) {
@@ -92,6 +100,7 @@ void to_json(json& j, const SourceConfig& s) {
     if (s.type == SourceType::Ndi) j["ndiName"] = s.ndiName;
     if (s.type == SourceType::Solid) j["color"] = s.color;
     if (s.type == SourceType::TestPattern) j["animated"] = s.animated;
+    if (!s.group.empty()) j["group"] = s.group;
 }
 
 void from_json(const json& j, SourceConfig& s) {
@@ -105,6 +114,15 @@ void from_json(const json& j, SourceConfig& s) {
     if (j.contains("color")) s.color = j.at("color").get<std::array<float, 4>>();
     s.enabled = j.value("enabled", s.enabled);
     s.animated = j.value("animated", s.animated);
+    s.group = j.value("group", s.group);
+}
+
+void to_json(json& j, const GroupPreset& p) { j = json{{"id", p.id}, {"name", p.name}, {"sources", p.sources}}; }
+
+void from_json(const json& j, GroupPreset& p) {
+    p.id = j.value("id", p.id);
+    p.name = j.value("name", p.name);
+    if (j.contains("sources")) p.sources = j.at("sources").get<std::vector<SourceConfig>>();
 }
 
 void to_json(json& j, const OutputConfig& o) {
@@ -143,7 +161,8 @@ void to_json(json& j, const WallConfig& w) {
     j = json{{"id", w.id},           {"name", w.name},         {"cols", w.cols},       {"rows", w.rows},         {"outputWidth", w.outputWidth},
              {"outputHeight", w.outputHeight},                 {"rotation", w.rotation},
              {"gapX", w.gapX},       {"gapY", w.gapY},         {"x", w.x},
-             {"y", w.y},             {"pixelFormat", toString(w.pixelFormat)}, {"fitCanvas", w.fitCanvas}};
+             {"y", w.y},             {"pixelFormat", toString(w.pixelFormat)}, {"fitCanvas", w.fitCanvas},
+             {"presets", w.presets}, {"activePreset", w.activePreset}};
 }
 
 void from_json(const json& j, WallConfig& w) {
@@ -160,6 +179,8 @@ void from_json(const json& j, WallConfig& w) {
     w.y = j.value("y", w.y);
     if (j.contains("pixelFormat")) w.pixelFormat = pixelFormatFrom(j.at("pixelFormat").get<std::string>());
     w.fitCanvas = j.value("fitCanvas", w.fitCanvas);
+    if (j.contains("presets")) w.presets = j.at("presets").get<std::vector<GroupPreset>>();
+    w.activePreset = j.value("activePreset", w.activePreset);
 }
 
 void to_json(json& j, const Scene& s) { j = json{{"id", s.id}, {"name", s.name}, {"sources", s.sources}}; }
@@ -268,7 +289,7 @@ std::vector<std::string> normalize(Layout& l) {
     n = 0;
     for (auto& w : l.walls) {
         ++n;
-        w.id = sanitizeId(w.id.empty() ? w.name : w.id);
+        w.id = w.id.empty() ? idFromName(w.name) : sanitizeId(w.id);
         if (w.id.empty() || ids.count(w.id)) w.id = "wall-" + std::to_string(n);
         ids.insert(w.id);
         if (w.name.empty()) w.name = w.id == "wall" ? "Wall" : w.id;
@@ -279,6 +300,15 @@ std::vector<std::string> normalize(Layout& l) {
         w.rotation = (((w.rotation % 360) + 360) % 360) / 90 * 90;
         w.gapX = std::clamp(w.gapX, 0, kMaxDimension);
         w.gapY = std::clamp(w.gapY, 0, kMaxDimension);
+        std::set<std::string> presetIds;
+        int k = 0;
+        for (auto& p : w.presets) {
+            ++k;
+            p.id = p.id.empty() ? idFromName(p.name) : sanitizeId(p.id);
+            if (p.id.empty() || presetIds.count(p.id)) p.id = "preset-" + std::to_string(k);
+            presetIds.insert(p.id);
+            if (p.name.empty()) p.name = p.id;
+        }
     }
 
     ids.clear();
@@ -327,7 +357,7 @@ static void fitCanvasToWalls(Layout& l) {
 }
 
 void applyWall(Layout& l, WallConfig w) {
-    if (w.id.empty()) w.id = w.name.empty() ? "wall" : w.name;
+    if (w.id.empty()) w.id = w.name.empty() ? "wall" : idFromName(w.name);
     Layout probe;
     probe.walls = {w};
     normalize(probe);  // clamp the wall's values, sanitize its id
@@ -336,7 +366,20 @@ void applyWall(Layout& l, WallConfig w) {
 
     bool stored = false;
     for (auto& existing : l.walls)
-        if (existing.id == w.id) existing = w, stored = true;
+        if (existing.id == w.id) {
+            // Presets aren't part of the grid settings; keep the stored ones.
+            w.presets = existing.presets;
+            w.activePreset = existing.activePreset;
+            // The group's content follows it: what filled the group still fills it, the rest moves along.
+            Rect before = wallBounds(existing), after = wallBounds(w);
+            for (auto& src : l.sources) {
+                if (src.group != w.id) continue;
+                if (src.rect.x == before.x && src.rect.y == before.y && src.rect.w == before.w && src.rect.h == before.h) src.rect = after;
+                else src.rect.x += after.x - before.x, src.rect.y += after.y - before.y;
+            }
+            existing = w;
+            stored = true;
+        }
     if (!stored) l.walls.push_back(w);
 
     bool sideways = w.rotation == 90 || w.rotation == 270;
@@ -412,6 +455,8 @@ bool moveWall(Layout& l, const std::string& id, int x, int y) {
         w.y = y;
         for (auto& o : l.outputs)
             if (o.group == id && o.source == "canvas") o.crop.x += dx, o.crop.y += dy;
+        for (auto& src : l.sources)
+            if (src.group == id) src.rect.x += dx, src.rect.y += dy;
         if (w.fitCanvas) fitCanvasToWalls(l);
         return true;
     }
@@ -429,6 +474,96 @@ bool removeWall(Layout& l, const std::string& id, bool removeOutputs) {
         for (auto& o : l.outputs)
             if (o.group == id) o.group.clear();
     }
+    for (auto& src : l.sources)
+        if (src.group == id) src.group.clear();
+    return true;
+}
+
+static WallConfig* findWallMut(Layout& l, const std::string& id) {
+    for (auto& w : l.walls)
+        if (w.id == id) return &w;
+    return nullptr;
+}
+
+// Group sources go on top of the others, in the given order (the last one on top).
+static void replaceGroupSources(Layout& l, const WallConfig& w, const std::vector<SourceConfig>& relative) {
+    std::erase_if(l.sources, [&](const SourceConfig& s) { return s.group == w.id; });
+    Rect area = wallBounds(w);
+    std::string prefix = w.id + "--";
+    for (const auto& rel : relative) {
+        SourceConfig s = rel;
+        s.group = w.id;
+        s.rect.x += area.x;
+        s.rect.y += area.y;
+        if (s.rect.w <= 0 || s.rect.h <= 0) s.rect = area;  // no size = fill the group
+        std::string base = sanitizeId(prefix + (rel.id.empty() ? "source" : rel.id));
+        s.id = base;
+        for (int n = 2; l.findSource(s.id); ++n) s.id = base + "-" + std::to_string(n);
+        l.sources.push_back(s);
+    }
+}
+
+std::string saveGroupPreset(Layout& l, const std::string& groupId, const std::string& name) {
+    WallConfig* w = findWallMut(l, groupId);
+    if (!w) return "";
+    GroupPreset p;
+    p.name = name.empty() ? "Preset " + std::to_string(w->presets.size() + 1) : name;
+    p.id = idFromName(p.name);
+    if (p.id.empty()) p.id = "preset-" + std::to_string(w->presets.size() + 1);
+    Rect area = wallBounds(*w);
+    std::string prefix = w->id + "--";
+    for (const auto& s : l.sources) {
+        if (s.group != groupId) continue;
+        SourceConfig rel = s;
+        rel.group.clear();
+        rel.rect.x -= area.x;
+        rel.rect.y -= area.y;
+        if (rel.id.rfind(prefix, 0) == 0) rel.id = rel.id.substr(prefix.size());
+        p.sources.push_back(rel);
+    }
+    bool replaced = false;
+    for (auto& existing : w->presets)
+        if (existing.id == p.id) existing = p, replaced = true;
+    if (!replaced) w->presets.push_back(p);
+    w->activePreset = p.id;
+    return p.id;
+}
+
+bool recallGroupPreset(Layout& l, const std::string& groupId, const std::string& presetId) {
+    WallConfig* w = findWallMut(l, groupId);
+    if (!w) return false;
+    for (const auto& p : w->presets)
+        if (p.id == presetId) {
+            replaceGroupSources(l, *w, p.sources);
+            w->activePreset = p.id;
+            return true;
+        }
+    return false;
+}
+
+bool deleteGroupPreset(Layout& l, const std::string& groupId, const std::string& presetId) {
+    WallConfig* w = findWallMut(l, groupId);
+    if (!w) return false;
+    auto n = w->presets.size();
+    std::erase_if(w->presets, [&](const GroupPreset& p) { return p.id == presetId; });
+    if (w->activePreset == presetId) w->activePreset.clear();
+    return w->presets.size() != n;
+}
+
+bool showOnGroup(Layout& l, const std::string& groupId, const std::string& ndiName) {
+    WallConfig* w = findWallMut(l, groupId);
+    if (!w) return false;
+    std::vector<SourceConfig> content;
+    if (!ndiName.empty()) {
+        SourceConfig s;
+        s.id = "live";
+        s.name = ndiName;
+        s.type = SourceType::Ndi;
+        s.ndiName = ndiName;
+        content.push_back(s);  // no rect: fills the group
+    }
+    replaceGroupSources(l, *w, content);
+    w->activePreset.clear();
     return true;
 }
 

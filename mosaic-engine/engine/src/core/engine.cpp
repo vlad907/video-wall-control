@@ -135,9 +135,10 @@ void Engine::stop() {
     fadeTex_ = 0;
 }
 
-bool Engine::captureForTransition(int ms) {
+bool Engine::captureForTransition(int ms, Rect region) {
     std::unique_lock l(transitionMutex_);
     transitionRequestMs_ = std::clamp(ms, 1, 10000);
+    transitionRequestRect_ = region;
     transitionCaptured_ = false;
     return transitionCv_.wait_for(l, std::chrono::milliseconds(250), [this] { return transitionCaptured_; });
 }
@@ -195,9 +196,11 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
 
     // Transition: freeze what the canvas shows now; it fades out over the new content.
     int transitionMs = 0;
+    Rect transitionRect;
     {
         std::lock_guard l(transitionMutex_);
         std::swap(transitionMs, transitionRequestMs_);
+        transitionRect = transitionRequestRect_;
     }
     if (transitionMs > 0 && view_.tex) {
         if (!fadeTex_) fadeTex_ = renderer_.createTexture(canvasW_, canvasH_, TexUsage::RenderTarget);
@@ -209,6 +212,11 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
         renderer_.endPass();
         fadeStart_ = tick;
         fadeMs_ = transitionMs;
+        // Only that part of the canvas fades; elsewhere the live picture carries on untouched.
+        int x0 = std::clamp(transitionRect.x, 0, canvasW_), y0 = std::clamp(transitionRect.y, 0, canvasH_);
+        int x1 = std::clamp(transitionRect.x + transitionRect.w, 0, canvasW_), y1 = std::clamp(transitionRect.y + transitionRect.h, 0, canvasH_);
+        fadeRect_ = transitionRect.w > 0 && transitionRect.h > 0 && x1 > x0 && y1 > y0 ? Rect{x0, y0, x1 - x0, y1 - y0}
+                                                                                         : Rect{0, 0, canvasW_, canvasH_};
         std::lock_guard l(transitionMutex_);
         transitionCaptured_ = true;
         transitionCv_.notify_all();
@@ -350,9 +358,14 @@ void Engine::renderCanvas(const Layout& layout, const std::set<std::string>& nee
     if (fadeMs_ > 0) {
         double t = msBetween(fadeStart_, tick) / fadeMs_;
         if (t < 1.0) {
-            Uniforms u = makeUniforms(0, 0, float(canvasW_), float(canvasH_));
-            u.crop[2] = u.sizes[0] = float(canvasW_);
-            u.crop[3] = u.sizes[1] = float(canvasH_);
+            const Rect& r = fadeRect_;
+            Uniforms u = makeUniforms(float(r.x), float(r.y), float(r.w), float(r.h));
+            u.crop[0] = float(r.x);
+            u.crop[1] = float(r.y);
+            u.crop[2] = float(r.w);
+            u.crop[3] = float(r.h);
+            u.sizes[0] = float(canvasW_);
+            u.sizes[1] = float(canvasH_);
             u.fparams[3] = static_cast<float>(1.0 - t * t * (3.0 - 2.0 * t));  // smoothstep fade-out
             renderer_.drawTextured(fadeTex_, u);
         } else {
@@ -559,7 +572,10 @@ void Engine::reconcile(const Layout& layout) {
         canvasH_ = layout.canvas.height;
     }
 
-    // Sources: recreate only those whose type, NDI name or pattern size changed.
+    // Sources: recreate only those whose type, NDI name or pattern size changed. An NDI
+    // source that goes away hands its receiver (and last frame) to a new source showing
+    // the same stream, so recalling a preset doesn't reconnect streams it keeps.
+    std::multimap<std::string, SourceState> spare;
     for (auto it = sources_.begin(); it != sources_.end();) {
         const SourceConfig* c = layout.findSource(it->first);
         bool keep = c && c->type == it->second.cfg.type && c->ndiName == it->second.cfg.ndiName &&
@@ -569,12 +585,23 @@ void Engine::reconcile(const Layout& layout) {
             it->second.cfg = *c;
             ++it;
         } else {
-            destroySource(it->second);
+            if (it->second.cfg.type == SourceType::Ndi && it->second.rx) spare.emplace(it->second.cfg.ndiName, std::move(it->second));
+            else destroySource(it->second);
             it = sources_.erase(it);
         }
     }
     for (auto& c : layout.sources) {
         if (sources_.count(c.id)) continue;
+        if (c.type == SourceType::Ndi) {
+            auto sp = spare.find(c.ndiName);
+            if (sp != spare.end()) {
+                SourceState& s = sources_[c.id];
+                s = std::move(sp->second);
+                s.cfg = c;
+                spare.erase(sp);
+                continue;
+            }
+        }
         SourceState& s = sources_[c.id];
         s.cfg = c;
         if (c.type == SourceType::TestPattern) {
@@ -587,6 +614,7 @@ void Engine::reconcile(const Layout& layout) {
             s.rx = ndi_->createReceiver(c.ndiName);
         }
     }
+    for (auto& [name, s] : spare) destroySource(s);
 
     // Outputs: a channel is recreated only when its resolution or stream name
     // changes. Crop, rotation, scaling, source and enable apply live per frame.

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Layout, Wall } from "./api";
+import { GroupContent } from "./GroupContent";
 import { NumberField } from "./Inspector";
 
 const PANELS: [string, number, number][] = [
@@ -34,6 +35,8 @@ const DEFAULT: Wall = {
   y: 0,
   pixelFormat: "uyvy",
   fitCanvas: true,
+  presets: [],
+  activePreset: "",
 };
 
 // Where a new group goes: under everything already on the canvas, or to the right if that runs out of room.
@@ -54,15 +57,22 @@ export function WallPanel({
   onApply,
   onRemove,
   onClose,
+  onChanged,
+  onError,
+  onEditSources,
 }: {
   layout: Layout;
   wall: Wall | null; // null = a new group
+  onChanged: () => void;
+  onError: (e: unknown) => void;
+  onEditSources: (sourceId: string) => void;
   onApply: (w: Wall) => void;
   onRemove: (removeOutputs: boolean) => void;
   onClose: () => void;
 }) {
   const [w, setW] = useState<Wall>(() => wall ?? { ...DEFAULT, ...freeSpot(layout), fitCanvas: true });
   const [unit, setUnit] = useState<"px" | "mm">("px");
+  const [tab, setTab] = useState<"content" | "grid">("content");
   // mm mode: physical size of the picture area (long side) and of the gaps between pictures.
   const [imageMm, setImageMm] = useState(1210);
   const [gapMm, setGapMm] = useState({ x: 3.5, y: 3.5 });
@@ -78,19 +88,49 @@ export function WallPanel({
   const totalH = w.y + w.rows * cellH + (w.rows - 1) * gapY;
   const count = w.cols * w.rows;
   // Output ids, as the engine makes them: out-N for the group "wall", else <group id>-N (the id comes from the name).
-  const slug = w.name.toLowerCase().replace(/[ .]/g, "-").replace(/[^a-z0-9_-]/g, "").slice(0, 64) || "group";
+  const slug =
+    w.name
+      .toLowerCase()
+      .replace(/[ .]/g, "-")
+      .replace(/[^a-z0-9_-]/g, "")
+      .slice(0, 64)
+      .replace(/-+/g, "-")
+      .replace(/-$/, "") || "group";
   const prefix = wall ? (wall.id === "wall" ? "out" : wall.id) : slug;
 
   const groupW = totalW - w.x;
   const groupH = totalH - w.y;
   const scale = 260 / Math.max(groupW, groupH * 1.6);
 
-  return (
-    <div className="inspector">
+  const head = (
+    <>
       <div className="inspector-head">
         <h2>{wall ? wall.name : "New group"}</h2>
         <button onClick={onClose}>Close</button>
       </div>
+      {wall && (
+        <div className="seg">
+          <button className={tab === "content" ? "on" : ""} onClick={() => setTab("content")} title="Which streams or preset the group shows">
+            Content
+          </button>
+          <button className={tab === "grid" ? "on" : ""} onClick={() => setTab("grid")} title="Displays, resolution, bezels and placement">
+            Displays
+          </button>
+        </div>
+      )}
+    </>
+  );
+  if (wall && tab === "content")
+    return (
+      <div className="inspector">
+        {head}
+        <GroupContent layout={layout} wall={wall} onChanged={onChanged} onError={onError} onEditSources={onEditSources} />
+      </div>
+    );
+
+  return (
+    <div className="inspector">
+      {head}
       <small className="muted">
         One output per display ({count === 1 ? `${prefix}-1` : `${prefix}-1 … ${prefix}-${count}`}, row by row). Updating keeps their NDI streams.
       </small>

@@ -306,7 +306,7 @@ export function SourcesPanel({
   );
 }
 
-const FADES: [string, number][] = [
+export const FADES: [string, number][] = [
   ["Cut", 0],
   ["0.5 s", 500],
   ["1 s", 1000],

@@ -16,6 +16,14 @@ export interface Source {
   animated?: boolean;
   enabled: boolean;
   status?: { status: string; inputFps?: number; width: number; height: number };
+  group?: string; // wall group whose content this is (set by the group's presets)
+}
+
+// What one wall group shows; source rects are relative to the group's top-left corner.
+export interface GroupPreset {
+  id: string;
+  name: string;
+  sources: Source[];
 }
 
 export interface Output {
@@ -49,6 +57,16 @@ export interface Wall {
   y: number;
   pixelFormat: "uyvy" | "bgra";
   fitCanvas: boolean;
+  presets: GroupPreset[];
+  activePreset: string;
+}
+
+// Where a wall group sits on the canvas, bezel gaps included.
+export function wallBounds(w: Wall): Rect {
+  const sideways = w.rotation === 90 || w.rotation === 270;
+  const cw = sideways ? w.outputHeight : w.outputWidth;
+  const ch = sideways ? w.outputWidth : w.outputHeight;
+  return { x: w.x, y: w.y, w: w.cols * cw + (w.cols - 1) * w.gapX, h: w.rows * ch + (w.rows - 1) * w.gapY };
 }
 
 export interface Scene {
@@ -151,6 +169,12 @@ export const api = {
   putWall: (id: string, w: Partial<Wall>) => call<Layout>("PUT", `/api/walls/${id}`, w),
   moveWall: (id: string, x: number, y: number) => call<Layout>("POST", `/api/walls/${id}/move`, { x, y }),
   deleteWall: (id: string, removeOutputs: boolean) => call("DELETE", `/api/walls/${id}${removeOutputs ? "?outputs=delete" : ""}`),
+  saveGroupPreset: (group: string, name: string) => call<GroupPreset>("POST", `/api/walls/${group}/presets`, { name }),
+  recallGroupPreset: (group: string, id: string, transitionMs: number) =>
+    call("POST", `/api/walls/${group}/presets/${id}/recall`, { transitionMs }),
+  deleteGroupPreset: (group: string, id: string) => call("DELETE", `/api/walls/${group}/presets/${id}`),
+  showOnGroup: (group: string, ndiName: string, transitionMs: number) => call("POST", `/api/walls/${group}/show`, { ndiName, transitionMs }),
+  clearGroup: (group: string, transitionMs: number) => call("POST", `/api/walls/${group}/clear`, { transitionMs }),
   saveScene: (name: string) => call<Scene>("POST", "/api/scenes", { name }),
   recallScene: (id: string, transitionMs: number) => call("POST", `/api/scenes/${id}/recall`, { transitionMs }),
   deleteScene: (id: string) => call("DELETE", `/api/scenes/${id}`),

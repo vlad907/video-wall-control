@@ -31,6 +31,15 @@ struct SourceConfig {
     std::array<float, 4> color{0.f, 0.f, 0.f, 1.f};  // for SourceType::Solid
     bool animated = true;                     // test pattern: false freezes the moving bar and frame counter
     bool enabled = true;
+    std::string group;                        // wall group whose content this is (set by its presets), or empty
+};
+
+// What one wall group shows: its sources, placed relative to the group's top-left corner,
+// so the preset still fits after the group is moved.
+struct GroupPreset {
+    std::string id;
+    std::string name;
+    std::vector<SourceConfig> sources;
 };
 
 struct OutputConfig {
@@ -62,6 +71,8 @@ struct WallConfig {
     int x = 0, y = 0;                             // top-left of the wall on the canvas
     PixelFormat pixelFormat = PixelFormat::Uyvy;
     bool fitCanvas = true;                        // resize the canvas to the wall
+    std::vector<GroupPreset> presets;             // saved content for this group
+    std::string activePreset;                     // last preset recalled or saved ("" after show / clear)
 };
 
 // A saved arrangement of sources that can be recalled without touching outputs.
@@ -99,6 +110,8 @@ constexpr int kMaxDimension = 16384;
 std::vector<std::string> normalize(Layout& layout);
 
 std::string sanitizeId(const std::string& raw);
+// An id made from a display name: sanitized, with runs of "-" collapsed ("Camera + slides" -> "camera-slides").
+std::string idFromName(const std::string& name);
 Layout defaultLayout();
 
 void to_json(nlohmann::json& j, const Rect& r);
@@ -111,6 +124,8 @@ void to_json(nlohmann::json& j, const CanvasConfig& c);
 void from_json(const nlohmann::json& j, CanvasConfig& c);
 void to_json(nlohmann::json& j, const WallConfig& w);
 void from_json(const nlohmann::json& j, WallConfig& w);
+void to_json(nlohmann::json& j, const GroupPreset& p);
+void from_json(const nlohmann::json& j, GroupPreset& p);
 void to_json(nlohmann::json& j, const Scene& s);
 void from_json(const nlohmann::json& j, Scene& s);
 void to_json(nlohmann::json& j, const Layout& l);
@@ -128,6 +143,16 @@ bool moveWall(Layout& l, const std::string& id, int x, int y);
 bool removeWall(Layout& l, const std::string& id, bool removeOutputs);
 // Size of a wall group on the canvas, bezel gaps included.
 Rect wallBounds(const WallConfig& w);
+
+// Group content. The group's sources are those with source.group == group id; they are
+// drawn over the layout's other sources.
+// Saves the group's current sources as a preset (replacing one with the same id); returns its id, "" if no such group.
+std::string saveGroupPreset(Layout& l, const std::string& groupId, const std::string& name);
+// Replaces the group's sources with the preset's. False if there is no such group or preset.
+bool recallGroupPreset(Layout& l, const std::string& groupId, const std::string& presetId);
+bool deleteGroupPreset(Layout& l, const std::string& groupId, const std::string& presetId);
+// Replaces the group's sources with one NDI stream filling the group ("" = clear the group).
+bool showOnGroup(Layout& l, const std::string& groupId, const std::string& ndiName);
 
 // Saves the current sources as a scene (replacing one with the same id); returns its id.
 std::string saveScene(Layout& l, const std::string& name);

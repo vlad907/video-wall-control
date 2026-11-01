@@ -1,4 +1,4 @@
-import type { Layout, Rect, Source } from "./api";
+import { wallBounds, type Layout, type Rect, type Source } from "./api";
 import { NumberField, TextField } from "./Inspector";
 
 // Edits one source: where it sits on the canvas, what part of it is shown, and how opaque it is.
@@ -19,13 +19,25 @@ export function SourceInspector({
   const rect = (k: keyof Rect) => (v: number) => onPatch({ rect: { ...source.rect, [k]: v } });
   const crop = (k: keyof Rect) => (v: number) => onPatch({ crop: { ...source.crop, [k]: v } });
   const index = layout.sources.findIndex((s) => s.id === source.id);
+  // Placements are within the source's wall group when it has one, else the whole canvas.
+  const wall = layout.walls.find((w) => w.id === source.group);
+  const area = wall ? wallBounds(wall) : { x: 0, y: 0, w: cw, h: ch };
+  const at = (fx: number, fy: number, fw: number, fh: number): Rect => {
+    const x = Math.round(area.x + area.w * fx);
+    const y = Math.round(area.y + area.h * fy);
+    return { x, y, w: Math.round(area.x + area.w * (fx + fw)) - x, h: Math.round(area.y + area.h * (fy + fh)) - y };
+  };
   const placements: [string, Rect][] = [
-    ["Full", { x: 0, y: 0, w: cw, h: ch }],
-    ["Left ½", { x: 0, y: 0, w: Math.round(cw / 2), h: ch }],
-    ["Right ½", { x: Math.round(cw / 2), y: 0, w: cw - Math.round(cw / 2), h: ch }],
-    ["Top ½", { x: 0, y: 0, w: cw, h: Math.round(ch / 2) }],
-    ["Bottom ½", { x: 0, y: Math.round(ch / 2), w: cw, h: ch - Math.round(ch / 2) }],
-    ["Centre ½", { x: Math.round(cw / 4), y: Math.round(ch / 4), w: Math.round(cw / 2), h: Math.round(ch / 2) }],
+    ["Full", at(0, 0, 1, 1)],
+    ["Left ½", at(0, 0, 0.5, 1)],
+    ["Right ½", at(0.5, 0, 0.5, 1)],
+    ["Top ½", at(0, 0, 1, 0.5)],
+    ["Bottom ½", at(0, 0.5, 1, 0.5)],
+    ["Top-left ¼", at(0, 0, 0.5, 0.5)],
+    ["Top-right ¼", at(0.5, 0, 0.5, 0.5)],
+    ["Bottom-left ¼", at(0, 0.5, 0.5, 0.5)],
+    ["Bottom-right ¼", at(0.5, 0.5, 0.5, 0.5)],
+    ["Centre ½", at(0.25, 0.25, 0.5, 0.5)],
   ];
   const cropped = source.crop.w > 0 && source.crop.h > 0;
   const natW = source.status?.width ?? 0;
@@ -64,7 +76,28 @@ export function SourceInspector({
       </div>
 
       <div className="group">
-        <h3>Position on canvas</h3>
+        <label className="field wide">
+          <span>Belongs to group (saved in that group's presets)</span>
+          <select
+            value={source.group ?? ""}
+            onChange={(e) => {
+              const g = layout.walls.find((w) => w.id === e.target.value);
+              // Moving into a group starts by filling it.
+              onPatch(g ? { group: g.id, rect: wallBounds(g) } : { group: "" });
+            }}
+          >
+            <option value="">None (whole canvas)</option>
+            {layout.walls.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="group">
+        <h3>Position {wall ? `in ${wall.name}` : "on canvas"}</h3>
         <div className="row">
           <NumberField label="X" value={source.rect.x} min={-100000} onCommit={rect("x")} />
           <NumberField label="Y" value={source.rect.y} min={-100000} onCommit={rect("y")} />

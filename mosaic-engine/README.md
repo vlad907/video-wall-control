@@ -28,6 +28,7 @@ in the style of Resolume's Advanced Output drives the running engine through a R
 | NDI send / receive / discovery | **Working on Windows** with the NDI 6 SDK; streams play in NDI Studio Monitor. See [docs/NDI.md](docs/NDI.md). |
 | Wall groups: several walls and single displays per layout (grids with bezel gaps in px or mm, portrait panels, 1 × 1 for one display) | **Working, pixel-checked** (`tools/ci_check.py`) |
 | Editor: layer list (drag to reorder, bring to front / send to back), snapping to other frames' edges and centres (can be turned off) | **Working**, tested in the browser |
+| Presets per wall group, one-call "show this NDI stream on this group", control API ([docs/CONTROL_API.md](docs/CONTROL_API.md)) | **Working, pixel-checked** (with colour sources; NDI switching not yet tried on Windows) |
 | Free-form mosaics: any position, gap and tilt angle per panel | **Working, pixel-checked**; rotate handle and `[` `]` keys in the editor |
 | Layered sources with opacity and source crop; scenes with crossfade | **Working, pixel-checked** on Metal; checked on Direct3D 11 by CI |
 | Starts at boot with the video-wall dashboard, restarted if it stops | **Working** (tested on macOS with mock Studio Monitors) |
@@ -144,6 +145,13 @@ outputs and sources and of the canvas, and a pink guide shows the line it snappe
 *Snap to other frames & centres* off in the sidebar, or hold Alt while dragging, to place
 freely. The *Grid* setting rounds positions to a step (10 px by default).
 
+**Group presets** are saved pictures for one wall group: which NDI streams it shows and
+where, relative to the group (so they still fit after the group moves). Click a group's name
+in the output list and open its *Content* tab to show one stream on the whole group, add more
+streams as layers (placed with *Left ½*, *Top-right ¼* and so on), and save presets. Recalling a
+preset changes only that group, and its crossfade stays inside the group. Control systems
+recall presets over HTTP: see [docs/CONTROL_API.md](docs/CONTROL_API.md).
+
 **Scenes** are saved arrangements of sources, stored with the layout. Recall one with a cut
 or a crossfade of 0.5–2 s (`POST /api/scenes/:id/recall {"transitionMs":1000}`). Outputs
 don't change. Activating another layout can crossfade too, when its canvas is the same size.
@@ -189,6 +197,12 @@ Across the whole source there's also:
 | GET / POST | `/api/walls` | list wall groups / create one (`{"name", "cols", "rows", "outputWidth", "outputHeight", "x", "y", "gapX", "gapY", "rotation", "fitCanvas"}`; the id comes from the name) |
 | PUT / DELETE | `/api/walls/:id` | PUT (partial body) creates or regenerates a group; DELETE forgets it and keeps its outputs as standalone outputs, or removes them with `?outputs=delete` |
 | POST | `/api/walls/:id/move` | move a whole group to `{"x", "y"}`, keeping its outputs' own tweaks |
+| GET / POST | `/api/walls/:id/presets` | list a group's presets / save what it shows now as `{"name": ...}` |
+| POST | `/api/walls/:id/presets/:preset/recall` | show a preset on the group; optional `{"transitionMs": N}` (fades only that group) |
+| DELETE | `/api/walls/:id/presets/:preset` | |
+| POST | `/api/walls/:id/show` | fill the group with one NDI stream: `{"ndiName": "PC (Stream)", "transitionMs": N}` |
+| POST | `/api/walls/:id/clear` | remove the group's content; optional `{"transitionMs": N}` |
+| GET | `/api/control` | summary for control systems: groups with presets and what's on, scenes, layouts, NDI streams |
 | GET / PUT / DELETE | `/api/wall` | the group `wall` (the single-wall API from before groups) |
 | GET / POST | `/api/scenes` | list scenes / save the current sources as `{"name": ...}` |
 | POST | `/api/scenes/:id/recall` | replace the sources with the scene's; optional `{"transitionMs": N}` |

@@ -38,9 +38,10 @@ public:
     std::vector<std::string> discoveredNdiSources();
     bool ndiAvailable() const { return ndi_ != nullptr; }
 
-    // Freezes the current canvas so the next layout change crossfades from it over `ms`.
+    // Freezes the current canvas so the next layout change crossfades from it over `ms`,
+    // within `region` (canvas pixels; w/h 0 = the whole canvas, e.g. one wall group's area).
     // Call before changing the layout; returns false if the render thread didn't respond.
-    bool captureForTransition(int ms);
+    bool captureForTransition(int ms, Rect region = {});
 
     // Low-res BGRA preview of "canvas" or an output id, encoded as JPEG.
     bool previewJpeg(const std::string& target, std::string& jpeg);
@@ -126,9 +127,11 @@ private:
     TexId fadeTex_ = 0;
     Clock::time_point fadeStart_;
     double fadeMs_ = 0;
+    Rect fadeRect_;  // the part of the canvas that crossfades
     std::mutex transitionMutex_;
     std::condition_variable transitionCv_;
     int transitionRequestMs_ = 0;
+    Rect transitionRequestRect_;
     bool transitionCaptured_ = false;
 
     std::mutex statusMutex_;
