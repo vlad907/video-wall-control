@@ -80,6 +80,8 @@
   .mosaic .info b { color: var(--text); font-weight: 600; }
   .mosaic .actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .switch { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; cursor: pointer; }
+  .mosaic .host { flex-basis: 100%; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .mosaic .host input { margin-top: 0; max-width: 260px; }
 </style>
 </head>
 <body>
@@ -125,6 +127,11 @@
       <a id="mosaicEditor" target="_blank" rel="noopener"><button>Open editor</button></a>
       <button id="btnAssign" class="primary" title="Panel 1 shows Mosaic_Output_01, panel 2 shows _02, …">Show mosaic on panels</button>
       <button id="btnMosaicRestart" class="danger">Restart engine</button>
+    </div>
+    <div class="host" title="Leave empty when the engine runs on this PC">
+      Engine PC
+      <input type="text" id="mosaicHost" placeholder="this PC (or e.g. MEDIASERVER / 192.168.1.20)">
+      <button id="btnMosaicHost">Save</button>
     </div>
   </section>
   <section class="streams-wrap">
@@ -322,13 +329,19 @@ async function refreshMosaic() {
   try { m = await api("/api/mosaic"); } catch (e) { return; }
   $("mosaic").hidden = false;
   $("mosaicEnabled").checked = m.enabled;
+  $("mosaicEnabled").parentElement.hidden = !!m.remote;
+  if (document.activeElement !== $("mosaicHost")) $("mosaicHost").value = m.remote || "";
   $("mosaicDot").classList.toggle("on", m.running);
   $("mosaicEditor").href = m.editor_url;
   $("mosaicEditor").hidden = !m.running;
   $("btnAssign").disabled = !m.running;
-  $("btnMosaicRestart").hidden = !m.exe || !m.enabled;
+  $("btnMosaicRestart").hidden = !m.exe || !m.enabled || !!m.remote;
   const info = $("mosaicInfo");
-  if (!m.exe) {
+  if (m.remote && !m.running) {
+    info.textContent = `Engine on ${m.remote} isn't answering (is it running, and is port 8090 open in its firewall?)`;
+  } else if (m.remote) {
+    info.textContent = "";
+  } else if (!m.exe) {
     info.textContent = "Not built yet: build mosaic-engine (see mosaic-engine/docs/WINDOWS.md) and it starts automatically.";
   } else if (!m.enabled) {
     info.textContent = "Turned off.";
@@ -340,6 +353,12 @@ async function refreshMosaic() {
     info.innerHTML = `<b style="color:${low ? "var(--warn)" : "inherit"}">${fps}/${m.target_fps} fps</b> · layout <b></b> · ${m.outputs.length} output(s) · NDI <span></span>`;
     info.querySelector("b:nth-of-type(2)").textContent = m.layout;
     info.querySelector("span").textContent = m.ndi === "unavailable" ? "unavailable (built without the SDK)" : "on";
+  }
+  if (m.remote && m.running) {
+    const fps = m.render_fps == null ? "?" : m.render_fps.toFixed(1);
+    info.innerHTML = `On <b></b> · <b>${fps}/${m.target_fps} fps</b> · layout <b></b> · ${m.outputs.length} output(s)`;
+    info.querySelector("b").textContent = m.remote;
+    info.querySelector("b:nth-of-type(3)").textContent = m.layout;
   }
 }
 
@@ -397,6 +416,15 @@ $("mosaicEnabled").onchange = async (e) => {
   catch (err) { toast(err.message); }
   setTimeout(refreshMosaic, 1500);
 };
+$("btnMosaicHost").onclick = async () => {
+  try {
+    await api("/api/settings", { method: "POST", body: { mosaic_host: $("mosaicHost").value } });
+    toast($("mosaicHost").value.trim() ? "Using the engine on " + $("mosaicHost").value.trim() : "Using the engine on this PC");
+  } catch (err) { toast(err.message); }
+  $("mosaicHost").blur();
+  setTimeout(refreshMosaic, 1500);
+};
+$("mosaicHost").onkeydown = (e) => { if (e.key === "Enter") $("btnMosaicHost").click(); };
 $("btnAssign").onclick = async () => {
   if (!confirm("Point each panel at the matching mosaic output (panel 1 → output 1, …)?")) return;
   try { reportResults((await api("/api/mosaic/assign", { method: "POST" })).results); }

@@ -88,7 +88,7 @@ Open `http://localhost:8080/api/sources/raw` on the Mini PC. It shows the raw
 | `decorations` | `hw_accel: true` | Sent as the `decorations` object |
 | `layout_columns` | `2` | Dashboard grid. Use `4` for a 1×4 wall |
 | `panels` | ports 80–83 | Panel name, port, saved `ndi_source` (optional `display_device`, sent only if set) |
-| `mosaic` | `enabled: true`, `port: 8090` | Mosaic engine supervision. `exe_path` empty means `mosaic-engine\build\Release\mosaic_engine.exe`; `args` are extra command-line flags (for example `["--layout", "wall-2x2-4k"]`). If the engine isn't built, this does nothing |
+| `mosaic` | `enabled: true`, `port: 8090` | Mosaic engine supervision. `exe_path` empty means `mosaic-engine\build\Release\mosaic_engine.exe`; `args` are extra command-line flags (for example `["--layout", "wall-2x2-4k"]`). If the engine isn't built, this does nothing. `host` is the PC running the engine when it isn't this one (name or IP; the dashboard's **Engine PC** field): this PC then runs no engine of its own, and **Show mosaic on panels** reads that engine's outputs. Its port 8090 must be open in that PC's firewall (`install.bat` there adds the rule) |
 
 Each apply reads the panel's current `/v1/configuration`, changes only these fields, and POSTs the whole object back:
 

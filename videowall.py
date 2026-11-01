@@ -68,7 +68,9 @@ DEFAULT_CONFIG = {
     "decorations": {"hw_accel": True},
     # GPU mosaic engine (mosaic-engine/): started before the Studio Monitors and
     # restarted if it stops answering. exe_path empty = the build in mosaic-engine/build.
-    "mosaic": {"enabled": True, "exe_path": "", "port": 8090, "args": []},
+    # host: the PC that runs the engine; empty = this one. With another PC set, this
+    # dashboard doesn't start an engine of its own, it only reads that one's outputs.
+    "mosaic": {"enabled": True, "exe_path": "", "port": 8090, "args": [], "host": ""},
     "panels": [
         {"name": "Panel 1", "port": 80, "ndi_source": "", "display_device": ""},
         {"name": "Panel 2", "port": 81, "ndi_source": "", "display_device": ""},
@@ -674,8 +676,39 @@ def find_mosaic_exe():
     return None
 
 
+def short_host(name):
+    return name.split(".")[0].upper() if name and not name.replace(".", "").isdigit() else name
+
+
+def mosaic_remote_host():
+    """The other PC running the engine, or None when it runs here."""
+    host = (mosaic_cfg().get("host") or "").strip()
+    if not host or host.lower() in ("localhost", "127.0.0.1", "::1"):
+        return None
+    if short_host(host) == short_host(socket.gethostname()):
+        return None
+    return host
+
+
+def parse_mosaic_host(value):
+    """Accepts "PC-NAME", "192.168.1.20", "pc:8090" or "http://pc:8090/"; returns (host, port or None)."""
+    value = str(value or "").strip()
+    if "://" in value:
+        value = value.split("://", 1)[1]
+    value = value.split("/", 1)[0]
+    port = None
+    if value.count(":") == 1:
+        value, port_text = value.split(":")
+        if not port_text.isdigit():
+            raise ValueError("Bad port in '%s'" % port_text)
+        port = int(port_text)
+    if any(c.isspace() for c in value):
+        raise ValueError("Bad engine host '%s'" % value)
+    return value, port
+
+
 def mosaic_url(path):
-    return "http://127.0.0.1:%d%s" % (int(mosaic_cfg()["port"]), path)
+    return "http://%s:%d%s" % (mosaic_remote_host() or "127.0.0.1", int(mosaic_cfg()["port"]), path)
 
 
 def mosaic_get(path, timeout=1.5):
@@ -702,7 +735,7 @@ def mosaic_root(exe):
 def start_mosaic():
     """Starts the engine unless one is already answering on its port. Returns True when it's up."""
     mc = mosaic_cfg()
-    if not mc.get("enabled"):
+    if not mc.get("enabled") or mosaic_remote_host():
         return False
     if mosaic_alive():
         return True
@@ -766,7 +799,7 @@ def stop_mosaic():
 
 
 def mosaic_watchdog():
-    if not mosaic_cfg().get("enabled") or not find_mosaic_exe():
+    if not mosaic_cfg().get("enabled") or mosaic_remote_host() or not find_mosaic_exe():
         return
     if mosaic_alive():
         mosaic_state["down_streak"] = 0
@@ -780,16 +813,18 @@ def mosaic_watchdog():
 
 def mosaic_status(host):
     mc = mosaic_cfg()
-    metrics = mosaic_get("/api/metrics") if mc.get("enabled") else None
+    remote = mosaic_remote_host()
+    metrics = mosaic_get("/api/metrics") if mc.get("enabled") or remote else None
     engine = (metrics or {}).get("engine") or {}
     outputs = [{"id": o.get("id"), "name": o.get("name"), "ndiName": o.get("ndiName"),
                 "enabled": o.get("enabled"), "fps": o.get("fps"), "sink": o.get("sink"),
                 "connections": o.get("connections")} for o in (metrics or {}).get("outputs") or []]
     return {
         "enabled": bool(mc.get("enabled")),
+        "remote": remote,
         "exe": find_mosaic_exe(),
         "running": metrics is not None,
-        "editor_url": "http://%s:%d/" % (host, int(mc["port"])),
+        "editor_url": "http://%s:%d/" % (remote or host, int(mc["port"])),
         "render_fps": engine.get("renderFps"),
         "target_fps": engine.get("targetFps"),
         "gpu": engine.get("device"),
@@ -801,21 +836,29 @@ def mosaic_status(host):
 
 def mosaic_stream_names():
     """Full NDI names ("MACHINE (Mosaic_Output_01)") of the engine's enabled outputs, in order."""
+    remote = mosaic_remote_host()
     result = mosaic_get("/api/outputs", timeout=3)
     if not isinstance(result, dict):
+        if remote:
+            raise RuntimeError("The mosaic engine on %s is not answering on port %d"
+                               % (remote, int(mosaic_cfg()["port"])))
         raise RuntimeError("The mosaic engine is not running")
     outs = [o for o in result.get("outputs") or [] if o.get("enabled", True)]
     try:
         discovered = get_sources()
     except RuntimeError:
         discovered = []
-    host = socket.gethostname().split(".")[0].upper()
+    # NDI names start with the sending PC's name. Prefer the engine's PC; with an IP
+    # address for a remote engine, at least skip streams that come from this PC.
+    here = short_host(socket.gethostname())
+    engine_pc = short_host(remote) if remote else here
     names = []
     for o in outs:
         suffix = "(%s)" % o["ndiName"]
         matches = [n for n in discovered if n.endswith(suffix)]
-        local = [n for n in matches if n.upper().startswith(host + " ")]
-        names.append((local or matches or ["%s %s" % (host, suffix)])[0])
+        exact = [n for n in matches if n.upper().startswith(str(engine_pc).upper() + " ")]
+        others = [n for n in matches if not n.upper().startswith(here + " ")] if remote else []
+        names.append((exact or others or matches or ["%s %s" % (engine_pc, suffix)])[0])
     return names
 
 
@@ -1155,6 +1198,9 @@ class Handler(BaseHTTPRequestHandler):
                 run_in_background(restart_all, "requested from dashboard")
                 self.send_json({"ok": True})
             elif path == "/api/mosaic/restart":
+                if mosaic_remote_host():
+                    self.send_json({"error": "The engine runs on %s; restart it there" % mosaic_remote_host()}, 400)
+                    return
                 if not find_mosaic_exe():
                     self.send_json({"error": "Mosaic engine not found; build it or set its path"}, 400)
                     return
@@ -1177,7 +1223,7 @@ class Handler(BaseHTTPRequestHandler):
                         config["exe_path"] = exe
                         exe_cache.update(path=None, checked=0.0, warned=0.0)
                         log.info("Studio Monitor path set to '%s'", exe or "(auto-detect)")
-                    if "mosaic_enabled" in body or "mosaic_exe_path" in body:
+                    if "mosaic_enabled" in body or "mosaic_exe_path" in body or "mosaic_host" in body:
                         mc = dict(config.get("mosaic") or {})
                         if "mosaic_enabled" in body:
                             mc["enabled"] = bool(body["mosaic_enabled"])
@@ -1186,11 +1232,17 @@ class Handler(BaseHTTPRequestHandler):
                             if exe and not os.path.isfile(exe):
                                 raise ValueError("File not found: %s" % exe)
                             mc["exe_path"] = exe
+                        if "mosaic_host" in body:
+                            mc["host"], port = parse_mosaic_host(body["mosaic_host"])
+                            if port:
+                                mc["port"] = port
+                            log.info("Mosaic engine host set to '%s'", mc["host"] or "(this PC)")
                         config["mosaic"] = mc
                         log.info("Mosaic engine %s", "enabled" if mc.get("enabled", True) else "disabled")
                 save_config()
-                if "mosaic_enabled" in body or "mosaic_exe_path" in body:
-                    run_in_background(start_mosaic if mosaic_cfg().get("enabled") else stop_mosaic)
+                if "mosaic_enabled" in body or "mosaic_exe_path" in body or "mosaic_host" in body:
+                    run_local = mosaic_cfg().get("enabled") and not mosaic_remote_host()
+                    run_in_background(start_mosaic if run_local else stop_mosaic)
                 self.send_json({"ok": True})
             else:
                 self.send_json({"error": "not found"}, 404)
