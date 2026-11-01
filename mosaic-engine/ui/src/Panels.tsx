@@ -1,20 +1,17 @@
 import { useEffect, useState } from "react";
-import { api, type Layout, type LayoutSummary, type Metrics, type Output, type Source } from "./api";
-import type { EditMode } from "./CanvasEditor";
+import { api, type Layout, type LayoutSummary, type Output, type Source } from "./api";
 import { COLORS } from "./CanvasEditor";
 
 const fmt = (v: number, d = 1) => (Number.isFinite(v) ? v.toFixed(d) : "–");
 
 export function LayoutBar({
   layout,
-  mode,
-  onMode,
+  status,
   onChanged,
   onError,
 }: {
   layout: Layout;
-  mode: EditMode;
-  onMode: (m: EditMode) => void;
+  status: React.ReactNode;
   onChanged: () => void;
   onError: (e: unknown) => void;
 }) {
@@ -43,8 +40,11 @@ export function LayoutBar({
 
   return (
     <header className="topbar">
-      <div className="brand">Mosaic Editor</div>
-      <label className="field inline">
+      <div className="brand">
+        <span className="logo" />
+        Mosaic
+      </div>
+      <label className="tb-field layout-pick" title="The active layout: displays, groups, sources and endpoints">
         <span>Layout</span>
         <select value={layout.id} onChange={(e) => run(api.activate(e.target.value))}>
           {layouts.map((l) => (
@@ -55,6 +55,7 @@ export function LayoutBar({
         </select>
       </label>
       <button
+        className="ghost"
         onClick={() => {
           const name = prompt("Save the current layout as:", `${layout.name} copy`);
           if (name) run(api.saveAs(name).then((l) => api.activate(l.id)));
@@ -63,24 +64,19 @@ export function LayoutBar({
         Save as…
       </button>
       <button
+        className="ghost"
+        title="Delete a saved layout (not the active one)"
         onClick={() => {
           const others = layouts.filter((l) => !l.active);
-          const id = prompt(`Delete which layout?\n${others.map((l) => l.id).join("\n")}`);
-          if (id) run(api.deleteLayout(id));
+          if (!others.length) return alert("The active layout can't be deleted, and there are no others.");
+          const id = prompt(`Delete which layout? Type its id:\n${others.map((l) => `${l.id}  (${l.name})`).join("\n")}`);
+          if (id) run(api.deleteLayout(id.trim()));
         }}
       >
         Delete…
       </button>
-      <div className="seg mode">
-        <button className={mode === "outputs" ? "on" : ""} onClick={() => onMode("outputs")} title="Drag the region each display shows">
-          Edit outputs
-        </button>
-        <button className={mode === "sources" ? "on" : ""} onClick={() => onMode("sources")} title="Drag where each input sits on the canvas">
-          Edit sources
-        </button>
-      </div>
       <span className="spacer" />
-      <label className="field inline">
+      <label className="tb-field">
         <span>Canvas</span>
         <select
           value={presets.some(([, w, h]) => `${w}x${h}` === canvasKey) ? canvasKey : "custom"}
@@ -102,7 +98,7 @@ export function LayoutBar({
           <option value="custom">{presets.some(([, w, h]) => `${w}x${h}` === canvasKey) ? "Custom…" : `${layout.canvas.width} × ${layout.canvas.height}`}</option>
         </select>
       </label>
-      <label className="field inline">
+      <label className="tb-field">
         <span>FPS</span>
         <select value={layout.frameRate} onChange={(e) => run(api.putLayout({ frameRate: +e.target.value }))}>
           {[24, 25, 30, 50, 59.94, 60].map((f) => (
@@ -112,6 +108,7 @@ export function LayoutBar({
           ))}
         </select>
       </label>
+      {status}
     </header>
   );
 }
@@ -362,88 +359,5 @@ export function ScenesPanel({ layout, onChanged, onError }: { layout: Layout; on
         </label>
       )}
     </section>
-  );
-}
-
-export function MetricsPanel({ metrics }: { metrics: Metrics | null }) {
-  if (!metrics) return <footer className="metrics">connecting to engine…</footer>;
-  const e = metrics.engine;
-  const s = metrics.sync;
-  return (
-    <footer className="metrics">
-      <div className="engine-stats">
-        <span>
-          <b>{e.backend}</b> {e.device}
-        </span>
-        <span className={e.renderFps < e.targetFps * 0.97 ? "warn" : ""}>
-          render <b>{fmt(e.renderFps)}</b>/{e.targetFps} fps
-        </span>
-        <span>
-          CPU encode <b>{fmt(e.encodeMs, 2)}</b> ms
-        </span>
-        <span>
-          GPU <b>{fmt(e.gpuMs, 2)}</b> ms
-        </span>
-        <span>
-          GPU util <b>{e.gpuUtilization >= 0 ? `${fmt(e.gpuUtilization, 0)}%` : "n/a"}</b>
-        </span>
-        <span>
-          readback <b>{fmt(e.readbackMBps, 0)}</b> MB/s
-        </span>
-        <span className={e.tickJitterMs > 1 ? "warn" : ""}>
-          tick lateness <b>{fmt(e.tickJitterMs, 2)}</b> ms
-        </span>
-        <span className={e.lateFrames ? "warn" : ""}>
-          late <b>{e.lateFrames}</b>
-        </span>
-        <span>
-          frame <b>{e.frameId}</b>
-        </span>
-        <span className={s.completeRatio < 1 ? "warn" : ""}>
-          frames on all outputs <b>{fmt(s.completeRatio * 100, 2)}%</b> ({s.framesPartial} partial)
-        </span>
-        <span>NDI: {e.ndi}</span>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Output</th>
-            <th>Stream</th>
-            <th>Sink</th>
-            <th>Format</th>
-            <th>FPS</th>
-            <th>Sent</th>
-            <th>Dropped</th>
-            <th>Queue</th>
-            <th>Submit ms (max)</th>
-            <th>Latency ms</th>
-            <th>Last frame</th>
-            <th>Rx</th>
-          </tr>
-        </thead>
-        <tbody>
-          {metrics.outputs.map((o) => (
-            <tr key={o.id} className={o.enabled ? "" : "muted"}>
-              <td>{o.name}</td>
-              <td>{o.ndiName}</td>
-              <td>{o.sink}</td>
-              <td>{o.pixelFormat}</td>
-              <td className={o.enabled && o.fps < e.targetFps * 0.97 ? "warn" : ""}>{fmt(o.fps)}</td>
-              <td>{o.framesSent}</td>
-              <td className={o.droppedNoBuffer + o.droppedQueue ? "warn" : ""}>
-                {o.droppedNoBuffer + o.droppedQueue}
-              </td>
-              <td>{o.queueDepth}</td>
-              <td>
-                {fmt(o.sendMs, 2)} ({fmt(o.sendMsMax, 1)})
-              </td>
-              <td>{fmt(o.latencyMs, 1)}</td>
-              <td>{o.lastFrameId}</td>
-              <td>{o.connections >= 0 ? o.connections : "–"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </footer>
   );
 }

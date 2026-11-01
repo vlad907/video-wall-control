@@ -3,15 +3,28 @@ import { api, type EndpointsInfo, type Layout, type Metrics, type Output, type R
 import { CanvasEditor, type EditMode } from "./CanvasEditor";
 import { EndpointList, EndpointPanel } from "./Endpoints";
 import { Inspector } from "./Inspector";
-import { LayoutBar, MetricsPanel, OutputList, ScenesPanel, SourcesPanel } from "./Panels";
+import { Icon } from "./Icons";
+import { MonitorView, PresetBar, StatusBar } from "./Monitor";
+import { LayoutBar, OutputList, ScenesPanel, SourcesPanel } from "./Panels";
 import { SourceInspector } from "./SourceInspector";
 import { WallPanel } from "./WallPanel";
+
+type Section = "screens" | "inputs" | "presets" | "endpoints" | "monitor";
+const SECTIONS: [Section, string, string][] = [
+  ["screens", "Screens", "Outputs and wall groups: what each display shows"],
+  ["inputs", "Inputs", "Sources and layers: where each input sits on the canvas"],
+  ["presets", "Presets", "Group presets and scenes"],
+  ["endpoints", "Endpoints", "Receiving PCs and their displays"],
+  ["monitor", "Monitor", "Engine and output health"],
+];
 
 export function App() {
   const [layout, setLayout] = useState<Layout | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null); // output id
   const [sourceId, setSourceId] = useState<string | null>(null);
-  const [mode, setMode] = useState<EditMode>("outputs");
+  // Left rail sections. Inputs edits where sources sit; the others edit outputs on the canvas.
+  const [section, setSection] = useState<Section>("screens");
+  const mode: EditMode = section === "inputs" ? "sources" : "outputs";
   const [wallEdit, setWallEdit] = useState<{ id: string | null } | null>(null); // id null = new group
   const [endpointId, setEndpointId] = useState<string | null>(null);
   const [endpoints, setEndpoints] = useState<EndpointsInfo | null>(null);
@@ -131,11 +144,11 @@ export function App() {
 
   const selectOutput = useCallback((id: string | null) => {
     setSelectedId(id);
-    if (id) (setMode("outputs"), setWallEdit(null), setEndpointId(null));
+    if (id) (setSection((s) => (s === "inputs" || s === "monitor" ? "screens" : s)), setWallEdit(null), setEndpointId(null));
   }, []);
   const selectSource = useCallback((id: string | null) => {
     setSourceId(id);
-    if (id) (setMode("sources"), setWallEdit(null), setEndpointId(null));
+    if (id) (setSection("inputs"), setWallEdit(null), setEndpointId(null));
   }, []);
 
   // Arrow keys nudge the selected rectangle (Shift = 10 px); [ and ] tilt an output (0.1°, Shift 1°).
@@ -278,9 +291,18 @@ export function App() {
       />
     );
   } else {
+    const hints: Record<Section, [string, string]> = {
+      screens: ["Nothing selected", "Click a display on the canvas or in the list to edit it, or a group's name to set up its displays and content."],
+      inputs: ["Nothing selected", "Click a layer on the canvas or in the list to place it, crop it or change its opacity."],
+      presets: ["Presets", "Click ▶ to show a preset on its group, or open a group to save new ones. The strip under the canvas does the same in one click."],
+      endpoints: ["Endpoints", "Click a receiving PC to choose which output goes on each of its screens."],
+      monitor: ["Monitor", "Live numbers from the engine. Amber means an output is falling behind or dropping frames."],
+    };
+    const [title, text] = hints[section];
     right = (
-      <div className="hint">
-        {mode === "outputs" ? "Select an output on the canvas or in the list to edit it." : "Select a source on the canvas or in the list to edit it."}
+      <div className="empty-state">
+        <h2>{title}</h2>
+        <p>{text}</p>
       </div>
     );
   }
@@ -295,75 +317,156 @@ export function App() {
       .catch(onError);
   };
 
+  const panel = (() => {
+    switch (section) {
+      case "screens":
+        return (
+          <OutputList
+            layout={layout}
+            selectedId={selectedId}
+            onSelect={selectOutput}
+            onAdd={addOutput}
+            onWall={(id) => (setEndpointId(null), setWallEdit({ id }))}
+            onToggle={(id, enabled) => patch(id, { enabled })}
+          />
+        );
+      case "inputs":
+        return <SourcesPanel layout={layout} selectedId={sourceId} onSelect={selectSource} onReorder={reorderSource} onChanged={reload} onError={onError} />;
+      case "presets":
+        return (
+          <>
+            <section className="list">
+              <div className="list-head">
+                <h3>Group presets</h3>
+              </div>
+              {layout.walls.length === 0 && <small className="muted">Make a wall group first (Screens → + Group).</small>}
+              {layout.walls.map((w) => (
+                <div key={w.id}>
+                  <div className="group-head" onClick={() => (setEndpointId(null), setWallEdit({ id: w.id }))} title="Open this group's content">
+                    <span className="grow">
+                      <b>{w.name}</b> · {w.presets.length} preset(s)
+                    </span>
+                    <span>✎</span>
+                  </div>
+                  {w.presets.map((p) => (
+                    <div key={p.id} className={`list-item grouped${p.id === w.activePreset ? " selected" : ""}`}>
+                      <div className="list-text">
+                        <div>{p.name}</div>
+                        <small>{p.sources.map((x) => x.name).join(", ") || "empty"}</small>
+                      </div>
+                      <button title="Show" onClick={() => api.recallGroupPreset(w.id, p.id, 500).then(reload).catch(onError)}>
+                        ▶
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </section>
+            <ScenesPanel layout={layout} onChanged={reload} onError={onError} />
+          </>
+        );
+      case "endpoints":
+        return <EndpointList info={endpoints} selectedId={endpointId} onSelect={(id) => (setEndpointId(id), setWallEdit(null))} onSetUp={setUpEndpoint} />;
+      case "monitor":
+        return (
+          <section className="list">
+            <div className="list-head">
+              <h3>Outputs</h3>
+            </div>
+            {(metrics?.outputs ?? []).map((o) => {
+              const bad = o.enabled && (o.fps < (metrics?.engine.targetFps ?? 60) * 0.97 || o.droppedNoBuffer + o.droppedQueue > 0);
+              return (
+                <div key={o.id} className="list-item" onClick={() => selectOutput(o.id)}>
+                  <span className={`dot ${!o.enabled ? "off" : bad ? "warn" : "on"}`} />
+                  <div className="list-text">
+                    <div>{o.name}</div>
+                    <small>
+                      {o.fps.toFixed(1)} fps · {o.connections >= 0 ? `${o.connections} receiver(s)` : o.sink}
+                    </small>
+                  </div>
+                </div>
+              );
+            })}
+          </section>
+        );
+    }
+  })();
+
+  // The right panel follows the section: an endpoint stays open only under Endpoints, a group under Screens / Presets.
+  const openSection = (id: Section) => {
+    setSection(id);
+    if (id !== "endpoints") setEndpointId(null);
+    if (id !== "screens" && id !== "presets") setWallEdit(null);
+  };
+
+  const engineStatus = metrics && (
+    <button className={`engine-pill${metrics.engine.renderFps < metrics.engine.targetFps * 0.97 ? " warn" : ""}`} onClick={() => openSection("monitor")} title="Engine status">
+      <span className="dot on" />
+      {metrics.engine.renderFps.toFixed(0)} fps
+    </button>
+  );
+
   return (
     <div className="app">
-      <LayoutBar layout={layout} mode={mode} onMode={setMode} onChanged={reload} onError={onError} />
+      <LayoutBar layout={layout} status={engineStatus} onChanged={reload} onError={onError} />
       {error && (
         <div className="error" onClick={() => setError(null)}>
           {error} <small>(click to dismiss)</small>
         </div>
       )}
-      <aside className="sidebar">
-        <OutputList
-          layout={layout}
-          selectedId={mode === "outputs" ? selectedId : null}
-          onSelect={selectOutput}
-          onAdd={addOutput}
-          onWall={(id) => (setMode("outputs"), setWallEdit({ id }))}
-          onToggle={(id, enabled) => patch(id, { enabled })}
-        />
-        <SourcesPanel
-          layout={layout}
-          selectedId={mode === "sources" ? sourceId : null}
-          onSelect={selectSource}
-          onReorder={reorderSource}
-          onChanged={reload}
-          onError={onError}
-        />
-        <EndpointList
-          info={endpoints}
-          selectedId={endpointId}
-          onSelect={(id) => (setEndpointId(id), setWallEdit(null))}
-          onSetUp={setUpEndpoint}
-        />
-        <ScenesPanel layout={layout} onChanged={reload} onError={onError} />
-        <div className="snap-opts">
-          <label className="toggle" title="Line frames up with the edges and centres of other frames and of the canvas (hold Alt to drag freely)">
-            <input type="checkbox" checked={smartSnap} onChange={(e) => toggleSmartSnap(e.target.checked)} />
-            Snap to other frames &amp; centres
-          </label>
-          <label className="field inline snap">
-            <span>Grid</span>
-            <select value={snap} onChange={(e) => setSnap(+e.target.value)}>
-              {[1, 10, 60, 120, 240].map((s) => (
-                <option key={s} value={s}>
-                  {s === 1 ? "off (1 px)" : `${s} px`}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      </aside>
+      <nav className="rail">
+        {SECTIONS.map(([id, label, title]) => (
+          <button key={id} className={section === id ? "on" : ""} onClick={() => openSection(id)} title={title}>
+            <Icon name={id} size={20} />
+            <span>{label}</span>
+          </button>
+        ))}
+      </nav>
+      <aside className="sidebar">{panel}</aside>
       <main className="main">
-        <div className="canvas-info">
-          Canvas {layout.canvas.width} × {layout.canvas.height} ·{" "}
-          {mode === "outputs" ? "editing what each display shows" : "editing where each source sits"} · drag to move, drag handles to resize, arrow keys nudge
-          {mode === "outputs" ? ", round handle or [ ] tilts, a group's tab moves the whole group" : ""}
-        </div>
-        <CanvasEditor
-          layout={layout}
-          mode={mode}
-          selectedId={mode === "outputs" ? selectedId : sourceId}
-          snap={snap}
-          smart={smartSnap}
-          onSelect={mode === "outputs" ? selectOutput : selectSource}
-          onRectChange={onCanvasRect}
-          onAngleChange={onAngleChange}
-          onGroupMove={onGroupMove}
-        />
+        {section === "monitor" ? (
+          <MonitorView metrics={metrics} />
+        ) : (
+          <>
+            <div className="canvas-bar">
+              <span className="canvas-title">
+                {mode === "outputs" ? "Screens" : "Inputs"} <small>{layout.canvas.width} × {layout.canvas.height}</small>
+              </span>
+              <span className="muted canvas-hint">
+                {mode === "outputs" ? "Drag a frame to choose what a display shows · a group's tab moves the group · [ ] tilts" : "Drag a layer to place it · arrow keys nudge"}
+              </span>
+              <span className="spacer" />
+              <button className={`icon-toggle${smartSnap ? " on" : ""}`} onClick={() => toggleSmartSnap(!smartSnap)} title="Snap to other frames' edges and centres (hold Alt to drag freely)">
+                <Icon name="magnet" size={16} /> Snap
+              </button>
+              <label className="tb-field compact" title="Grid step">
+                <Icon name="grid" size={16} />
+                <select value={snap} onChange={(e) => setSnap(+e.target.value)}>
+                  {[1, 10, 60, 120, 240].map((g) => (
+                    <option key={g} value={g}>
+                      {g === 1 ? "No grid" : `${g} px`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <CanvasEditor
+              layout={layout}
+              mode={mode}
+              selectedId={mode === "outputs" ? selectedId : sourceId}
+              snap={snap}
+              smart={smartSnap}
+              onSelect={mode === "outputs" ? selectOutput : selectSource}
+              onRectChange={onCanvasRect}
+              onAngleChange={onAngleChange}
+              onGroupMove={onGroupMove}
+            />
+            <PresetBar layout={layout} onChanged={reload} onError={onError} />
+          </>
+        )}
       </main>
       <aside className="right">{right}</aside>
-      <MetricsPanel metrics={metrics} />
+      <StatusBar metrics={metrics} onOpen={() => openSection("monitor")} />
     </div>
   );
 }

@@ -122,13 +122,13 @@ struct HttpApi::Impl {
     json endpointView(const Layout& l, const Endpoint& e, const std::vector<std::string>& discovered) {
         json j = e;
         json displays = endpointDisplays(l, e, discovered);
-        json last;
+        json last = json::object();  // empty until the PC has checked in
         {
             std::lock_guard lock(checkinMutex);
             auto it = checkins.find(hostKey(e.host));
             if (it != checkins.end()) last = it->second;
         }
-        double ago = last.is_null() ? -1 : nowSeconds() - last.value("time", 0.0);
+        double ago = last.contains("time") ? nowSeconds() - last.value("time", 0.0) : -1;
         j["online"] = ago >= 0 && ago < kEndpointOnlineSeconds;
         j["lastSeenSecondsAgo"] = ago < 0 ? json(nullptr) : json(std::round(ago));
         j["address"] = last.value("address", "");

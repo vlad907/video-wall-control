@@ -243,6 +243,9 @@ with tempfile.TemporaryDirectory() as tmp:
         check(r["endpoint"] is None, "an unknown PC gets no assignment")
         unassigned = [u["host"] for u in json.loads(get("/api/endpoints")[1])["unassigned"]]
         check("WALL-PC.example.org" in unassigned, "it is listed as a PC to set up")
+        call("POST", "/api/endpoints", {"name": "Spare PC", "host": "spare-pc", "displays": [{"output": "out-1"}]})
+        spare = next(x for x in json.loads(get("/api/endpoints")[1])["endpoints"] if x["id"] == "spare-pc")
+        check(not spare["online"] and spare["lastSeenSecondsAgo"] is None, "an endpoint that never checked in is listed offline")
         call("POST", "/api/endpoints", {"name": "Wall PC", "host": "wall-pc", "displays": [{"output": "out-1"}, {"output": "out-2"}]})
         r = call("POST", "/api/endpoints/checkin", {"host": "WALL-PC.example.org", "screens": [],
                                                     "panels": [{"index": 1, "reachable": True, "playing": "X"}]})
