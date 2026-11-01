@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type Layout, type LayoutSummary, type Metrics, type Source } from "./api";
+import { api, type Layout, type LayoutSummary, type Metrics, type Output, type Source } from "./api";
 import type { EditMode } from "./CanvasEditor";
 import { COLORS } from "./CanvasEditor";
 
@@ -128,46 +128,56 @@ export function OutputList({
   selectedId: string | null;
   onSelect: (id: string) => void;
   onAdd: () => void;
-  onWall: () => void;
+  onWall: (id: string | null) => void; // null = new group
   onToggle: (id: string, enabled: boolean) => void;
 }) {
-  const wall = layout.wall;
+  const colour = (id: string) => COLORS[layout.outputs.findIndex((o) => o.id === id) % COLORS.length];
+  const row = (o: Output, grouped: boolean) => (
+    <div key={o.id} className={`list-item${o.id === selectedId ? " selected" : ""}${grouped ? " grouped" : ""}`} onClick={() => onSelect(o.id)}>
+      <span className="swatch" style={{ background: colour(o.id) }} />
+      <div className="list-text">
+        <div>{o.name}</div>
+        <small>
+          {o.ndiName} · {o.width}×{o.height}
+          {o.rotation ? ` · ${o.rotation}°` : ""}
+        </small>
+      </div>
+      <input
+        type="checkbox"
+        title="enabled"
+        checked={o.enabled}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => onToggle(o.id, e.target.checked)}
+      />
+    </div>
+  );
+  const standalone = layout.outputs.filter((o) => !layout.walls.some((w) => w.id === o.group));
   return (
     <section className="list">
       <div className="list-head">
         <h3>Outputs ({layout.outputs.length})</h3>
         <span>
-          <button onClick={onWall} title="Generate a grid of panels with bezel gaps">
-            Wall…
+          <button onClick={() => onWall(null)} title="A grid of displays with bezel gaps, or one display (1 × 1)">
+            + Group
           </button>{" "}
-          <button onClick={onAdd}>+ Add</button>
+          <button onClick={onAdd}>+ Output</button>
         </span>
       </div>
-      {wall && (
-        <div className="group-head" onClick={onWall}>
-          Wall {wall.cols} × {wall.rows} · {wall.outputWidth}×{wall.outputHeight}
-          {wall.rotation ? ` ↻${wall.rotation}°` : ""} · gaps {wall.gapX}/{wall.gapY} px
-        </div>
-      )}
-      {layout.outputs.map((o, i) => (
-        <div key={o.id} className={`list-item${o.id === selectedId ? " selected" : ""}${o.group ? " grouped" : ""}`} onClick={() => onSelect(o.id)}>
-          <span className="swatch" style={{ background: COLORS[i % COLORS.length] }} />
-          <div className="list-text">
-            <div>{o.name}</div>
-            <small>
-              {o.ndiName} · {o.width}×{o.height}
-              {o.rotation ? ` · ${o.rotation}°` : ""}
-            </small>
+      {layout.walls.map((w) => (
+        <div key={w.id}>
+          <div className="group-head" onClick={() => onWall(w.id)} title="Edit this group">
+            <span className="grow">
+              <b>{w.name}</b> · {w.cols} × {w.rows} · {w.outputWidth}×{w.outputHeight}
+              {w.rotation ? ` ↻${w.rotation}°` : ""}
+              {w.gapX || w.gapY ? ` · gaps ${w.gapX}/${w.gapY}` : ""}
+            </span>
+            <span>✎</span>
           </div>
-          <input
-            type="checkbox"
-            title="enabled"
-            checked={o.enabled}
-            onClick={(e) => e.stopPropagation()}
-            onChange={(e) => onToggle(o.id, e.target.checked)}
-          />
+          {layout.outputs.filter((o) => o.group === w.id).map((o) => row(o, true))}
         </div>
       ))}
+      {layout.walls.length > 0 && standalone.length > 0 && <div className="group-head plain">Standalone</div>}
+      {standalone.map((o) => row(o, false))}
     </section>
   );
 }
@@ -176,16 +186,20 @@ export function SourcesPanel({
   layout,
   selectedId,
   onSelect,
+  onReorder,
   onChanged,
   onError,
 }: {
   layout: Layout;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  onReorder: (id: string, toIndex: number) => void; // index in layout.sources (0 = bottom)
   onChanged: () => void;
   onError: (e: unknown) => void;
 }) {
   const [info, setInfo] = useState<{ sources: Source[]; ndi: { available: boolean; discovered: string[] } } | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [drop, setDrop] = useState<{ id: string; above: boolean } | null>(null);
   const refresh = () => api.sources().then(setInfo).catch(onError);
   useEffect(() => {
     refresh();
@@ -196,11 +210,22 @@ export function SourcesPanel({
   const run = (p: Promise<unknown>) => p.then(() => (refresh(), onChanged())).catch(onError);
   const add = (s: Partial<Source>) => api.addSource({ rect: { x: 0, y: 0, w: layout.canvas.width, h: layout.canvas.height }, ...s }).then((c) => (onSelect(c.id), refresh(), onChanged())).catch(onError);
   const status = (id: string) => info?.sources.find((s) => s.id === id)?.status;
+  const n = layout.sources.length;
+  // Shown top layer first; layout.sources is bottom first (later ones draw over earlier ones).
+  const layers = [...layout.sources].reverse();
+
+  const onDrop = (target: Source) => {
+    if (!dragId || !drop || dragId === target.id) return;
+    const from = layout.sources.findIndex((s) => s.id === dragId);
+    let to = layout.sources.findIndex((s) => s.id === target.id) + (drop.above ? 1 : 0); // "above" = drawn over it
+    if (from < to) to -= 1;
+    onReorder(dragId, Math.max(0, Math.min(n - 1, to)));
+  };
 
   return (
     <section className="list">
       <div className="list-head">
-        <h3>Sources (top last)</h3>
+        <h3 title="The top layer is drawn over the ones below it">Layers (top first)</h3>
         <select
           value=""
           onChange={(e) => {
@@ -213,13 +238,40 @@ export function SourcesPanel({
           <option value="solid">Solid colour</option>
         </select>
       </div>
-      {layout.sources.map((s) => {
+      {layers.map((s, i) => {
         const st = status(s.id);
+        const index = n - 1 - i;
         return (
-          <div key={s.id} className={`list-item${s.id === selectedId ? " selected" : ""}`} onClick={() => onSelect(s.id)}>
+          <div
+            key={s.id}
+            draggable
+            onDragStart={(e) => (setDragId(s.id), e.dataTransfer.setData("text/plain", s.id), (e.dataTransfer.effectAllowed = "move"))}
+            onDragEnd={() => (setDragId(null), setDrop(null))}
+            onDragOver={(e) => {
+              if (!dragId) return;
+              e.preventDefault();
+              const r = e.currentTarget.getBoundingClientRect();
+              setDrop({ id: s.id, above: e.clientY < r.top + r.height / 2 });
+            }}
+            onDrop={(e) => (e.preventDefault(), onDrop(s), setDragId(null), setDrop(null))}
+            className={`list-item${s.id === selectedId ? " selected" : ""}${dragId === s.id ? " dragging" : ""}${
+              drop?.id === s.id && dragId !== s.id ? (drop.above ? " drop-above" : " drop-below") : ""
+            }`}
+            onClick={() => onSelect(s.id)}
+            title="Drag to change which layer is on top"
+          >
+            <div className="layer-btns" onClick={(e) => e.stopPropagation()}>
+              <button title="Bring forward" disabled={index === n - 1} onClick={() => onReorder(s.id, index + 1)}>
+                ▲
+              </button>
+              <button title="Send backward" disabled={index === 0} onClick={() => onReorder(s.id, index - 1)}>
+                ▼
+              </button>
+            </div>
             <div className="list-text">
               <div>
                 {s.name} <small>({s.type === "ndi" ? "NDI" : s.type === "solid" ? "colour" : "pattern"})</small>
+                {i === 0 && n > 1 && <span className="layer-badge">top</span>}
               </div>
               <small>
                 {s.opacity < 1 ? `${Math.round(s.opacity * 100)}% · ` : ""}

@@ -9,6 +9,7 @@ Runs the engine on a frozen test pattern and checks real pixels:
   - a half-transparent source blends over the one below it
   - scenes recall, and crossfade when asked to
   - the wall tool generates outputs with bezel gaps and resizes the canvas
+  - wall groups: a second (1x1) group, moving it, deleting it with its outputs
   - every rendered frame reached every output (no partial frames)
 
     python tools/ci_check.py [--engine PATH] [--out DIR]
@@ -182,7 +183,8 @@ with tempfile.TemporaryDirectory() as tmp:
         print("wall tool (bezel gaps):", flush=True)
         lay = call("PUT", "/api/wall", {"cols": 2, "rows": 1, "outputWidth": 1920, "outputHeight": 1080, "gapX": 100, "fitCanvas": True})
         crops = {o["id"]: o["crop"] for o in lay["outputs"]}
-        check(lay["canvas"]["width"] == 3940 and lay["canvas"]["height"] == 1080, f"canvas fits the wall ({lay['canvas']['width']}x{lay['canvas']['height']})")
+        # 3940 wide for the wall; 2160 high because standalone out-3/out-4 sit below it.
+        check(lay["canvas"]["width"] == 3940 and lay["canvas"]["height"] == 2160, f"canvas fits the wall and the other outputs ({lay['canvas']['width']}x{lay['canvas']['height']})")
         check(crops["out-1"]["x"] == 0 and crops["out-2"]["x"] == 2020, f"panel 2 starts after the 100 px bezel (x={crops['out-2']['x']})")
         check(all(o["group"] == "wall" for o in lay["outputs"] if o["id"] in ("out-1", "out-2")), "wall outputs are grouped")
         check(len(lay["outputs"]) == 5, f"other outputs kept ({len(lay['outputs'])} outputs)")
@@ -190,6 +192,23 @@ with tempfile.TemporaryDirectory() as tmp:
         time.sleep(1.5)
         img = frame("out-2")
         check(img[0] == 1920 and img[1] == 1080, "wall output renders")
+
+        print("wall groups:", flush=True)
+        lay = call("POST", "/api/walls", {"name": "Double wide", "cols": 1, "rows": 1, "outputWidth": 3840, "outputHeight": 1080, "y": 1080})
+        dw = [o for o in lay["outputs"] if o.get("group") == "double-wide"]
+        check(len(dw) == 1 and dw[0]["id"] == "double-wide-1" and dw[0]["name"] == "Double wide", f"1x1 group makes one output ({[o['id'] for o in dw]})")
+        ndi = [o["ndiName"] for o in lay["outputs"]]
+        check(len(set(ndi)) == len(ndi), "every output keeps a unique NDI name")
+        check(lay["canvas"]["width"] == 3940 and lay["canvas"]["height"] == 2160, "a new group leaves the canvas alone")
+        check(len(lay["walls"]) == 2 and any(o.get("group") == "wall" for o in lay["outputs"]), "the first wall is still there")
+        lay = call("POST", "/api/walls/double-wide/move", {"x": 50, "y": 0})
+        crop = next(o["crop"] for o in lay["outputs"] if o["id"] == "double-wide-1")
+        check(crop["x"] == 50 and crop["y"] == 0 and crop["w"] == 3840, f"moving a group shifts its outputs ({crop})")
+        img = frame("double-wide-1")
+        check(img[0] == 3840 and img[1] == 1080, "group output renders")
+        call("DELETE", "/api/walls/double-wide?outputs=delete")
+        lay = json.loads(get("/api/layout")[1])
+        check(not any(o.get("group") == "double-wide" for o in lay["outputs"]) and len(lay["walls"]) == 1, "deleting a group removes its outputs")
 
         print("frame delivery:", flush=True)
         time.sleep(2)

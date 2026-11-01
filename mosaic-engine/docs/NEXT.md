@@ -29,6 +29,7 @@ On the M4, 24 × 1080p went from 21.4 ms to 16.1 ms of GPU time.
 ## Milestone 3: 20–24 streams
 
 - [x] Wall tool: rows × columns of panels with bezel gaps, generating the outputs
+- [x] Several wall groups per layout (walls of different sizes plus single displays)
 - [x] 24 × 1080p at 60 fps with no drops (Apple M4, null sink): see the README table
 - [x] Example 24-panel layout, `layouts/wall-6x4-1080p.json`
 - [ ] 24 outputs with real NDI senders. Watch CPU, `sendMs`/`sendMsMax` and `droppedQueue`.

@@ -6,13 +6,13 @@ export function SourceInspector({
   layout,
   source,
   onPatch,
-  onMove,
+  onReorder,
   onDelete,
 }: {
   layout: Layout;
   source: Source;
   onPatch: (patch: Partial<Source>) => void;
-  onMove: (delta: -1 | 1) => void;
+  onReorder: (toIndex: number) => void; // 0 = bottom layer
   onDelete: () => void;
 }) {
   const { width: cw, height: ch } = layout.canvas;
@@ -109,12 +109,23 @@ export function SourceInspector({
       </div>
 
       <div className="group">
-        <h3>Stacking</h3>
+        <h3>
+          Layer {layout.sources.length - index} of {layout.sources.length}
+          {index === layout.sources.length - 1 && layout.sources.length > 1 ? " (top)" : ""}
+        </h3>
         <div className="row buttons">
-          <button disabled={index >= layout.sources.length - 1} onClick={() => onMove(1)}>
+          <button disabled={index >= layout.sources.length - 1} onClick={() => onReorder(layout.sources.length - 1)}>
+            Bring to front
+          </button>
+          <button disabled={index <= 0} onClick={() => onReorder(0)}>
+            Send to back
+          </button>
+        </div>
+        <div className="row buttons">
+          <button disabled={index >= layout.sources.length - 1} onClick={() => onReorder(index + 1)}>
             Bring forward
           </button>
-          <button disabled={index <= 0} onClick={() => onMove(-1)}>
+          <button disabled={index <= 0} onClick={() => onReorder(index - 1)}>
             Send backward
           </button>
         </div>

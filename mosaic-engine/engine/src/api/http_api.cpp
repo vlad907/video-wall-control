@@ -214,31 +214,91 @@ struct HttpApi::Impl {
             res.set_content(jpeg, "image/jpeg");
         }));
 
-        // ---- video wall: a grid of panels with bezel gaps, generating the outputs ----
-        s.Get("/api/wall", guard([this](const httplib::Request&, httplib::Response& res) {
-            auto l = store.active();
-            sendJson(res, l->wall ? json(*l->wall) : json(nullptr));
+        // ---- wall groups: grids of panels with bezel gaps (1 x 1 for a single display) ----
+        s.Get("/api/walls", guard([this](const httplib::Request&, httplib::Response& res) {
+            sendJson(res, {{"walls", store.active()->walls}});
         }));
-        s.Put("/api/wall", guard([this](const httplib::Request& req, httplib::Response& res) {
+        // Creates a group; its id comes from the body's id or name and is made unique.
+        s.Post("/api/walls", guard([this](const httplib::Request& req, httplib::Response& res) {
+            json body = parseBody(req);
+            std::vector<std::string> problems;
+            std::string newId;
+            store.mutateActive(
+                [&](Layout& l) {
+                    WallConfig w;
+                    w.id.clear();
+                    w.fitCanvas = false;
+                    from_json(body, w);
+                    std::string base = sanitizeId(w.id.empty() ? w.name : w.id);
+                    if (base.empty()) base = "group";
+                    newId = base;
+                    for (int k = 2; l.findWall(newId); ++k) newId = base + "-" + std::to_string(k);
+                    w.id = newId;
+                    applyWall(l, w);
+                    return true;
+                },
+                &problems);
+            sendJson(res, withProblems(*store.active(), problems), 201);
+        }));
+        // Creates or regenerates a group (its outputs keep their NDI names).
+        s.Put(R"(/api/walls/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
             json body = parseBody(req);
             std::vector<std::string> problems;
             store.mutateActive(
                 [&](Layout& l) {
-                    WallConfig w = l.wall.value_or(WallConfig{});
+                    const WallConfig* cur = l.findWall(id);
+                    WallConfig w = cur ? *cur : WallConfig{};
                     from_json(body, w);
+                    w.id = id;
                     applyWall(l, w);
                     return true;
                 },
                 &problems);
             sendJson(res, withProblems(*store.active(), problems));
         }));
-        // Forgets the wall definition; its outputs stay as ordinary outputs.
-        s.Delete("/api/wall", guard([this](const httplib::Request&, httplib::Response& res) {
-            store.mutateActive([&](Layout& l) {
-                l.wall.reset();
-                for (auto& o : l.outputs) o.group.clear();
-                return true;
+        // Moves a whole group without regenerating it: {x, y}.
+        s.Post(R"(/api/walls/([A-Za-z0-9_\-]+)/move)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            json body = parseBody(req);
+            bool ok = store.mutateActive([&](Layout& l) {
+                const WallConfig* w = l.findWall(id);
+                return w && moveWall(l, id, body.value("x", w->x), body.value("y", w->y));
             });
+            if (!ok) return sendError(res, 404, "no such wall group");
+            sendJson(res, *store.active());
+        }));
+        // Forgets a group. ?outputs=delete also removes its outputs; by default they stay as standalone outputs.
+        s.Delete(R"(/api/walls/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            bool drop = req.get_param_value("outputs") == "delete";
+            bool ok = store.mutateActive([&](Layout& l) { return removeWall(l, id, drop); });
+            if (!ok) return sendError(res, 404, "no such wall group");
+            sendJson(res, {{"deleted", id}});
+        }));
+        // The single-wall API from before groups: the group "wall".
+        s.Get("/api/wall", guard([this](const httplib::Request&, httplib::Response& res) {
+            auto l = store.active();
+            const WallConfig* w = l->findWall("wall");
+            sendJson(res, w ? json(*w) : json(nullptr));
+        }));
+        s.Put("/api/wall", guard([this](const httplib::Request& req, httplib::Response& res) {
+            json body = parseBody(req);
+            std::vector<std::string> problems;
+            store.mutateActive(
+                [&](Layout& l) {
+                    const WallConfig* cur = l.findWall("wall");
+                    WallConfig w = cur ? *cur : WallConfig{};
+                    from_json(body, w);
+                    w.id = "wall";
+                    applyWall(l, w);
+                    return true;
+                },
+                &problems);
+            sendJson(res, withProblems(*store.active(), problems));
+        }));
+        s.Delete("/api/wall", guard([this](const httplib::Request&, httplib::Response& res) {
+            store.mutateActive([&](Layout& l) { return removeWall(l, "wall", false); });
             sendJson(res, {{"deleted", "wall"}});
         }));
 

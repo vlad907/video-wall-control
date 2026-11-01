@@ -16,6 +16,12 @@ const SourceConfig* Layout::findSource(const std::string& sid) const {
     return nullptr;
 }
 
+const WallConfig* Layout::findWall(const std::string& wid) const {
+    for (auto& w : walls)
+        if (w.id == wid) return &w;
+    return nullptr;
+}
+
 const OutputConfig* Layout::findOutput(const std::string& oid) const {
     for (auto& o : outputs)
         if (o.id == oid) return &o;
@@ -134,13 +140,15 @@ void patchOutput(OutputConfig& o, const json& p) {
 }
 
 void to_json(json& j, const WallConfig& w) {
-    j = json{{"cols", w.cols},       {"rows", w.rows},         {"outputWidth", w.outputWidth},
+    j = json{{"id", w.id},           {"name", w.name},         {"cols", w.cols},       {"rows", w.rows},         {"outputWidth", w.outputWidth},
              {"outputHeight", w.outputHeight},                 {"rotation", w.rotation},
              {"gapX", w.gapX},       {"gapY", w.gapY},         {"x", w.x},
              {"y", w.y},             {"pixelFormat", toString(w.pixelFormat)}, {"fitCanvas", w.fitCanvas}};
 }
 
 void from_json(const json& j, WallConfig& w) {
+    w.id = j.value("id", w.id);
+    w.name = j.value("name", w.name);
     w.cols = j.value("cols", w.cols);
     w.rows = j.value("rows", w.rows);
     w.outputWidth = j.value("outputWidth", w.outputWidth);
@@ -174,8 +182,8 @@ void from_json(const json& j, CanvasConfig& c) {
 
 void to_json(json& j, const Layout& l) {
     j = json{{"id", l.id},         {"name", l.name},       {"frameRate", l.frameRate},
-             {"canvas", l.canvas}, {"sources", l.sources}, {"outputs", l.outputs}, {"scenes", l.scenes}};
-    if (l.wall) j["wall"] = *l.wall;
+             {"canvas", l.canvas}, {"sources", l.sources}, {"outputs", l.outputs}, {"walls", l.walls},
+             {"scenes", l.scenes}};
 }
 
 void from_json(const json& j, Layout& l) {
@@ -185,9 +193,12 @@ void from_json(const json& j, Layout& l) {
     if (j.contains("canvas")) l.canvas = j.at("canvas").get<CanvasConfig>();
     if (j.contains("sources")) l.sources = j.at("sources").get<std::vector<SourceConfig>>();
     if (j.contains("outputs")) l.outputs = j.at("outputs").get<std::vector<OutputConfig>>();
-    if (j.contains("wall")) {
-        if (j.at("wall").is_null()) l.wall.reset();
-        else l.wall = j.at("wall").get<WallConfig>();
+    if (j.contains("walls")) l.walls = j.at("walls").get<std::vector<WallConfig>>();
+    else if (j.contains("wall")) {
+        // Layouts saved before wall groups had at most one wall, the group "wall".
+        l.walls.clear();
+        if (!j.at("wall").is_null()) l.walls.push_back(j.at("wall").get<WallConfig>());
+        for (auto& w : l.walls) w.id = "wall";
     }
     if (j.contains("scenes")) l.scenes = j.at("scenes").get<std::vector<Scene>>();
 }
@@ -253,8 +264,14 @@ std::vector<std::string> normalize(Layout& l) {
         }
     }
 
-    if (l.wall) {
-        auto& w = *l.wall;
+    ids.clear();
+    n = 0;
+    for (auto& w : l.walls) {
+        ++n;
+        w.id = sanitizeId(w.id.empty() ? w.name : w.id);
+        if (w.id.empty() || ids.count(w.id)) w.id = "wall-" + std::to_string(n);
+        ids.insert(w.id);
+        if (w.name.empty()) w.name = w.id == "wall" ? "Wall" : w.id;
         w.cols = std::clamp(w.cols, 1, 16);
         w.rows = std::clamp(w.rows, 1, 16);
         w.outputWidth = clampDim(w.outputWidth);
@@ -276,57 +293,99 @@ std::vector<std::string> normalize(Layout& l) {
     return problems;
 }
 
-void applyWall(Layout& l, WallConfig w) {
-    Layout probe;
-    probe.wall = w;
-    normalize(probe);  // clamp the wall's values
-    w = *probe.wall;
-
+Rect wallBounds(const WallConfig& w) {
     bool sideways = w.rotation == 90 || w.rotation == 270;
     int cellW = sideways ? w.outputHeight : w.outputWidth;  // panel size on the canvas
     int cellH = sideways ? w.outputWidth : w.outputHeight;
+    return {w.x, w.y, w.cols * cellW + (w.cols - 1) * w.gapX, w.rows * cellH + (w.rows - 1) * w.gapY};
+}
+
+// Output ids of a group: out-N for "wall" (as before groups existed), else <id>-N.
+static std::string wallPrefix(const std::string& id) { return id == "wall" ? "out-" : id + "-"; }
+
+// The canvas grows or shrinks to hold every wall group and every standalone output.
+static void fitCanvasToWalls(Layout& l) {
+    int cw = 1, ch = 1;
+    for (auto& w : l.walls) {
+        Rect b = wallBounds(w);
+        cw = std::max(cw, b.x + b.w);
+        ch = std::max(ch, b.y + b.h);
+    }
+    for (auto& o : l.outputs)
+        if (o.source == "canvas" && !l.findWall(o.group)) {
+            cw = std::max(cw, o.crop.x + o.crop.w);
+            ch = std::max(ch, o.crop.y + o.crop.h);
+        }
+    cw = std::clamp(cw, 1, kMaxDimension);
+    ch = std::clamp(ch, 1, kMaxDimension);
+    // Sources that covered the whole old canvas keep covering it.
+    for (auto& s : l.sources)
+        if (s.rect.x == 0 && s.rect.y == 0 && s.rect.w == l.canvas.width && s.rect.h == l.canvas.height)
+            s.rect = {0, 0, cw, ch};
+    l.canvas.width = cw;
+    l.canvas.height = ch;
+}
+
+void applyWall(Layout& l, WallConfig w) {
+    if (w.id.empty()) w.id = w.name.empty() ? "wall" : w.name;
+    Layout probe;
+    probe.walls = {w};
+    normalize(probe);  // clamp the wall's values, sanitize its id
+    w = probe.walls[0];
     if (w.pixelFormat == PixelFormat::Uyvy && w.outputWidth % 2) w.outputWidth += 1;
 
-    if (w.fitCanvas) {
-        int cw = std::clamp(w.x + w.cols * cellW + (w.cols - 1) * w.gapX, 1, kMaxDimension);
-        int ch = std::clamp(w.y + w.rows * cellH + (w.rows - 1) * w.gapY, 1, kMaxDimension);
-        // Sources that covered the whole old canvas keep covering it.
-        for (auto& s : l.sources)
-            if (s.rect.x == 0 && s.rect.y == 0 && s.rect.w == l.canvas.width && s.rect.h == l.canvas.height)
-                s.rect = {0, 0, cw, ch};
-        l.canvas.width = cw;
-        l.canvas.height = ch;
+    bool stored = false;
+    for (auto& existing : l.walls)
+        if (existing.id == w.id) existing = w, stored = true;
+    if (!stored) l.walls.push_back(w);
+
+    bool sideways = w.rotation == 90 || w.rotation == 270;
+    int cellW = sideways ? w.outputHeight : w.outputWidth;
+    int cellH = sideways ? w.outputWidth : w.outputHeight;
+    int count = w.cols * w.rows;
+    std::string prefix = wallPrefix(w.id);
+
+    // <prefix>N within the grid is reused (keeps its NDI stream); the group's other
+    // outputs are dropped; everything else stays where it is in the list.
+    std::vector<OutputConfig> panels(count);
+    std::vector<OutputConfig> kept;
+    size_t insertAt = std::string::npos;
+    for (auto& o : l.outputs) {
+        int idx = 0;
+        if (o.id.rfind(prefix, 0) == 0) {
+            std::string tail = o.id.substr(prefix.size());
+            if (!tail.empty() && tail.size() < 4 && std::all_of(tail.begin(), tail.end(), ::isdigit)) idx = std::stoi(tail);
+            if (std::to_string(idx) != tail) idx = 0;
+        }
+        bool mine = o.group == w.id;
+        if ((idx >= 1 && idx <= count) || mine) {
+            if (insertAt == std::string::npos) insertAt = kept.size();
+            if (idx >= 1 && idx <= count) panels[idx - 1] = o;
+        } else {
+            kept.push_back(o);
+        }
     }
 
-    int count = w.cols * w.rows;
-    std::vector<OutputConfig> others;
-    std::vector<OutputConfig> wall(count);
-    for (auto& o : l.outputs) {
-        // out-N within the grid is reused (keeps its name and NDI stream);
-        // other wall outputs are dropped; everything else stays.
-        int idx = 0;
-        if (o.id.rfind("out-", 0) == 0) {
-            try {
-                idx = std::stoi(o.id.substr(4));
-            } catch (...) {
-                idx = 0;
-            }
+    std::set<std::string> taken;
+    for (auto& o : kept) taken.insert(o.ndiName);
+    for (auto& o : panels) taken.insert(o.ndiName);
+    auto freeNdiName = [&]() {
+        for (int k = 1;; ++k) {
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "Mosaic_Output_%02d", k);
+            if (!taken.count(buf)) return taken.insert(buf), std::string(buf);
         }
-        if (idx >= 1 && idx <= count && std::to_string(idx) == o.id.substr(4)) wall[idx - 1] = o;
-        else if (o.group != "wall") others.push_back(o);
-    }
+    };
+
+    std::string label = w.id == "wall" && (w.name.empty() || w.name == "Wall") ? "Panel" : w.name;
     for (int r = 0; r < w.rows; ++r)
         for (int c = 0; c < w.cols; ++c) {
             int i = r * w.cols + c;
-            OutputConfig& o = wall[i];
-            if (o.id.empty()) {
-                o.id = "out-" + std::to_string(i + 1);
-                char buf[32];
-                std::snprintf(buf, sizeof buf, "Mosaic_Output_%02d", i + 1);
-                o.ndiName = buf;
-            }
+            OutputConfig& o = panels[i];
+            if (o.id.empty()) o.id = prefix + std::to_string(i + 1);
+            if (o.ndiName.empty()) o.ndiName = freeNdiName();
             // Named by position (the old name may describe another place); the NDI name is kept.
-            o.name = "Panel R" + std::to_string(r + 1) + " C" + std::to_string(c + 1);
+            o.name = count == 1 ? w.name : label + " R" + std::to_string(r + 1) + " C" + std::to_string(c + 1);
             o.width = w.outputWidth;
             o.height = w.outputHeight;
             o.rotation = w.rotation;
@@ -334,16 +393,43 @@ void applyWall(Layout& l, WallConfig w) {
             o.scaleMode = ScaleMode::Stretch;
             o.source = "canvas";
             o.pixelFormat = w.pixelFormat;
-            o.group = "wall";
+            o.group = w.id;
             o.crop = {w.x + c * (cellW + w.gapX), w.y + r * (cellH + w.gapY), cellW, cellH};
         }
-    // Wall NDI names win over any other output that happened to use them.
-    for (auto& o : others)
-        for (auto& wo : wall)
-            if (o.ndiName == wo.ndiName) o.ndiName.clear();
-    wall.insert(wall.end(), others.begin(), others.end());
-    l.outputs = std::move(wall);
-    l.wall = w;
+    if (insertAt == std::string::npos) insertAt = kept.size();
+    kept.insert(kept.begin() + static_cast<std::ptrdiff_t>(insertAt), panels.begin(), panels.end());
+    l.outputs = std::move(kept);
+    if (w.fitCanvas) fitCanvasToWalls(l);
+}
+
+bool moveWall(Layout& l, const std::string& id, int x, int y) {
+    for (auto& w : l.walls) {
+        if (w.id != id) continue;
+        x = std::clamp(x, 0, kMaxDimension);
+        y = std::clamp(y, 0, kMaxDimension);
+        int dx = x - w.x, dy = y - w.y;
+        w.x = x;
+        w.y = y;
+        for (auto& o : l.outputs)
+            if (o.group == id && o.source == "canvas") o.crop.x += dx, o.crop.y += dy;
+        if (w.fitCanvas) fitCanvasToWalls(l);
+        return true;
+    }
+    return false;
+}
+
+bool removeWall(Layout& l, const std::string& id, bool removeOutputs) {
+    auto it = std::find_if(l.walls.begin(), l.walls.end(), [&](const WallConfig& w) { return w.id == id; });
+    if (it == l.walls.end()) return false;
+    l.walls.erase(it);
+    if (removeOutputs) {
+        l.outputs.erase(std::remove_if(l.outputs.begin(), l.outputs.end(), [&](const OutputConfig& o) { return o.group == id; }),
+                        l.outputs.end());
+    } else {
+        for (auto& o : l.outputs)
+            if (o.group == id) o.group.clear();
+    }
+    return true;
 }
 
 std::string saveScene(Layout& l, const std::string& name) {

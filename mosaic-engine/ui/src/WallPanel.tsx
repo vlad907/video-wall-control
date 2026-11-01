@@ -5,10 +5,24 @@ import { NumberField } from "./Inspector";
 const PANELS: [string, number, number][] = [
   ["1920 × 1080", 1920, 1080],
   ["3840 × 2160", 3840, 2160],
+  ["3840 × 1080 (double-wide)", 3840, 1080],
+  ["5120 × 1440 (double-wide)", 5120, 1440],
   ["1280 × 720", 1280, 720],
 ];
 
+// Starting points for a new group: [label, name, cols, rows, panel width, panel height].
+const PRESETS: [string, string, number, number, number, number][] = [
+  ["Single 1080p", "Display", 1, 1, 1920, 1080],
+  ["Single 4K", "4K display", 1, 1, 3840, 2160],
+  ["Double-wide", "Double wide", 1, 1, 3840, 1080],
+  ["2 × 2", "2x2 wall", 2, 2, 1920, 1080],
+  ["4 × 4", "Main wall", 4, 4, 1920, 1080],
+  ["3 × 3 of 4K", "4K wall", 3, 3, 3840, 2160],
+];
+
 const DEFAULT: Wall = {
+  id: "",
+  name: "Wall",
   cols: 2,
   rows: 2,
   outputWidth: 1920,
@@ -22,20 +36,32 @@ const DEFAULT: Wall = {
   fitCanvas: true,
 };
 
-// Generates one output per panel of a cols x rows wall, leaving canvas pixels
-// out for the bezels so lines continue straight across panel edges.
+// Where a new group goes: under everything already on the canvas, or to the right if that runs out of room.
+function freeSpot(layout: Layout): { x: number; y: number } {
+  const crops = layout.outputs.filter((o) => o.source === "canvas").map((o) => o.crop);
+  if (!crops.length) return { x: 0, y: 0 };
+  const bottom = Math.max(...crops.map((c) => c.y + c.h));
+  if (bottom + 2160 <= 16384) return { x: 0, y: bottom };
+  return { x: Math.max(...crops.map((c) => c.x + c.w)), y: 0 };
+}
+
+// Edits one wall group: one output per panel of a cols x rows grid, leaving canvas
+// pixels out for the bezels so lines continue straight across panel edges.
+// A 1 x 1 group is a single display (a double-wide screen is one 3840 x 1080 panel).
 export function WallPanel({
   layout,
+  wall,
   onApply,
   onRemove,
   onClose,
 }: {
   layout: Layout;
+  wall: Wall | null; // null = a new group
   onApply: (w: Wall) => void;
-  onRemove: () => void;
+  onRemove: (removeOutputs: boolean) => void;
   onClose: () => void;
 }) {
-  const [w, setW] = useState<Wall>(layout.wall ?? DEFAULT);
+  const [w, setW] = useState<Wall>(() => wall ?? { ...DEFAULT, ...freeSpot(layout), fitCanvas: true });
   const [unit, setUnit] = useState<"px" | "mm">("px");
   // mm mode: physical size of the picture area (long side) and of the gaps between pictures.
   const [imageMm, setImageMm] = useState(1210);
@@ -51,19 +77,47 @@ export function WallPanel({
   const totalW = w.x + w.cols * cellW + (w.cols - 1) * gapX;
   const totalH = w.y + w.rows * cellH + (w.rows - 1) * gapY;
   const count = w.cols * w.rows;
-  const extra = layout.outputs.filter((o) => o.group !== "wall" && !/^out-\d+$/.test(o.id)).length;
+  // Output ids, as the engine makes them: out-N for the group "wall", else <group id>-N (the id comes from the name).
+  const slug = w.name.toLowerCase().replace(/[ .]/g, "-").replace(/[^a-z0-9_-]/g, "").slice(0, 64) || "group";
+  const prefix = wall ? (wall.id === "wall" ? "out" : wall.id) : slug;
 
-  const scale = 260 / Math.max(totalW, totalH * 1.6);
+  const groupW = totalW - w.x;
+  const groupH = totalH - w.y;
+  const scale = 260 / Math.max(groupW, groupH * 1.6);
 
   return (
     <div className="inspector">
       <div className="inspector-head">
-        <h2>Video wall</h2>
+        <h2>{wall ? wall.name : "New group"}</h2>
         <button onClick={onClose}>Close</button>
       </div>
       <small className="muted">
-        Creates one output per panel (out-1 … out-{count}, row by row). Existing out-N outputs keep their names and NDI streams.
+        One output per display ({count === 1 ? `${prefix}-1` : `${prefix}-1 … ${prefix}-${count}`}, row by row). Updating keeps their NDI streams.
       </small>
+
+      {!wall && (
+        <div className="group">
+          <h3>Start from</h3>
+          <div className="presets wide-note">
+            {PRESETS.map(([label, name, cols, rows, outputWidth, outputHeight]) => (
+              <button
+                key={label}
+                className={w.cols === cols && w.rows === rows && w.outputWidth === outputWidth && w.outputHeight === outputHeight ? "on" : ""}
+                onClick={() => set({ name, cols, rows, outputWidth, outputHeight })}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="group">
+        <label className="field wide">
+          <span>Name</span>
+          <input type="text" value={w.name} onChange={(e) => set({ name: e.target.value })} />
+        </label>
+      </div>
 
       <div className="group">
         <h3>Grid</h3>
@@ -141,7 +195,7 @@ export function WallPanel({
         <NumberField label="Top (px)" value={w.y} onCommit={(y) => set({ y })} />
         <label className="toggle wide-note">
           <input type="checkbox" checked={w.fitCanvas} onChange={(e) => set({ fitCanvas: e.target.checked })} />
-          Resize the canvas to the wall ({totalW} × {totalH})
+          Resize the canvas to fit all groups
         </label>
         <div className="seg">
           {(["uyvy", "bgra"] as const).map((f) => (
@@ -152,34 +206,41 @@ export function WallPanel({
         </div>
       </div>
 
-      <svg className="wall-diagram" viewBox={`0 0 ${Math.max(1, totalW * scale)} ${Math.max(1, totalH * scale)}`}>
+      <svg className="wall-diagram" viewBox={`0 0 ${Math.max(1, groupW * scale)} ${Math.max(1, groupH * scale)}`}>
         {Array.from({ length: count }, (_, i) => {
           const c = i % w.cols;
           const r = Math.floor(i / w.cols);
           return (
             <g key={i}>
               <rect
-                x={(w.x + c * (cellW + gapX)) * scale}
-                y={(w.y + r * (cellH + gapY)) * scale}
+                x={c * (cellW + gapX) * scale}
+                y={r * (cellH + gapY) * scale}
                 width={cellW * scale}
                 height={cellH * scale}
               />
-              <text x={(w.x + c * (cellW + gapX) + cellW / 2) * scale} y={(w.y + r * (cellH + gapY) + cellH / 2) * scale}>
+              <text x={(c * (cellW + gapX) + cellW / 2) * scale} y={(r * (cellH + gapY) + cellH / 2) * scale}>
                 {i + 1}
               </text>
             </g>
           );
         })}
       </svg>
-      {extra > 0 && <small className="muted">{extra} other output(s) stay as they are.</small>}
+      <small className="muted">
+        {groupW} × {groupH} px on the canvas. Other groups and outputs stay as they are.
+      </small>
 
       <button className="primary" onClick={() => onApply({ ...w, gapX, gapY })}>
-        {layout.wall ? "Update wall" : "Create wall"} ({count} outputs)
+        {wall ? "Update group" : "Create group"} ({count} output{count === 1 ? "" : "s"})
       </button>
-      {layout.wall && (
-        <button className="danger" onClick={onRemove} title="Keeps the outputs, forgets the wall settings">
-          Detach wall
-        </button>
+      {wall && (
+        <div className="row buttons">
+          <button onClick={() => onRemove(false)} title="Keeps the outputs as standalone outputs, forgets the group">
+            Ungroup
+          </button>
+          <button className="danger" onClick={() => confirm(`Delete "${wall.name}" and its ${count} output(s)?`) && onRemove(true)}>
+            Delete group
+          </button>
+        </div>
       )}
     </div>
   );

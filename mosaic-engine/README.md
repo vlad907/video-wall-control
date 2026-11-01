@@ -26,7 +26,8 @@ in the style of Resolume's Advanced Output drives the running engine through a R
 | Layout persistence across restarts | **Working**, verified |
 | Direct3D 11 backend (Windows) | **Working on Windows hardware** (AMD Radeon 610M): a 2-hour run with an NDI input and 4 NDI outputs, no tearing seen. CI builds it with MSVC and pixel-checks it on WARP on every push. |
 | NDI send / receive / discovery | **Working on Windows** with the NDI 6 SDK; streams play in NDI Studio Monitor. See [docs/NDI.md](docs/NDI.md). |
-| Video wall tool (grid of panels, bezel gaps in px or mm, portrait panels) | **Working, pixel-checked** (`tools/ci_check.py`) |
+| Wall groups: several walls and single displays per layout (grids with bezel gaps in px or mm, portrait panels, 1 × 1 for one display) | **Working, pixel-checked** (`tools/ci_check.py`) |
+| Editor: layer list (drag to reorder, bring to front / send to back), snapping to other frames' edges and centres (can be turned off) | **Working**, tested in the browser |
 | Free-form mosaics: any position, gap and tilt angle per panel | **Working, pixel-checked**; rotate handle and `[` `]` keys in the editor |
 | Layered sources with opacity and source crop; scenes with crossfade | **Working, pixel-checked** on Metal; checked on Direct3D 11 by CI |
 | Starts at boot with the video-wall dashboard, restarted if it stops | **Working** (tested on macOS with mock Studio Monitors) |
@@ -99,7 +100,7 @@ Output fields: `id`, `name`, `ndiName`, `width`/`height` (output resolution), `p
 (region in canvas pixels, or in source pixels when `source` is a source id),
 `rotation` (0/90/180/270, clockwise: how the panel is mounted), `angle` (free tilt in degrees,
 clockwise, of the crop about its centre: for panels hung at an angle), `scaleMode` (`stretch` | `fit` | `fill`),
-`source` (`"canvas"` or a source id), `enabled`, and `group` (`"wall"` for outputs made by the wall tool).
+`source` (`"canvas"` or a source id), `enabled`, and `group` (the id of the wall group that made it, if any).
 
 Source fields: `id`, `name`, `type` (`test_pattern`, `ndi`, `solid`), `ndiName`, `rect` (where it sits
 on the canvas), `crop` (part of the source shown; `w`/`h` 0 = all of it), `opacity` (0–1), `color`
@@ -109,13 +110,20 @@ Rotation is clockwise. A display physically mounted 90° counter-clockwise needs
 
 ## Video walls, layering and scenes
 
-**Wall tool** (Outputs → *Wall…*, or `PUT /api/wall`). Give it columns, rows, the panel
+**Wall groups** (Outputs → *+ Group*, or `POST /api/walls`). A layout can hold several groups,
+for example a 4 × 4 main wall, a 2 × 2 wall, a double-wide display and a single 1080p screen,
+each cut from its own part of the canvas. Give a group a name, columns, rows, the panel
 resolution, the orientation, and the bezel gap, either in pixels or in millimetres (picture
-width plus the gap between pictures; it converts using the panel's pixel pitch). It creates
-`out-1 … out-N` row by row, with the bezel gaps left out of the canvas so straight lines
-stay straight across panels. It can also resize the canvas to fit. Running it again keeps
-each `out-N`'s NDI stream name, so receivers don't need re-pointing. Outputs that aren't
-part of the wall are left alone.
+width plus the gap between pictures; it converts using the panel's pixel pitch). A single
+display is a 1 × 1 group: a double-wide screen is one 3840 × 1080 (or 5120 × 1440) panel.
+The presets cover these cases. Each group creates `<group id>-1 … -N` row by row (`out-1 … out-N`
+for the group `wall`, as in layouts made before groups existed), with the bezel gaps left out of
+the canvas so straight lines stay straight across panels, and new streams get the lowest free
+`Mosaic_Output_NN` name. A new group goes under what's already on the canvas, and the canvas can
+resize to fit all groups. Updating a group keeps its outputs' NDI stream names, so receivers
+don't need re-pointing; other groups and outputs are left alone. On the canvas, drag a group's
+tab to move the whole group (a single-display group moves with its frame); dragging one panel
+moves only that panel. *Ungroup* keeps the outputs as standalone outputs; *Delete group* removes them.
 
 **Mosaics with angles and uneven gaps.** Each output is placed independently, so gaps can
 be anything: start from the wall tool (or add outputs by hand) and drag each region onto
@@ -126,8 +134,15 @@ the content lines up with its neighbours. Measure each panel's position and angl
 wall (or from a photo) and enter them; resizing a tilted region keeps the opposite edge in place.
 
 **Layering.** Every source has a position, an optional crop, and an opacity. Use *Edit sources*
-in the top bar to drag them on the canvas. Translucent sources are alpha-blended over the
-ones below. Opaque ones just replace the pixels.
+in the top bar to drag them on the canvas. The **Layers** list shows the top layer first, the one
+drawn over the others: drag a layer up or down, use its ▲ ▼ buttons, or *Bring to front* /
+*Send to back* in the inspector. Translucent sources are alpha-blended over the ones below.
+Opaque ones just replace the pixels.
+
+**Snapping.** While you drag or resize, a frame snaps to the edges and centres of the other
+outputs and sources and of the canvas, and a pink guide shows the line it snapped to. Turn
+*Snap to other frames & centres* off in the sidebar, or hold Alt while dragging, to place
+freely. The *Grid* setting rounds positions to a step (10 px by default).
 
 **Scenes** are saved arrangements of sources, stored with the layout. Recall one with a cut
 or a crossfade of 0.5–2 s (`POST /api/scenes/:id/recall {"transitionMs":1000}`). Outputs
@@ -171,7 +186,10 @@ Across the whole source there's also:
 | GET / DELETE | `/api/layouts/:id` | |
 | POST | `/api/layouts` | save a layout (full body), or `{"fromActive":true,"name":"..."}` to save a copy |
 | POST | `/api/layouts/:id/activate` | switch live; optional `{"transitionMs": N}` crossfade |
-| GET / PUT / DELETE | `/api/wall` | the wall definition; PUT (partial body) regenerates the wall outputs; DELETE keeps them as plain outputs |
+| GET / POST | `/api/walls` | list wall groups / create one (`{"name", "cols", "rows", "outputWidth", "outputHeight", "x", "y", "gapX", "gapY", "rotation", "fitCanvas"}`; the id comes from the name) |
+| PUT / DELETE | `/api/walls/:id` | PUT (partial body) creates or regenerates a group; DELETE forgets it and keeps its outputs as standalone outputs, or removes them with `?outputs=delete` |
+| POST | `/api/walls/:id/move` | move a whole group to `{"x", "y"}`, keeping its outputs' own tweaks |
+| GET / PUT / DELETE | `/api/wall` | the group `wall` (the single-wall API from before groups) |
 | GET / POST | `/api/scenes` | list scenes / save the current sources as `{"name": ...}` |
 | POST | `/api/scenes/:id/recall` | replace the sources with the scene's; optional `{"transitionMs": N}` |
 | DELETE | `/api/scenes/:id` | |

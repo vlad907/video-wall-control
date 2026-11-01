@@ -11,10 +11,25 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null); // output id
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [mode, setMode] = useState<EditMode>("outputs");
-  const [wallOpen, setWallOpen] = useState(false);
+  const [wallEdit, setWallEdit] = useState<{ id: string | null } | null>(null); // id null = new group
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [snap, setSnap] = useState(10);
+  const [smartSnap, setSmartSnap] = useState(() => {
+    try {
+      return localStorage.getItem("mosaic.smartSnap") !== "off";
+    } catch {
+      return true;
+    }
+  });
+  const toggleSmartSnap = (on: boolean) => {
+    setSmartSnap(on);
+    try {
+      localStorage.setItem("mosaic.smartSnap", on ? "on" : "off");
+    } catch {
+      /* per-browser preference only */
+    }
+  };
   const versionRef = useRef<number>(-1);
 
   const reload = useCallback(() => api.layout().then(setLayout).catch((e) => setError(String(e))), []);
@@ -105,11 +120,11 @@ export function App() {
 
   const selectOutput = useCallback((id: string | null) => {
     setSelectedId(id);
-    if (id) (setMode("outputs"), setWallOpen(false));
+    if (id) (setMode("outputs"), setWallEdit(null));
   }, []);
   const selectSource = useCallback((id: string | null) => {
     setSourceId(id);
-    if (id) (setMode("sources"), setWallOpen(false));
+    if (id) (setMode("sources"), setWallEdit(null));
   }, []);
 
   // Arrow keys nudge the selected rectangle (Shift = 10 px); [ and ] tilt an output (0.1°, Shift 1°).
@@ -141,37 +156,49 @@ export function App() {
   }, [layout, mode, selectedId, sourceId, onRectChange, onAngleChange]);
 
   const onCanvasRect = useCallback((id: string, rect: Rect, final: boolean) => onRectChange(mode, id, rect, final), [mode, onRectChange]);
+  const onGroupMove = useCallback(
+    (id: string, x: number, y: number) =>
+      api
+        .moveWall(id, x, y)
+        .then(setLayout)
+        .catch((e) => (onError(e), reload())),
+    [onError, reload],
+  );
 
   if (!layout) return <div className="loading">{error ?? "Connecting to engine…"}</div>;
   const selected = layout.outputs.find((o) => o.id === selectedId) ?? null;
   const selectedSource = layout.sources.find((s) => s.id === sourceId) ?? null;
 
-  const moveSource = (id: string, delta: -1 | 1) => {
+  // Layer order: layout.sources is bottom first, so the last one is the top (primary) layer.
+  const reorderSource = (id: string, toIndex: number) => {
     const list = [...layout.sources];
     const i = list.findIndex((s) => s.id === id);
-    const j = i + delta;
-    if (i < 0 || j < 0 || j >= list.length) return;
-    [list[i], list[j]] = [list[j], list[i]];
+    if (i < 0 || i === toIndex || toIndex < 0 || toIndex >= list.length) return;
+    const [moved] = list.splice(i, 1);
+    list.splice(toIndex, 0, moved);
     setLayout({ ...layout, sources: list });
     api.putLayout({ sources: list }).then(reload).catch(onError);
   };
 
   let right: React.ReactNode;
-  if (wallOpen) {
+  if (wallEdit) {
+    const wall = wallEdit.id ? layout.walls.find((w) => w.id === wallEdit.id) ?? null : null;
     right = (
       <WallPanel
+        key={wallEdit.id ?? "new"}
         layout={layout}
-        onClose={() => setWallOpen(false)}
+        wall={wall}
+        onClose={() => setWallEdit(null)}
         onApply={(w) =>
-          api
-            .putWall(w)
-            .then((l) => (setLayout(l), setWallOpen(false)))
+          (wall ? api.putWall(wall.id, w) : api.createWall(w))
+            .then((l) => (setLayout(l), setWallEdit(null)))
             .catch(onError)
         }
-        onRemove={() =>
+        onRemove={(removeOutputs) =>
+          wall &&
           api
-            .deleteWall()
-            .then(() => (reload(), setWallOpen(false)))
+            .deleteWall(wall.id, removeOutputs)
+            .then(() => (reload(), setWallEdit(null)))
             .catch(onError)
         }
       />
@@ -182,7 +209,7 @@ export function App() {
         layout={layout}
         source={{ ...selectedSource, status: metrics?.sources.find((x) => x.id === selectedSource.id) }}
         onPatch={(p) => patchSource(selectedSource.id, p)}
-        onMove={(d) => moveSource(selectedSource.id, d)}
+        onReorder={(to) => reorderSource(selectedSource.id, to)}
         onDelete={() => {
           if (!confirm(`Remove ${selectedSource.name}?`)) return;
           api
@@ -239,36 +266,51 @@ export function App() {
           selectedId={mode === "outputs" ? selectedId : null}
           onSelect={selectOutput}
           onAdd={addOutput}
-          onWall={() => setWallOpen(true)}
+          onWall={(id) => (setMode("outputs"), setWallEdit({ id }))}
           onToggle={(id, enabled) => patch(id, { enabled })}
         />
-        <SourcesPanel layout={layout} selectedId={mode === "sources" ? sourceId : null} onSelect={selectSource} onChanged={reload} onError={onError} />
+        <SourcesPanel
+          layout={layout}
+          selectedId={mode === "sources" ? sourceId : null}
+          onSelect={selectSource}
+          onReorder={reorderSource}
+          onChanged={reload}
+          onError={onError}
+        />
         <ScenesPanel layout={layout} onChanged={reload} onError={onError} />
-        <label className="field inline snap">
-          <span>Snap</span>
-          <select value={snap} onChange={(e) => setSnap(+e.target.value)}>
-            {[1, 10, 60, 120, 240].map((s) => (
-              <option key={s} value={s}>
-                {s === 1 ? "off (1 px)" : `${s} px`}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="snap-opts">
+          <label className="toggle" title="Line frames up with the edges and centres of other frames and of the canvas (hold Alt to drag freely)">
+            <input type="checkbox" checked={smartSnap} onChange={(e) => toggleSmartSnap(e.target.checked)} />
+            Snap to other frames &amp; centres
+          </label>
+          <label className="field inline snap">
+            <span>Grid</span>
+            <select value={snap} onChange={(e) => setSnap(+e.target.value)}>
+              {[1, 10, 60, 120, 240].map((s) => (
+                <option key={s} value={s}>
+                  {s === 1 ? "off (1 px)" : `${s} px`}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       </aside>
       <main className="main">
         <div className="canvas-info">
           Canvas {layout.canvas.width} × {layout.canvas.height} ·{" "}
           {mode === "outputs" ? "editing what each display shows" : "editing where each source sits"} · drag to move, drag handles to resize, arrow keys nudge
-          {mode === "outputs" ? ", round handle or [ ] tilts" : ""}
+          {mode === "outputs" ? ", round handle or [ ] tilts, a group's tab moves the whole group" : ""}
         </div>
         <CanvasEditor
           layout={layout}
           mode={mode}
           selectedId={mode === "outputs" ? selectedId : sourceId}
           snap={snap}
+          smart={smartSnap}
           onSelect={mode === "outputs" ? selectOutput : selectSource}
           onRectChange={onCanvasRect}
           onAngleChange={onAngleChange}
+          onGroupMove={onGroupMove}
         />
       </main>
       <aside className="right">{right}</aside>
