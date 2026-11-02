@@ -21,6 +21,8 @@ interface Guides {
   y: number[];
 }
 
+const MULTI = "\u0000multi"; // drag.group marker: moving the multi-selection
+
 export const COLORS = ["#ff5c5c", "#4cc9f0", "#80ed99", "#ffd166", "#c77dff", "#ff9f1c", "#2ec4b6", "#f72585"];
 const SOURCE_COLOR = "#e7e9ee";
 
@@ -137,6 +139,9 @@ export function CanvasEditor({
   onRectChange,
   onAngleChange,
   onGroupMove,
+  multi = [],
+  onMulti = () => {},
+  onMultiMove = () => {},
 }: {
   layout: Layout;
   mode: EditMode;
@@ -147,6 +152,9 @@ export function CanvasEditor({
   onRectChange: (id: string, rect: Rect, final: boolean) => void;
   onAngleChange: (id: string, angle: number, final: boolean) => void;
   onGroupMove: (id: string, x: number, y: number) => void;
+  multi?: string[]; // outputs selected together (Shift / Ctrl-click, Shift-drag a box)
+  onMulti?: (ids: string[]) => void;
+  onMultiMove?: (ids: string[], dx: number, dy: number) => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ w: 800, h: 450 });
@@ -233,7 +241,9 @@ export function CanvasEditor({
     if (!drag) return;
     // Everything else on the canvas (outputs and sources) is something to line up with.
     const others = [
-      ...layout.outputs.filter((o) => o.source === "canvas" && o.id !== drag.id && (!drag.group || o.group !== drag.group)).map((o) => o.crop),
+      ...layout.outputs
+        .filter((o) => o.source === "canvas" && o.id !== drag.id && (!drag.group || o.group !== drag.group) && !(drag.group === MULTI && multi.includes(o.id)))
+        .map((o) => o.crop),
       ...layout.sources.filter((s) => s.id !== drag.id).map((s) => s.rect),
     ];
     const canvasRect = { x: 0, y: 0, w: cw, h: ch };
@@ -273,6 +283,13 @@ export function CanvasEditor({
       if (drag.handle === "rotate") onAngleChange(drag.id, angleAt(e), true);
       else if (drag.group) {
         const rect = place(e);
+        if (drag.group === MULTI) {
+          if (rect.x !== drag.start.x || rect.y !== drag.start.y) onMultiMove(multi, rect.x - drag.start.x, rect.y - drag.start.y);
+          else setLiveGroup(null);
+          setDrag(null);
+          setGuides({ x: [], y: [] });
+          return;
+        }
         const wall = layout.walls.find((w) => w.id === drag.group);
         // The wall's x/y is its first panel's corner; shift it by however far the frame moved.
         if (wall && (rect.x !== drag.start.x || rect.y !== drag.start.y))
@@ -290,7 +307,7 @@ export function CanvasEditor({
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
     };
-  }, [drag, scale, snap, smart, cw, ch, layout, onRectChange, onAngleChange, onGroupMove]);
+  }, [drag, scale, snap, smart, cw, ch, layout, multi, onRectChange, onAngleChange, onGroupMove, onMultiMove]);
 
   // The group's new position arrives with the next layout; drop the preview offset then.
   useEffect(() => setLiveGroup(null), [layout]);
@@ -298,6 +315,19 @@ export function CanvasEditor({
   const begin = (e: React.PointerEvent, it: Item, handle: Handle) => {
     e.stopPropagation();
     e.preventDefault();
+    // Shift / Ctrl / Cmd-click adds or removes a display from the multi-selection.
+    if (mode === "outputs" && handle === "move" && (e.shiftKey || e.metaKey || e.ctrlKey)) {
+      const base = multi.length ? multi : selectedId ? [selectedId] : [];
+      onMulti(base.includes(it.id) ? base.filter((x) => x !== it.id) : [...base, it.id]);
+      return;
+    }
+    // Dragging one of several selected displays moves them all.
+    if (mode === "outputs" && handle === "move" && multi.length > 1 && multi.includes(it.id)) {
+      const rects = items.filter((x) => multi.includes(x.id)).map((x) => x.rect);
+      setDrag({ id: it.id, handle: "move", startX: e.clientX, startY: e.clientY, start: bounds(rects), angle: 0, centre: { x: 0, y: 0 }, group: MULTI });
+      return;
+    }
+    if (multi.length) onMulti([]);
     onSelect(it.id);
     const box = (e.currentTarget.closest(".slice") ?? e.currentTarget).getBoundingClientRect();
     // A single-display group moves as a group, so the group remembers where it is.
@@ -320,12 +350,34 @@ export function CanvasEditor({
     setDrag({ id: g.id, handle: "move", startX: e.clientX, startY: e.clientY, start: g.rect, angle: 0, centre: { x: 0, y: 0 }, group: g.id });
   };
 
-  const shift = (r: Rect, group?: string) => (liveGroup && group === liveGroup.id ? { ...r, x: r.x + liveGroup.dx, y: r.y + liveGroup.dy } : r);
+  const shift = (r: Rect, group?: string, id?: string) =>
+    liveGroup && (group === liveGroup.id || (liveGroup.id === MULTI && id && multi.includes(id))) ? { ...r, x: r.x + liveGroup.dx, y: r.y + liveGroup.dy } : r;
+  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
 
   // Drag on empty space (or with Space held, or the middle button) pans; a click without moving deselects.
   const onStageDown = (e: React.PointerEvent) => {
     if (e.button !== 0 && e.button !== 1) return;
     e.preventDefault();
+    // Shift-drag on empty space draws a box: every display it touches joins the multi-selection.
+    if (e.shiftKey && e.button === 0 && mode === "outputs") {
+      const r0 = stageRef.current!.getBoundingClientRect();
+      const m = { x0: e.clientX - r0.left, y0: e.clientY - r0.top, x1: e.clientX - r0.left, y1: e.clientY - r0.top };
+      setMarquee(m);
+      const move = (ev: PointerEvent) => setMarquee((cur) => cur && { ...cur, x1: ev.clientX - r0.left, y1: ev.clientY - r0.top });
+      const up = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        setMarquee(null);
+        const x1 = ev.clientX - r0.left, y1 = ev.clientY - r0.top;
+        const box = { x: (Math.min(m.x0, x1) - origin.x) / scale, y: (Math.min(m.y0, y1) - origin.y) / scale, w: Math.abs(x1 - m.x0) / scale, h: Math.abs(y1 - m.y0) / scale };
+        const hit = items.filter((it) => it.rect.x < box.x + box.w && it.rect.x + it.rect.w > box.x && it.rect.y < box.y + box.h && it.rect.y + it.rect.h > box.y).map((it) => it.id);
+        const base = multi.length ? multi : selectedId ? [selectedId] : [];
+        onMulti([...new Set([...base, ...hit])]);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      return;
+    }
     const start = { x: e.clientX, y: e.clientY, ox: origin.x, oy: origin.y, zoom: view?.zoom ?? 1 };
     let moved = false;
     const move = (ev: PointerEvent) => {
@@ -339,7 +391,7 @@ export function CanvasEditor({
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       setPanning(false);
-      if (!moved) onSelect(null);
+      if (!moved) (onSelect(null), multi.length && onMulti([]));
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -406,13 +458,14 @@ export function CanvasEditor({
       <div className="canvas" style={{ width: cw * scale, height: ch * scale, left: origin.x, top: origin.y }}>
         <LivePreview target="canvas" className="canvas-preview" />
         {items.map((it) => {
-          const r = shift(live[it.id] ?? it.rect, it.group);
+          const r = shift(live[it.id] ?? it.rect, it.group, it.id);
           const angle = liveAngle[it.id] ?? it.angle;
-          const selected = it.id === selectedId;
+          const inMulti = multi.length > 1 && multi.includes(it.id);
+          const selected = !inMulti && it.id === selectedId && multi.length < 2;
           return (
             <div
               key={it.id}
-              className={`slice${selected ? " selected" : ""}${it.enabled ? "" : " disabled"}${mode === "sources" ? " src" : ""}`}
+              className={`slice${selected ? " selected" : ""}${inMulti ? " multi" : ""}${it.enabled ? "" : " disabled"}${mode === "sources" ? " src" : ""}`}
               style={{
                 left: r.x * scale,
                 top: r.y * scale,
@@ -459,6 +512,12 @@ export function CanvasEditor({
           <div key={`gy${i}`} className="guide h" style={{ top: y * scale }} />
         ))}
       </div>
+      {marquee && (
+        <div
+          className="marquee"
+          style={{ left: Math.min(marquee.x0, marquee.x1), top: Math.min(marquee.y0, marquee.y1), width: Math.abs(marquee.x1 - marquee.x0), height: Math.abs(marquee.y1 - marquee.y0) }}
+        />
+      )}
     </div>
   );
 }

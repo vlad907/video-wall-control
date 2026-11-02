@@ -64,12 +64,14 @@ export function Inspector({
   onPatch,
   onDelete,
   shownOn = [],
+  onBezel,
 }: {
   layout: Layout;
   output: Output;
   onPatch: (patch: Partial<Output>) => void;
   onDelete: () => void;
   shownOn?: string[]; // "Endpoint · Display N" for each endpoint display showing it
+  onBezel?: () => void; // selects its whole group for bezel correction
 }) {
   const crop = (k: keyof Rect) => (v: number) => onPatch({ crop: { ...output.crop, [k]: v } });
   const resKey = `${output.width}x${output.height}`;
@@ -97,6 +99,11 @@ export function Inspector({
 
       <small className="muted">{shownOn.length ? `Shown on ${shownOn.join(", ")}` : "Not on any endpoint display yet"}</small>
       <LivePreview target={output.id} className="output-preview" />
+      {onBezel && (
+        <button onClick={onBezel} title="Select all displays of this group and correct for their bezels">
+          Bezel correction for its group…
+        </button>
+      )}
 
       <div className="group">
         <TextField label="Name" value={output.name} onCommit={(name) => onPatch({ name })} />

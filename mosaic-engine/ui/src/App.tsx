@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DialogHost, dialog, toast } from "./Dialogs";
 import { api, LockedError, type EndpointsInfo, type Layout, type Metrics, type Output, type Rect, type Screen, type Source } from "./api";
+import { BezelPanel } from "./Bezel";
 import { CanvasEditor, type EditMode } from "./CanvasEditor";
 import { EndpointList, EndpointPanel } from "./Endpoints";
 import { Inspector } from "./Inspector";
@@ -30,6 +31,7 @@ export function App() {
   const mode: EditMode = section === "inputs" ? "sources" : "outputs";
   const [wallEdit, setWallEdit] = useState<{ id: string | null } | null>(null); // id null = new group
   const [endpointId, setEndpointId] = useState<string | null>(null);
+  const [multi, setMulti] = useState<string[]>([]); // outputs selected together (bezel correction, moving several)
   const [endpoints, setEndpoints] = useState<EndpointsInfo | null>(null);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -183,6 +185,7 @@ export function App() {
 
   const selectOutput = useCallback((id: string | null) => {
     setSelectedId(id);
+    setMulti([]);
     if (id) (setSection((s) => (s === "inputs" || s === "monitor" ? "screens" : s)), setWallEdit(null), setEndpointId(null));
   }, []);
   const selectSource = useCallback((id: string | null) => {
@@ -248,7 +251,14 @@ export function App() {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === "z") return e.preventDefault(), e.shiftKey ? redo() : undo();
       if (mod && e.key.toLowerCase() === "y") return e.preventDefault(), redo();
-      const out = mode === "outputs" ? layout.outputs.find((o) => o.id === selectedId) : undefined;
+      if (e.key === "Escape" && multi.length) return setMulti([]);
+      // Ctrl/Cmd+A: every display of the selected one's group (or all displays).
+      if (mod && e.key.toLowerCase() === "a" && mode === "outputs") {
+        e.preventDefault();
+        const g = layout.outputs.find((o) => o.id === selectedId)?.group;
+        return setMulti(layout.outputs.filter((o) => o.source === "canvas" && (!g || o.group === g)).map((o) => o.id));
+      }
+      const out = mode === "outputs" && multi.length < 2 ? layout.outputs.find((o) => o.id === selectedId) : undefined;
       const src = mode === "sources" ? layout.sources.find((x) => x.id === sourceId) : undefined;
       if ((e.key === "Delete" || e.key === "Backspace") && (out || src)) {
         e.preventDefault();
@@ -275,7 +285,25 @@ export function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [layout, mode, selectedId, sourceId, undo, redo, reload, onError, selectOutput, selectSource]);
+  }, [layout, mode, selectedId, sourceId, multi, undo, redo, reload, onError, selectOutput, selectSource]);
+
+  // Moves several displays at once; a whole wall group moves as the group (so its settings follow).
+  const onMultiMove = useCallback(
+    (ids: string[], dx: number, dy: number) => {
+      if (!layout) return;
+      const g = layout.walls.find((w) => {
+        const members = layout.outputs.filter((o) => o.group === w.id).map((o) => o.id);
+        return members.length === ids.length && members.every((m) => ids.includes(m));
+      });
+      (g
+        ? api.moveWall(g.id, g.x + dx, g.y + dy)
+        : api.putLayout({ outputs: layout.outputs.map((o) => (ids.includes(o.id) ? { ...o, crop: { ...o.crop, x: o.crop.x + dx, y: o.crop.y + dy } } : o)) })
+      )
+        .then(reload)
+        .catch(onError);
+    },
+    [layout, reload, onError],
+  );
   const onGroupMove = useCallback(
     (id: string, x: number, y: number) =>
       api
@@ -318,7 +346,9 @@ export function App() {
     (endpoints?.endpoints ?? []).flatMap((e) => e.displays.filter((d) => d.output === outputId).map((d) => `${e.name} · Display ${d.index}`));
 
   let right: React.ReactNode;
-  if (selectedEndpoint) {
+  if (mode === "outputs" && multi.length > 1) {
+    right = <BezelPanel key={[...multi].sort().join(",")} layout={layout} ids={multi} onClose={() => setMulti([])} onError={onError} />;
+  } else if (selectedEndpoint) {
     right = (
       <EndpointPanel
         key={selectedEndpoint.id}
@@ -376,6 +406,11 @@ export function App() {
         layout={layout}
         output={selected}
         shownOn={shownOn(selected.id)}
+        onBezel={
+          selected.group && layout.walls.some((w) => w.id === selected.group)
+            ? () => setMulti(layout.outputs.filter((o) => o.group === selected.group).map((o) => o.id))
+            : undefined
+        }
         onPatch={(p) => patch(selected.id, p)}
         onDelete={async () => {
           if (!(await dialog.confirm(`Remove ${selected.name}?`, { message: "Its NDI stream stops.", okLabel: "Remove", danger: true }))) return;
@@ -527,7 +562,11 @@ export function App() {
                 {mode === "outputs" ? "Screens" : "Inputs"} <small>{layout.canvas.width} × {layout.canvas.height}</small>
               </span>
               <span className="muted canvas-hint">
-                {mode === "outputs" ? "Drag a frame to choose what a display shows · a group's tab moves the group · [ ] tilts" : "Drag a layer to place it · arrow keys nudge"}
+                {mode === "outputs"
+                  ? multi.length > 1
+                    ? `${multi.length} displays selected · drag one to move them all · Esc to deselect`
+                    : "Drag a frame to choose what a display shows · Shift-click or Shift-drag selects several · [ ] tilts"
+                  : "Drag a layer to place it · arrow keys nudge"}
               </span>
               <span className="spacer" />
               <button className="icon-toggle" disabled={!undoStack.current.length} onClick={undo} title="Undo (Ctrl+Z)">
@@ -560,6 +599,9 @@ export function App() {
               onRectChange={onCanvasRect}
               onAngleChange={onAngleChange}
               onGroupMove={onGroupMove}
+              multi={mode === "outputs" ? multi : []}
+              onMulti={setMulti}
+              onMultiMove={onMultiMove}
             />
             <PresetBar layout={layout} onChanged={reload} onError={onError} />
           </>

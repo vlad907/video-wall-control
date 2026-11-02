@@ -164,6 +164,15 @@ Monitors to match; it also reports its screens and what each display is playing,
 which PCs are online and which displays play the right stream. PCs that check in but aren't set up
 yet are listed with a *Set up* button. Endpoints are saved with the layout. See the top-level README.
 
+**Bezel correction** for any set of displays in a grid, such as four TVs in a 2 × 2, whether they're a wall group or
+separate outputs. Select them (Shift-drag a box around them, Shift-click, Ctrl+A, or *Bezel correction for its group…* in a
+display's inspector). The right panel finds the rows and columns and shows the gap between columns and between rows, in
+pixels or in millimetres (enter the picture width of one display; it converts with its pixel pitch). Changing a gap moves
+every display's region live, so a picture continues straight across the frames. **Show alignment pattern** puts a frozen
+test pattern over just those displays: adjust until its circle and lines run straight across the bezels on the real wall.
+For a wall group, the group's own gap settings change. For separate outputs, their regions move, and the canvas grows if
+they would run off it. Dragging any selected display moves them all. Ctrl+Z undoes.
+
 **Editor shortcuts.**
 
 | Keys | Does |
@@ -172,6 +181,8 @@ yet are listed with a *Set up* button. Endpoints are saved with the layout. See 
 | Drag empty space, Space + drag, middle-drag | pan |
 | Shift+1 / Shift+2 | fit the canvas / zoom to the selection (its whole group, for a group's panel) |
 | + / − | zoom in / out |
+| Shift-click / Ctrl-click, Shift-drag on empty space | select several displays (opens bezel correction) |
+| Ctrl/Cmd+A | select every display of the selected one's group (or all displays); Esc ends the selection |
 | Arrow keys (Shift: 10 px) | nudge the selection |
 | `[` / `]` (Shift: 1°) | tilt the selected output by 0.1° |
 | Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z (or Ctrl+Y) | undo / redo (also the buttons above the canvas) |
