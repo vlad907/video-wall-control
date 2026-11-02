@@ -1,21 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type EndpointsInfo, type Layout, type Metrics, type Output, type Rect, type Screen, type Source } from "./api";
+import { api, LockedError, type EndpointsInfo, type Layout, type Metrics, type Output, type Rect, type Screen, type Source } from "./api";
 import { CanvasEditor, type EditMode } from "./CanvasEditor";
 import { EndpointList, EndpointPanel } from "./Endpoints";
 import { Inspector } from "./Inspector";
 import { Icon } from "./Icons";
 import { MonitorView, PresetBar, StatusBar } from "./Monitor";
 import { LayoutBar, OutputList, ScenesPanel, SourcesPanel } from "./Panels";
+import { SettingsPanel, UnlockDialog } from "./Settings";
 import { SourceInspector } from "./SourceInspector";
 import { WallPanel } from "./WallPanel";
 
-type Section = "screens" | "inputs" | "presets" | "endpoints" | "monitor";
+type Section = "screens" | "inputs" | "presets" | "endpoints" | "monitor" | "settings";
 const SECTIONS: [Section, string, string][] = [
   ["screens", "Screens", "Outputs and wall groups: what each display shows"],
   ["inputs", "Inputs", "Sources and layers: where each input sits on the canvas"],
   ["presets", "Presets", "Group presets and scenes"],
   ["endpoints", "Endpoints", "Receiving PCs and their displays"],
   ["monitor", "Monitor", "Engine and output health"],
+  ["settings", "Settings", "Layout history and files, media, signal loss, access"],
 ];
 
 export function App() {
@@ -49,7 +51,14 @@ export function App() {
   const versionRef = useRef<number>(-1);
 
   const reload = useCallback(() => api.layout().then(setLayout).catch((e) => setError(String(e))), []);
-  const onError = useCallback((e: unknown) => setError(e instanceof Error ? e.message : String(e)), []);
+  // A refused change opens the PIN prompt instead of an error banner.
+  const onError = useCallback((e: unknown) => (e instanceof LockedError ? undefined : setError(e instanceof Error ? e.message : String(e))), []);
+  const [unlock, setUnlock] = useState(false);
+  useEffect(() => {
+    const open = () => setUnlock(true);
+    window.addEventListener("mosaic-locked", open);
+    return () => window.removeEventListener("mosaic-locked", open);
+  }, []);
 
   useEffect(() => {
     reload();
@@ -297,6 +306,7 @@ export function App() {
       presets: ["Presets", "Click ▶ to show a preset on its group, or open a group to save new ones. The strip under the canvas does the same in one click."],
       endpoints: ["Endpoints", "Click a receiving PC to choose which output goes on each of its screens."],
       monitor: ["Monitor", "Live numbers from the engine. Amber means an output is falling behind or dropping frames."],
+      settings: ["Settings", "Export or restore this layout, upload images, choose what shows when a stream drops, and set a PIN."],
     };
     const [title, text] = hints[section];
     right = (
@@ -367,6 +377,8 @@ export function App() {
         );
       case "endpoints":
         return <EndpointList info={endpoints} selectedId={endpointId} onSelect={(id) => (setEndpointId(id), setWallEdit(null))} onSetUp={setUpEndpoint} />;
+      case "settings":
+        return <SettingsPanel layout={layout} onChanged={reload} onError={onError} />;
       case "monitor":
         return (
           <section className="list">
@@ -467,6 +479,7 @@ export function App() {
       </main>
       <aside className="right">{right}</aside>
       <StatusBar metrics={metrics} onOpen={() => openSection("monitor")} />
+      {unlock && <UnlockDialog onClose={() => (setUnlock(false), reload())} />}
     </div>
   );
 }

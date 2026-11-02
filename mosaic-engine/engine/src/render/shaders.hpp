@@ -239,11 +239,17 @@ float3 outColor(float2 uv, constant Uniforms& u, texture2d<float> tex, sampler s
     return s.z > 0.5 ? tex.sample(smp, s.xy, level(0)).rgb : u.bg.rgb;  // no mips; explicit LOD keeps it valid in branches
 }
 
-// Alpha is the draw's opacity (fparams.w); translucent draws are blended over the target.
+// Alpha is the draw's opacity (fparams.w), times the texture's alpha when iparams.w bit 2 is set;
+// translucent draws are blended over the target.
 fragment float4 ps_textured(VOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
                             texture2d<float> tex [[texture(0)]], sampler smp [[sampler(0)]]) {
     float2 uv = (in.pos.xy - u.dstRect.xy) / u.sizes.zw;
-    return float4(outColor(uv, u, tex, smp), u.fparams.w);
+    float alpha = u.fparams.w;
+    if ((u.iparams.w & 2u) != 0u) {  // image with transparency: its own alpha counts too
+        float3 s = outputSampleUV(uv, u.iparams.y, u.iparams.z, u.crop, u.sizes.xy, u.sizes.zw, u.xform.xy);
+        alpha *= s.z > 0.5 ? tex.sample(smp, s.xy, level(0)).a : 0.0;
+    }
+    return float4(outColor(uv, u, tex, smp), alpha);
 }
 
 // Renders an output straight into UYVY: the target is half the output's width
@@ -282,7 +288,12 @@ float3 outColor(float2 uv) {
 
 float4 ps_textured(float4 pos : SV_Position) : SV_Target {
     float2 uv = (pos.xy - u.dstRect.xy) / u.sizes.zw;
-    return float4(outColor(uv), u.fparams.w);
+    float alpha = u.fparams.w;
+    if ((u.iparams.w & 2u) != 0u) {
+        float3 s = outputSampleUV(uv, u.iparams.y, u.iparams.z, u.crop, u.sizes.xy, u.sizes.zw, u.xform.xy);
+        alpha *= s.z > 0.5 ? tex.SampleLevel(smp, s.xy, 0).a : 0.0;
+    }
+    return float4(outColor(uv), alpha);
 }
 
 float4 ps_textured_uyvy(float4 pos : SV_Position) : SV_Target {

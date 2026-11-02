@@ -4,6 +4,9 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <map>
 #include <mutex>
 #include <set>
@@ -69,7 +72,29 @@ double nowSeconds() {
     return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-constexpr double kEndpointOnlineSeconds = 20;  // endpoints check in every 5 s
+constexpr double kEndpointOnlineSeconds = 20;
+
+// A media file name we accept: letters, digits, "-", "_", "." and an image extension.
+std::string mediaName(const std::string& raw) {
+    std::string name;
+    for (char c : raw) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.') name += c;
+        else if (c == ' ') name += '-';
+    }
+    if (name.empty() || name[0] == '.' || name.find("..") != std::string::npos) return "";
+    auto dot = name.rfind('.');
+    std::string ext = dot == std::string::npos ? "" : name.substr(dot + 1);
+    for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (ext != "png" && ext != "jpg" && ext != "jpeg" && ext != "bmp" && ext != "gif") return "";
+    return name.substr(0, dot + 1) + ext;
+}
+
+const char* mediaType(const std::string& name) {
+    if (name.ends_with(".png")) return "image/png";
+    if (name.ends_with(".bmp")) return "image/bmp";
+    if (name.ends_with(".gif")) return "image/gif";
+    return "image/jpeg";
+}  // endpoints check in every 5 s
 
 }  // namespace
 
@@ -79,6 +104,54 @@ struct HttpApi::Impl {
     httplib::Server server;
     std::atomic<bool> running{true};
     const std::string machine = machineName();
+
+    // Optional access keys (data/security.json). When either is set, requests that change
+    // something need one of them in an X-Api-Key header (or ?key=). Reading stays open.
+    std::mutex securityMutex;
+    std::string editorPin, apiKey;
+
+    std::filesystem::path securityFile() const { return engine.mediaDir().parent_path() / "security.json"; }
+
+    void loadSecurity() {
+        try {
+            std::ifstream in(securityFile());
+            if (!in) return;
+            json j = json::parse(in);
+            std::lock_guard lock(securityMutex);
+            editorPin = j.value("editorPin", "");
+            apiKey = j.value("apiKey", "");
+        } catch (const std::exception& e) {
+            std::cerr << "[http] cannot read " << securityFile() << ": " << e.what() << "\n";
+        }
+    }
+
+    void saveSecurity() {
+        auto path = securityFile();
+        auto tmp = path;
+        tmp += ".tmp";
+        {
+            std::ofstream out(tmp, std::ios::trunc);
+            out << json{{"editorPin", editorPin}, {"apiKey", apiKey}}.dump(2) << "\n";
+        }
+        std::error_code ec;
+        std::filesystem::rename(tmp, path, ec);
+    }
+
+    static bool sameKey(const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        unsigned char diff = 0;  // no early exit, so timing doesn't reveal how much matched
+        for (size_t i = 0; i < a.size(); ++i) diff |= static_cast<unsigned char>(a[i] ^ b[i]);
+        return diff == 0;
+    }
+
+    // True if the request may change things.
+    bool allowed(const httplib::Request& req) {
+        std::lock_guard lock(securityMutex);
+        if (editorPin.empty() && apiKey.empty()) return true;
+        std::string key = req.has_header("X-Api-Key") ? req.get_header_value("X-Api-Key") : req.get_param_value("key");
+        if (key.empty()) return false;
+        return (!editorPin.empty() && sameKey(key, editorPin)) || (!apiKey.empty() && sameKey(key, apiKey));
+    }
 
     // Last check-in of each receiving PC, by hostKey (not saved; they check in every few seconds).
     std::mutex checkinMutex;
@@ -170,6 +243,35 @@ struct HttpApi::Impl {
         auto& s = server;
 
         s.Get("/api/health", [](const httplib::Request&, httplib::Response& res) { sendJson(res, {{"ok", true}}); });
+
+        // ---- access: optional editor PIN and API key ----
+        loadSecurity();
+        s.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
+            bool changes = req.method != "GET" && req.method != "HEAD" && req.method != "OPTIONS";
+            // Receiving PCs check in without a key; that only reports their status and reads their assignment.
+            if (!changes || req.path.rfind("/api/", 0) != 0 || req.path == "/api/endpoints/checkin" || allowed(req))
+                return httplib::Server::HandlerResponse::Unhandled;
+            sendError(res, 401, "a PIN or API key is needed to change things (X-Api-Key header)");
+            return httplib::Server::HandlerResponse::Handled;
+        });
+        s.Get("/api/security", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::lock_guard lock(securityMutex);
+            bool locked = !editorPin.empty() || !apiKey.empty();
+            sendJson(res, {{"pinSet", !editorPin.empty()}, {"apiKeySet", !apiKey.empty()}, {"locked", locked}});
+        }));
+        // {"editorPin": "...", "apiKey": "..."}: "" removes one. Needs the current PIN or key once one is set.
+        s.Put("/api/security", guard([this](const httplib::Request& req, httplib::Response& res) {
+            json body = parseBody(req);
+            {
+                std::lock_guard lock(securityMutex);
+                if (body.contains("editorPin")) editorPin = body.at("editorPin").get<std::string>();
+                if (body.contains("apiKey")) apiKey = body.at("apiKey").get<std::string>();
+                saveSecurity();
+            }
+            sendJson(res, {{"pinSet", !editorPin.empty()}, {"apiKeySet", !apiKey.empty()}});
+        }));
+        // Lets the editor check a PIN without changing anything.
+        s.Post("/api/security/check", guard([](const httplib::Request&, httplib::Response& res) { sendJson(res, {{"ok", true}}); }));
 
         // ---- sources ----
         s.Get("/api/sources", guard([this](const httplib::Request&, httplib::Response& res) {
@@ -357,6 +459,22 @@ struct HttpApi::Impl {
                 &problems);
             sendJson(res, withProblems(*store.active(), problems));
         }));
+        // Changes a group's name or fallback image without regenerating its outputs.
+        s.Patch(R"(/api/walls/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            json body = parseBody(req);
+            bool ok = store.mutateActive([&](Layout& l) {
+                for (auto& w : l.walls)
+                    if (w.id == id) {
+                        w.name = body.value("name", w.name);
+                        w.fallbackImage = body.value("fallbackImage", w.fallbackImage);
+                        return true;
+                    }
+                return false;
+            });
+            if (!ok) return sendError(res, 404, "no such wall group");
+            sendJson(res, *store.active()->findWall(id));
+        }));
         // Moves a whole group without regenerating it: {x, y}.
         s.Post(R"(/api/walls/([A-Za-z0-9_\-]+)/move)", guard([this](const httplib::Request& req, httplib::Response& res) {
             std::string id = req.matches[1];
@@ -440,6 +558,49 @@ struct HttpApi::Impl {
             if (ms > 0) engine.captureForTransition(ms, wallBounds(*w));
             store.mutateActive([&](Layout& l) { return showOnGroup(l, id, ""); });
             sendJson(res, {{"group", id}, {"cleared", true}, {"transitionMs", ms}});
+        }));
+
+        // ---- media: image files for image sources (data/media) ----
+        s.Get("/api/media", guard([this](const httplib::Request&, httplib::Response& res) {
+            json files = json::array();
+            std::error_code ec;
+            for (auto& e : std::filesystem::directory_iterator(engine.mediaDir(), ec))
+                if (e.is_regular_file() && !mediaName(e.path().filename().string()).empty())
+                    files.push_back({{"name", e.path().filename().string()}, {"bytes", e.file_size()}});
+            std::sort(files.begin(), files.end(), [](auto& a, auto& b) { return a["name"] < b["name"]; });
+            sendJson(res, {{"files", files}});
+        }));
+        // Upload: the raw file as the body, ?name=logo.png. The same name replaces the file.
+        s.Post("/api/media", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string name = mediaName(req.get_param_value("name"));
+            if (name.empty()) return sendError(res, 400, "name must be a .png, .jpg, .bmp or .gif file name");
+            if (req.body.empty()) return sendError(res, 400, "empty file");
+            if (req.body.size() > 64u * 1024 * 1024) return sendError(res, 413, "image larger than 64 MB");
+            auto path = engine.mediaDir() / name;
+            auto tmp = path;
+            tmp += ".tmp";
+            {
+                std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+                out.write(req.body.data(), static_cast<std::streamsize>(req.body.size()));
+                if (!out) return sendError(res, 500, "cannot write " + name);
+            }
+            std::error_code ec;
+            std::filesystem::rename(tmp, path, ec);
+            if (ec) return sendError(res, 500, ec.message());
+            sendJson(res, {{"name", name}, {"bytes", req.body.size()}}, 201);
+        }));
+        s.Get(R"(/api/media/([A-Za-z0-9_.\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string name = mediaName(req.matches[1]);
+            std::ifstream in(engine.mediaDir() / name, std::ios::binary);
+            if (name.empty() || !in) return sendError(res, 404, "no such file");
+            std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            res.set_content(data, mediaType(name));
+        }));
+        s.Delete(R"(/api/media/([A-Za-z0-9_.\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string name = mediaName(req.matches[1]);
+            std::error_code ec;
+            if (name.empty() || !std::filesystem::remove(engine.mediaDir() / name, ec)) return sendError(res, 404, "no such file");
+            sendJson(res, {{"deleted", name}});
         }));
 
         // ---- endpoints: receiving PCs and which output goes on each of their screens ----
@@ -543,19 +704,25 @@ struct HttpApi::Impl {
         // ---- one-call summary for control systems ----
         s.Get("/api/control", guard([this](const httplib::Request&, httplib::Response& res) {
             auto l = store.active();
+            std::set<std::string> lost;  // source ids whose NDI stream has no signal
+            for (auto& st : engine.sourceStatus())
+                if (st.value("signal", "") == "lost") lost.insert(st.value("id", ""));
             json groups = json::array();
             for (auto& w : l->walls) {
-                json presets = json::array(), showing = json::array();
+                json presets = json::array(), showing = json::array(), noSignal = json::array();
                 for (auto& p : w.presets) presets.push_back({{"id", p.id}, {"name", p.name}});
                 for (auto& src : l->sources)
-                    if (src.group == w.id)
-                        showing.push_back({{"name", src.name}, {"type", toString(src.type)}, {"ndiName", src.ndiName}});
+                    if (src.group == w.id) {
+                        showing.push_back({{"name", src.name}, {"type", toString(src.type)}, {"ndiName", src.ndiName}, {"signal", lost.count(src.id) ? "lost" : "ok"}});
+                        if (lost.count(src.id)) noSignal.push_back(src.name);
+                    }
                 groups.push_back({{"id", w.id},
                                   {"name", w.name},
                                   {"displays", w.cols * w.rows},
                                   {"activePreset", w.activePreset},
                                   {"presets", presets},
-                                  {"showing", showing}});
+                                  {"showing", showing},
+                                  {"noSignal", noSignal}});
             }
             json scenes = json::array(), layouts = json::array();
             for (auto& sc : l->scenes) scenes.push_back({{"id", sc.id}, {"name", sc.name}});
@@ -663,10 +830,24 @@ struct HttpApi::Impl {
                 list.push_back({{"id", l.id}, {"name", l.name}, {"outputs", l.outputs}, {"active", l.active}});
             sendJson(res, {{"layouts", list}});
         }));
+        // ?download=1 sends it as a file (export); POST /api/layouts with the file imports it.
         s.Get(R"(/api/layouts/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
             auto l = store.get(req.matches[1]);
             if (!l) return sendError(res, 404, "no such layout");
             sendJson(res, *l);
+            if (req.has_param("download"))
+                res.set_header("Content-Disposition", "attachment; filename=\"" + l->id + ".json\"");
+        }));
+        s.Get(R"(/api/layouts/([A-Za-z0-9_\-]+)/history)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            json list = json::array();
+            for (auto& v : store.history(req.matches[1]))
+                list.push_back({{"version", v.version}, {"time", v.time}, {"name", v.name}, {"outputs", v.outputs}});
+            sendJson(res, {{"layout", std::string(req.matches[1])}, {"history", list}});
+        }));
+        s.Post(R"(/api/layouts/([A-Za-z0-9_\-]+)/history/([A-Za-z0-9_\-]+)/restore)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::vector<std::string> problems;
+            if (!store.restore(req.matches[1], req.matches[2], &problems)) return sendError(res, 404, "no such layout version");
+            sendJson(res, withProblems({{"restored", std::string(req.matches[2])}, {"layout", std::string(req.matches[1])}}, problems));
         }));
         // Body: a full layout, or {"id","name","fromActive":true} to save a copy of the active one.
         s.Post("/api/layouts", guard([this](const httplib::Request& req, httplib::Response& res) {

@@ -165,7 +165,7 @@ public:
 
     void drawTextured(TexId src, const Uniforms& u) override {
         // Blending reads the target back; skip it for opaque draws (bandwidth matters on integrated GPUs).
-        draw(u.fparams[3] < 0.999f ? texturedBlendPso_ : texturedPso_, textures_.at(src), u);
+        draw(u.fparams[3] < 0.999f || (u.iparams[3] & 2u) ? texturedBlendPso_ : texturedPso_, textures_.at(src), u);
     }
     void drawTexturedUYVY(TexId src, const Uniforms& u) override { draw(uyvyPso_, textures_.at(src), u); }
 

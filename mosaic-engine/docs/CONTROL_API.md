@@ -13,9 +13,13 @@ Everything here is plain HTTP with JSON. There is no login.
 | Base URL | `http://<media-server>:8090` (for example `http://192.168.1.187:8090`) |
 | Method | `GET` to read, `POST` to change something |
 | Body | JSON, or empty. Send `Content-Type: application/json` when there is a body |
-| Replies | JSON. `200` / `201` on success; `400`, `404` or `500` with `{"error": "..."}` |
+| Replies | JSON. `200` / `201` on success; `400`, `401`, `404` or `500` with `{"error": "..."}` |
+| Key | Only if an API key is set (editor → Settings → Access): send it as `X-Api-Key: <key>` on every `POST`. Without it, changes get `401`; `GET`s work either way |
 
-Port 8090 must be open in the media server's firewall. `install.bat` adds the rule
+Every `POST` needs either a body or a `Content-Length: 0` header. A request with neither is refused with
+`400` before it reaches the engine. `curl` needs `-d` (`-d ""` for no body).
+
+Port 8090 must be open in the media server's firewall. `install-engine.bat` (or `install.bat`) adds the rule
 "Mosaic Engine Editor (8090)"; antivirus with its own firewall (ESET, for example) needs the same port allowed.
 Anyone who can reach the port can change the walls, so keep the media server on the AV network.
 
@@ -77,8 +81,9 @@ show which preset is on.
         { "id": "camera-slides", "name": "Camera + slides" }
       ],
       "showing": [
-        { "name": "Camera 1", "type": "ndi", "ndiName": "ZOWIEBOXPRO-54447 (ZowieBox-54447)" }
-      ]
+        { "name": "Camera 1", "type": "ndi", "ndiName": "ZOWIEBOXPRO-54447 (ZowieBox-54447)", "signal": "ok" }
+      ],
+      "noSignal": []
     },
     {
       "id": "double-wide",
@@ -86,7 +91,8 @@ show which preset is on.
       "displays": 1,
       "activePreset": "",
       "presets": [],
-      "showing": []
+      "showing": [],
+      "noSignal": []
     }
   ],
   "endpoints": [
@@ -107,6 +113,8 @@ show which preset is on.
   nothing of its own, only the canvas background under it.
 - `endpoints` are the receiving PCs set up in the editor: whether each is online, and how many of
   its displays play the stream they should (`displaysOk` of `displays`). Use it for a status page.
+- `noSignal` names the group's streams that have sent nothing for 2 s. The group shows its fallback
+  image there if one is set (editor: group → Content → *If a stream drops, show*).
 - `ndi.streams` are the streams NDI discovery currently sees on the network.
 
 ### `POST /api/walls/{group}/presets/{preset}/recall`
@@ -201,6 +209,8 @@ The examples use media server `192.168.1.187`, group `main-wall` and preset `cam
 
 **curl in Windows Command Prompt.** CMD needs the inner quotes escaped:
 
+With an API key set, add `-H "X-Api-Key: <key>"` to each command (and `-Headers @{"X-Api-Key"="<key>"}` in PowerShell).
+
 ```bat
 curl -X POST http://192.168.1.187:8090/api/walls/main-wall/presets/camera-1-full/recall -H "Content-Type: application/json" -d "{\"transitionMs\":500}"
 curl -X POST http://192.168.1.187:8090/api/walls/double-wide/show -H "Content-Type: application/json" -d "{\"ndiName\":\"GFX-PC (Slides)\",\"transitionMs\":500}"
@@ -238,6 +248,7 @@ POST /api/walls/main-wall/presets/camera-1-full/recall HTTP/1.1
 Host: 192.168.1.187:8090
 Content-Type: application/json
 Content-Length: 20
+X-Api-Key: <key, only if one is set>
 Connection: close
 
 {"transitionMs":500}

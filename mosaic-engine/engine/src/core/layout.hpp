@@ -16,7 +16,7 @@ struct Rect {
 };
 
 enum class ScaleMode { Stretch, Fit, Fill };
-enum class SourceType { TestPattern, Ndi, Solid };
+enum class SourceType { TestPattern, Ndi, Solid, Image };
 // Wire format of an output. UYVY is NDI's native 4:2:2 format (half the bytes of BGRA).
 enum class PixelFormat { Uyvy, Bgra };
 
@@ -25,6 +25,7 @@ struct SourceConfig {
     std::string name;
     SourceType type = SourceType::TestPattern;
     std::string ndiName;                      // for SourceType::Ndi
+    std::string image;                        // for SourceType::Image: a file in the media folder (data/media)
     Rect rect;                                // placement on the canvas, in canvas pixels
     Rect crop;                                // region of the source drawn, in source pixels (w/h 0 = all of it)
     float opacity = 1.f;                      // 0..1, blended over the sources below it
@@ -72,6 +73,7 @@ struct WallConfig {
     PixelFormat pixelFormat = PixelFormat::Uyvy;
     bool fitCanvas = true;                        // resize the canvas to the wall
     std::vector<GroupPreset> presets;             // saved content for this group
+    std::string fallbackImage;                    // media file shown where one of its NDI streams has no signal
     std::string activePreset;                     // last preset recalled or saved ("" after show / clear)
 };
 
@@ -112,6 +114,7 @@ struct Layout {
     std::vector<WallConfig> walls;
     std::vector<Scene> scenes;
     std::vector<Endpoint> endpoints;
+    std::string fallbackImage;  // default for NDI streams with no signal (a group's own one wins)
 
     const SourceConfig* findSource(const std::string& sid) const;
     const OutputConfig* findOutput(const std::string& oid) const;

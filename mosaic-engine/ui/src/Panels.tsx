@@ -228,11 +228,13 @@ export function SourcesPanel({
           onChange={(e) => {
             if (e.target.value === "pattern") add({ name: "Test pattern", type: "test_pattern" });
             if (e.target.value === "solid") add({ name: "Black", type: "solid", color: [0, 0, 0, 1] });
+            if (e.target.value === "image") add({ name: "Image", type: "image", image: "" });
           }}
         >
           <option value="">+ Add…</option>
           <option value="pattern">Test pattern</option>
           <option value="solid">Solid colour</option>
+          <option value="image">Image</option>
         </select>
       </div>
       {layers.map((s, i) => {
@@ -267,12 +269,12 @@ export function SourcesPanel({
             </div>
             <div className="list-text">
               <div>
-                {s.name} <small>({s.type === "ndi" ? "NDI" : s.type === "solid" ? "colour" : "pattern"})</small>
+                {s.name} <small>({s.type === "ndi" ? "NDI" : s.type === "solid" ? "colour" : s.type === "image" ? "image" : "pattern"})</small>
                 {i === 0 && n > 1 && <span className="layer-badge">top</span>}
               </div>
               <small>
                 {s.opacity < 1 ? `${Math.round(s.opacity * 100)}% · ` : ""}
-                {st?.status ?? "…"}
+                {st?.signal === "lost" ? (st.showing ? "no signal · showing fallback image" : "no signal") : (st?.status ?? "…")}
                 {st?.inputFps ? ` · ${fmt(st.inputFps)} fps` : ""}
               </small>
             </div>

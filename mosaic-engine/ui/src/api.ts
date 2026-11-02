@@ -2,20 +2,21 @@
 
 export type Rect = { x: number; y: number; w: number; h: number };
 export type ScaleMode = "stretch" | "fit" | "fill";
-export type SourceType = "test_pattern" | "ndi" | "solid";
+export type SourceType = "test_pattern" | "ndi" | "solid" | "image";
 
 export interface Source {
   id: string;
   name: string;
   type: SourceType;
   ndiName?: string;
+  image?: string; // media file name (type "image")
   rect: Rect;
   crop: Rect; // region of the source drawn; w/h 0 = all of it
   opacity: number;
   color?: [number, number, number, number];
   animated?: boolean;
   enabled: boolean;
-  status?: { status: string; inputFps?: number; width: number; height: number };
+  status?: { status: string; inputFps?: number; width: number; height: number; signal?: "ok" | "lost"; showing?: string };
   group?: string; // wall group whose content this is (set by the group's presets)
 }
 
@@ -59,6 +60,7 @@ export interface Wall {
   fitCanvas: boolean;
   presets: GroupPreset[];
   activePreset: string;
+  fallbackImage?: string; // media file shown where one of its streams has no signal
 }
 
 // Where a wall group sits on the canvas, bezel gaps included.
@@ -134,6 +136,19 @@ export interface Layout {
   walls: Wall[];
   scenes: Scene[];
   endpoints: Endpoint[];
+  fallbackImage?: string; // default for streams with no signal
+}
+
+export interface LayoutVersion {
+  version: string;
+  time: string;
+  name: string;
+  outputs: number;
+}
+
+export interface MediaFile {
+  name: string;
+  bytes: number;
 }
 
 export interface LayoutSummary {
@@ -184,23 +199,63 @@ export interface Metrics {
     ndi: string;
     layout: string;
   };
-  sources: { id: string; type: string; status: string; inputFps?: number; width: number; height: number }[];
+  sources: { id: string; type: string; status: string; inputFps?: number; width: number; height: number; signal?: "ok" | "lost"; showing?: string }[];
   outputs: OutputMetrics[];
   sync: { framesComplete: number; framesPartial: number; completeRatio: number; lastFrameIdSpread: number };
 }
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+// The PIN or API key, when the engine has one set (kept in this browser only).
+const KEY = "mosaic.key";
+export function storedKey() {
+  try {
+    return localStorage.getItem(KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+export function storeKey(key: string) {
+  try {
+    if (key) localStorage.setItem(KEY, key);
+    else localStorage.removeItem(KEY);
+  } catch {
+    /* private window: the key lasts until reload */
+  }
+}
+
+// Raised when a change is refused for lack of a PIN; the app then asks for one.
+export class LockedError extends Error {}
+
+async function call<T>(method: string, path: string, body?: unknown, raw?: Blob): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (raw) headers["Content-Type"] = raw.type || "application/octet-stream";
+  const key = storedKey();
+  if (key) headers["X-Api-Key"] = key;
   const res = await fetch(path, {
     method,
-    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    headers,
+    body: raw ?? (body !== undefined ? JSON.stringify(body) : method === "GET" ? undefined : "{}"),
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    window.dispatchEvent(new Event("mosaic-locked"));
+    throw new LockedError("Enter the PIN to make changes.");
+  }
   if (!res.ok) throw new Error((data as { error?: string }).error ?? res.statusText);
   return data as T;
 }
 
 export const api = {
+  security: () => call<{ pinSet: boolean; apiKeySet: boolean; locked: boolean }>("GET", "/api/security"),
+  putSecurity: (s: { editorPin?: string; apiKey?: string }) => call<{ pinSet: boolean; apiKeySet: boolean }>("PUT", "/api/security", s),
+  checkKey: () => call("POST", "/api/security/check", {}),
+  history: (layoutId: string) => call<{ history: LayoutVersion[] }>("GET", `/api/layouts/${layoutId}/history`).then((r) => r.history),
+  restore: (layoutId: string, version: string) => call("POST", `/api/layouts/${layoutId}/history/${version}/restore`, {}),
+  getLayout: (id: string) => call<Layout>("GET", `/api/layouts/${id}`),
+  importLayout: (l: Layout) => call<Layout>("POST", "/api/layouts", l),
+  media: () => call<{ files: MediaFile[] }>("GET", "/api/media").then((r) => r.files),
+  uploadMedia: (file: File) => call<MediaFile>("POST", `/api/media?name=${encodeURIComponent(file.name)}`, undefined, file),
+  deleteMedia: (name: string) => call("DELETE", `/api/media/${encodeURIComponent(name)}`),
   layout: () => call<Layout>("GET", "/api/layout"),
   putLayout: (patch: Partial<Layout>) => call<Layout>("PUT", "/api/layout", patch),
   layouts: () => call<{ layouts: LayoutSummary[] }>("GET", "/api/layouts").then((r) => r.layouts),
@@ -217,6 +272,7 @@ export const api = {
   deleteSource: (id: string) => call("DELETE", `/api/sources/${id}`),
   createWall: (w: Partial<Wall>) => call<Layout>("POST", "/api/walls", w),
   putWall: (id: string, w: Partial<Wall>) => call<Layout>("PUT", `/api/walls/${id}`, w),
+  patchWall: (id: string, p: { name?: string; fallbackImage?: string }) => call<Wall>("PATCH", `/api/walls/${id}`, p),
   moveWall: (id: string, x: number, y: number) => call<Layout>("POST", `/api/walls/${id}/move`, { x, y }),
   deleteWall: (id: string, removeOutputs: boolean) => call("DELETE", `/api/walls/${id}${removeOutputs ? "?outputs=delete" : ""}`),
   saveGroupPreset: (group: string, name: string) => call<GroupPreset>("POST", `/api/walls/${group}/presets`, { name }),

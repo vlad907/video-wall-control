@@ -46,6 +46,7 @@ const char* toString(SourceType t) {
     switch (t) {
         case SourceType::Ndi: return "ndi";
         case SourceType::Solid: return "solid";
+        case SourceType::Image: return "image";
         default: return "test_pattern";
     }
 }
@@ -61,6 +62,7 @@ static ScaleMode scaleModeFrom(const std::string& s) {
 static SourceType sourceTypeFrom(const std::string& s) {
     if (s == "ndi") return SourceType::Ndi;
     if (s == "solid") return SourceType::Solid;
+    if (s == "image") return SourceType::Image;
     return SourceType::TestPattern;
 }
 
@@ -100,6 +102,7 @@ void to_json(json& j, const SourceConfig& s) {
     if (s.type == SourceType::Ndi) j["ndiName"] = s.ndiName;
     if (s.type == SourceType::Solid) j["color"] = s.color;
     if (s.type == SourceType::TestPattern) j["animated"] = s.animated;
+    if (s.type == SourceType::Image) j["image"] = s.image;
     if (!s.group.empty()) j["group"] = s.group;
 }
 
@@ -108,6 +111,7 @@ void from_json(const json& j, SourceConfig& s) {
     s.name = j.value("name", s.name);
     s.type = sourceTypeFrom(j.value("type", std::string(toString(s.type))));
     s.ndiName = j.value("ndiName", s.ndiName);
+    s.image = j.value("image", s.image);
     if (j.contains("rect")) s.rect = j.at("rect").get<Rect>();
     if (j.contains("crop")) from_json(j.at("crop"), s.crop);
     s.opacity = j.value("opacity", s.opacity);
@@ -162,7 +166,7 @@ void to_json(json& j, const WallConfig& w) {
              {"outputHeight", w.outputHeight},                 {"rotation", w.rotation},
              {"gapX", w.gapX},       {"gapY", w.gapY},         {"x", w.x},
              {"y", w.y},             {"pixelFormat", toString(w.pixelFormat)}, {"fitCanvas", w.fitCanvas},
-             {"presets", w.presets}, {"activePreset", w.activePreset}};
+             {"presets", w.presets}, {"activePreset", w.activePreset}, {"fallbackImage", w.fallbackImage}};
 }
 
 void from_json(const json& j, WallConfig& w) {
@@ -181,6 +185,7 @@ void from_json(const json& j, WallConfig& w) {
     w.fitCanvas = j.value("fitCanvas", w.fitCanvas);
     if (j.contains("presets")) w.presets = j.at("presets").get<std::vector<GroupPreset>>();
     w.activePreset = j.value("activePreset", w.activePreset);
+    w.fallbackImage = j.value("fallbackImage", w.fallbackImage);
 }
 
 void to_json(json& j, const EndpointDisplay& d) { j = json{{"screen", d.screen}, {"output", d.output}}; }
@@ -231,7 +236,7 @@ void from_json(const json& j, CanvasConfig& c) {
 void to_json(json& j, const Layout& l) {
     j = json{{"id", l.id},         {"name", l.name},       {"frameRate", l.frameRate},
              {"canvas", l.canvas}, {"sources", l.sources}, {"outputs", l.outputs}, {"walls", l.walls},
-             {"scenes", l.scenes}, {"endpoints", l.endpoints}};
+             {"scenes", l.scenes}, {"endpoints", l.endpoints}, {"fallbackImage", l.fallbackImage}};
 }
 
 void from_json(const json& j, Layout& l) {
@@ -250,6 +255,7 @@ void from_json(const json& j, Layout& l) {
     }
     if (j.contains("scenes")) l.scenes = j.at("scenes").get<std::vector<Scene>>();
     if (j.contains("endpoints")) l.endpoints = j.at("endpoints").get<std::vector<Endpoint>>();
+    l.fallbackImage = j.value("fallbackImage", l.fallbackImage);
 }
 
 static int clampDim(int v) { return std::clamp(v, 1, kMaxDimension); }

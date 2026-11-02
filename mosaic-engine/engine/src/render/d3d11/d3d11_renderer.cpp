@@ -325,7 +325,7 @@ public:
     void drawTestPattern(const Uniforms& u) override { draw(psPattern_.Get(), nullptr, u); }
     void drawTextured(TexId src, const Uniforms& u) override {
         // Blending reads the target back; skip it for opaque draws (bandwidth matters on integrated GPUs).
-        draw(psTextured_.Get(), textures_.at(src).srv.Get(), u, u.fparams[3] < 0.999f);
+        draw(psTextured_.Get(), textures_.at(src).srv.Get(), u, u.fparams[3] < 0.999f || (u.iparams[3] & 2u));
     }
     void drawTexturedUYVY(TexId src, const Uniforms& u) override { draw(psUyvy_.Get(), textures_.at(src).srv.Get(), u); }
 

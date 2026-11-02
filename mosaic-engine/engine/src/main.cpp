@@ -101,6 +101,8 @@ int main(int argc, char** argv) {
     }
 
     Engine engine(*renderer, store, ndi.get());
+    std::filesystem::create_directories(std::filesystem::path(opt.data) / "media");
+    engine.setMediaDir(std::filesystem::path(opt.data) / "media");
     engine.start();
 
     HttpApi api(engine, store, opt.ui);

@@ -11,6 +11,7 @@ Runs the engine on a frozen test pattern and checks real pixels:
   - the wall tool generates outputs with bezel gaps and resizes the canvas
   - wall groups: a second (1x1) group, moving it, deleting it with its outputs
   - group presets: save, clear, recall with a crossfade limited to the group
+  - image sources, the signal-loss fallback image, and layout history / restore
   - endpoints: check-in, assignment and status of a receiving PC
   - every rendered frame reached every output (no partial frames)
 
@@ -86,6 +87,15 @@ def pixel(img, x, y):
 
 def close(a, b, tol=48):
     return all(abs(p - q) <= tol for p, q in zip(a, b))
+
+def png_bytes(w, h, rgb):
+    """A small solid-colour PNG, written by hand (no imaging library needed)."""
+    import struct, zlib
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    rows = b"".join(b"\x00" + bytes(rgb) * w for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 def corners(img):
     w, h, _ = img
@@ -237,6 +247,34 @@ with tempfile.TemporaryDirectory() as tmp:
         rect = next(x["rect"] for x in lay["sources"] if x.get("group") == "side")
         check(rect["x"] == 2020 and rect["y"] == 1080, "group content moves with the group")
         call("DELETE", "/api/walls/side?outputs=delete")
+
+        print("images and signal-loss fallback:", flush=True)
+        png = png_bytes(8, 8, (255, 200, 0))
+        req = urllib.request.Request(BASE + "/api/media?name=slate.png", method="POST", data=png, headers={"Content-Type": "image/png"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            check(json.loads(r.read())["name"] == "slate.png", "image uploaded")
+        check(any(f["name"] == "slate.png" for f in json.loads(get("/api/media")[1])["files"]), "image listed")
+        img_src = call("POST", "/api/sources", {"name": "Slate", "type": "image", "image": "slate.png", "rect": {"x": 0, "y": 0, "w": 1920, "h": 1080}})
+        time.sleep(1.0)
+        check(close(pixel(frame("out-1"), *spot), (255, 200, 0), 12), "image source draws")
+        call("DELETE", f"/api/sources/{img_src['id']}")
+        call("PUT", "/api/layout", {"fallbackImage": "slate.png"})
+        ndi_src = call("POST", "/api/sources", {"name": "Gone", "type": "ndi", "ndiName": "NOWHERE (Nothing)", "rect": {"x": 0, "y": 0, "w": 1920, "h": 1080}})
+        time.sleep(4.5)
+        check(close(pixel(frame("out-1"), *spot), (255, 200, 0), 12), "a stream with no signal shows the fallback image")
+        st = next(x for x in json.loads(get("/api/sources")[1])["sources"] if x["id"] == ndi_src["id"])["status"]
+        check(st.get("signal") == "lost" and st.get("showing") == "fallback image", f"status reports the lost signal ({st.get('signal')}, {st.get('showing')})")
+        call("DELETE", f"/api/sources/{ndi_src['id']}")
+        call("PUT", "/api/layout", {"fallbackImage": ""})
+
+        print("layout history:", flush=True)
+        hist = json.loads(get("/api/layouts/ci/history")[1])["history"]
+        check(len(hist) >= 1, f"earlier versions are kept ({len(hist)})")
+        names_before = [o["name"] for o in json.loads(get("/api/layout")[1])["outputs"]]
+        call("POST", f"/api/layouts/ci/history/{hist[-1]['version']}/restore", {})
+        restored = json.loads(get("/api/layout")[1])
+        check(len(restored["outputs"]) == 5 and not restored["walls"], "restoring the oldest version brings back the original layout")
+        check(len(json.loads(get("/api/layouts/ci/history")[1])["history"]) == len(hist) + 1, "the replaced version is kept too")
 
         print("endpoints:", flush=True)
         r = call("POST", "/api/endpoints/checkin", {"host": "WALL-PC.example.org", "screens": [], "panels": []})

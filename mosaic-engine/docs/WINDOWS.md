@@ -12,7 +12,10 @@ hidden sources (see [NEXT.md](NEXT.md)). If it's still under 60 fps:
 - use an NDI input rather than the animated test pattern, or set the pattern's `animated` to false
 - keep the canvas no larger than the wall needs
 
-**Starting at boot.** Run the dashboard's `install.bat` (repo root) after building. The service
+**Media server.** After building, run `install-engine.bat` (repo root) to start the engine at logon and keep it
+running; `update.bat` later updates, rebuilds and restarts it in one go. See the top-level README.
+
+**Starting at boot together with the dashboard.** Run the dashboard's `install.bat` (repo root) after building. The service
 starts the engine at logon, before the Studio Monitors, restarts it if it stops answering, and
 logs to `logs\mosaic-engine.log`. The dashboard's **Show mosaic on panels** button points each
 Studio Monitor at the matching `Mosaic_Output_NN` stream.

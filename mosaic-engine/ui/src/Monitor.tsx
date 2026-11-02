@@ -10,6 +10,7 @@ export function StatusBar({ metrics, onOpen }: { metrics: Metrics | null; onOpen
   const e = metrics.engine;
   const dropped = metrics.outputs.reduce((n, o) => n + o.droppedNoBuffer + o.droppedQueue, 0);
   const slow = e.renderFps < e.targetFps * 0.97;
+  const lost = metrics.sources.filter((s) => s.signal === "lost").length;
   return (
     <footer className="statusbar" onClick={onOpen} title="Open the monitor view">
       <span className={`dot ${slow ? "warn" : "on"}`} />
@@ -26,6 +27,11 @@ export function StatusBar({ metrics, onOpen }: { metrics: Metrics | null; onOpen
         dropped <b>{dropped}</b>
       </span>
       <span>{metrics.outputs.length} outputs</span>
+      {lost > 0 && (
+        <span className="warn">
+          <b className="warn">{lost}</b> input{lost === 1 ? "" : "s"} without signal
+        </span>
+      )}
       <span className="grow" />
       <span>
         {e.backend} · {e.device} · NDI {e.ndi}

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -33,6 +34,10 @@ public:
     void start();
     void stop();
 
+    // Folder that image sources' files are read from (set before start()).
+    void setMediaDir(std::filesystem::path dir) { mediaDir_ = std::move(dir); }
+    const std::filesystem::path& mediaDir() const { return mediaDir_; }
+
     nlohmann::json metrics();
     nlohmann::json sourceStatus();
     std::vector<std::string> discoveredNdiSources();
@@ -58,6 +63,11 @@ private:
         int w = 0, h = 0;
         bool hasFrame = false;
         bool patternDrawn = false;  // test pattern: texture holds a drawn frame
+        std::vector<uint8_t> pending;  // image: decoded pixels waiting for upload
+        bool hasAlpha = false;         // image: has transparent pixels (drawn blended)
+        std::string error;             // image: why it couldn't be loaded
+        Clock::time_point createdAt = Clock::now(), lastFrameAt;  // NDI: for spotting a lost signal
+        bool signalLost = false;
         std::unique_ptr<NdiReceiver> rx;
     };
     struct PreviewState {
@@ -104,6 +114,17 @@ private:
         float w = 0, h = 0;
     } view_;
     std::map<std::string, SourceState> sources_;  // render thread only
+    std::filesystem::path mediaDir_;
+    // Fallback images for NDI sources without signal, by media file name (render thread only).
+    struct ImageTex {
+        TexId tex = 0;
+        int w = 0, h = 0;
+        bool hasAlpha = false, uploaded = false;
+        std::vector<uint8_t> pending;
+        std::string error;
+    };
+    std::map<std::string, ImageTex> fallbacks_;
+    const ImageTex* fallbackFor(const Layout& layout, const SourceConfig& sc) const;
     struct OutputDraw {
         TexId src;
         Uniforms u;

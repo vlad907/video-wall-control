@@ -41,6 +41,27 @@ It uses only the Python standard library, so nothing needs to be installed with 
 
 To remove it, run `uninstall.bat`. That leaves the Studio Monitor windows running.
 
+## The media server (mosaic engine only)
+
+On the PC that runs the mosaic engine and doesn't drive displays itself, build the engine
+(`mosaic-engine/docs/WINDOWS.md`), then double-click **`install-engine.bat`**. It:
+
+- registers the Task Scheduler task `MosaicEngine`, which starts the engine hidden at logon and
+  restarts it if it exits or stops answering for 30 s (`mosaic-engine/run-engine.ps1`)
+- opens TCP 8090 and allows the engine's NDI streams in Windows Firewall
+- if this dashboard is installed on the same PC, turns off its *Run engine*, so the two don't both start one
+
+Logs: `logs/mosaic-engine.log` (the engine) and `logs/mosaic-engine-watchdog.log` (starts and restarts).
+`install-engine.bat -Uninstall` removes it. Turn on automatic sign-in here too.
+
+## Updating
+
+Double-click **`update.bat`** on any PC: media server or receiving PC. It runs `git pull`, rebuilds the
+engine and the editor if they're built on that PC, and restarts whatever is installed (`VideoWallControl`,
+`MosaicEngine`). The Studio Monitor windows stay up during the update. On the media server, the NDI
+outputs pause for the few seconds the engine is being rebuilt. If a build fails, the previous engine is
+started again, and the window shows what went wrong.
+
 ## Using the dashboard
 
 Open `http://localhost:8080` on the Mini PC, or `http://<mini-pc-ip>:8080` from any

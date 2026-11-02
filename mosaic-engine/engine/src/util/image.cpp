@@ -5,8 +5,32 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STBI_WRITE_NO_STDIO
 #include "stb_image_write.h"
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_ONLY_JPEG
+#define STBI_ONLY_BMP
+#define STBI_ONLY_GIF
+#include "stb_image.h"
 
 namespace mosaic {
+
+bool loadImageBGRA(const std::string& path, std::vector<uint8_t>& out, int& width, int& height, std::string& error) {
+    int channels = 0;
+    unsigned char* rgba = stbi_load(path.c_str(), &width, &height, &channels, 4);
+    if (!rgba) {
+        error = stbi_failure_reason() ? stbi_failure_reason() : "cannot read image";
+        return false;
+    }
+    out.resize(static_cast<size_t>(width) * height * 4);
+    for (size_t i = 0; i < out.size(); i += 4) {
+        out[i] = rgba[i + 2];
+        out[i + 1] = rgba[i + 1];
+        out[i + 2] = rgba[i];
+        out[i + 3] = rgba[i + 3];
+    }
+    stbi_image_free(rgba);
+    return true;
+}
 
 static uint8_t clamp8(double v) { return static_cast<uint8_t>(v < 0 ? 0 : v > 255 ? 255 : v + 0.5); }
 

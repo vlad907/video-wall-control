@@ -1,15 +1,23 @@
 #include "core/layout_store.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <ctime>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 
 using nlohmann::json;
 namespace fs = std::filesystem;
 
 namespace mosaic {
 
-LayoutStore::LayoutStore(fs::path dataDir) : dir_(std::move(dataDir)), layoutsDir_(dir_ / "layouts") {}
+LayoutStore::LayoutStore(fs::path dataDir)
+    : dir_(std::move(dataDir)), layoutsDir_(dir_ / "layouts"), historyDir_(dir_ / "history") {}
+
+constexpr size_t kHistoryKeep = 50;
+constexpr auto kHistoryGap = std::chrono::seconds(30);
 
 static std::optional<Layout> readLayout(const fs::path& p) {
     try {
@@ -86,6 +94,7 @@ std::vector<std::string> LayoutStore::save(Layout layout) {
     auto it = std::find_if(layouts_.begin(), layouts_.end(), [&](auto& l) { return l.id == layout.id; });
     if (it != layouts_.end()) *it = layout;
     else layouts_.push_back(layout);
+    snapshot(layout.id, false);
     writeFile(layout);
     if (layout.id == activeId_) publish(layout);
     return problems;
@@ -110,6 +119,7 @@ bool LayoutStore::remove(const std::string& id) {
     auto it = std::find_if(layouts_.begin(), layouts_.end(), [&](auto& l) { return l.id == id; });
     if (it == layouts_.end()) return false;
     layouts_.erase(it);
+    snapshot(id, true);  // a deleted layout can still be restored from its history
     std::error_code ec;
     fs::remove(fileFor(id), ec);
     return true;
@@ -125,8 +135,87 @@ bool LayoutStore::mutateActive(const std::function<bool(Layout&)>& fn, std::vect
     auto p = normalize(copy);
     if (problems) *problems = std::move(p);
     *it = copy;
+    snapshot(copy.id, false);
     writeFile(copy);
     publish(std::move(copy));
+    return true;
+}
+
+void LayoutStore::snapshot(const std::string& id, bool force) const {
+    std::error_code ec;
+    fs::path src = fileFor(id);
+    if (!fs::exists(src, ec)) return;
+    fs::path dir = historyDir_ / id;
+    fs::create_directories(dir, ec);
+    std::vector<fs::path> entries;
+    for (auto& e : fs::directory_iterator(dir, ec))
+        if (e.path().extension() == ".json") entries.push_back(e.path());
+    std::sort(entries.begin(), entries.end());
+    auto last = lastSnapshot_.find(id);
+    if (!force && last != lastSnapshot_.end() && std::chrono::steady_clock::now() - last->second < kHistoryGap) return;
+    lastSnapshot_[id] = std::chrono::steady_clock::now();
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    int ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    std::ostringstream name;
+    name << std::put_time(&tm, "%Y%m%d-%H%M%S") << '-' << std::setw(3) << std::setfill('0') << ms << ".json";
+    fs::copy_file(src, dir / name.str(), fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::cerr << "[layouts] cannot keep a history copy of " << id << ": " << ec.message() << "\n";
+        return;
+    }
+    entries.push_back(dir / name.str());
+    while (entries.size() > kHistoryKeep) {
+        fs::remove(entries.front(), ec);
+        entries.erase(entries.begin());
+    }
+}
+
+std::vector<LayoutVersion> LayoutStore::history(const std::string& id) const {
+    std::lock_guard lock(mutex_);
+    std::vector<LayoutVersion> out;
+    std::error_code ec;
+    if (sanitizeId(id) != id) return out;
+    for (auto& e : fs::directory_iterator(historyDir_ / id, ec)) {
+        if (e.path().extension() != ".json") continue;
+        LayoutVersion v;
+        v.version = e.path().stem().string();
+        const std::string& s = v.version;  // 20261101-154212-123
+        if (s.size() >= 15) v.time = s.substr(0, 4) + "-" + s.substr(4, 2) + "-" + s.substr(6, 2) + " " + s.substr(9, 2) + ":" + s.substr(11, 2) + ":" + s.substr(13, 2);
+        try {
+            std::ifstream in(e.path());
+            json j = json::parse(in);
+            v.name = j.value("name", "");
+            v.outputs = j.contains("outputs") ? static_cast<int>(j["outputs"].size()) : 0;
+        } catch (...) {
+            continue;
+        }
+        out.push_back(v);
+    }
+    std::sort(out.begin(), out.end(), [](auto& a, auto& b) { return a.version > b.version; });
+    return out;
+}
+
+bool LayoutStore::restore(const std::string& id, const std::string& version, std::vector<std::string>* problems) {
+    if (sanitizeId(id) != id || sanitizeId(version) != version) return false;
+    auto old = readLayout(historyDir_ / id / (version + ".json"));
+    if (!old) return false;
+    old->id = id;
+    std::lock_guard lock(mutex_);
+    auto p = normalize(*old);
+    if (problems) *problems = std::move(p);
+    snapshot(id, true);
+    auto it = std::find_if(layouts_.begin(), layouts_.end(), [&](auto& l) { return l.id == id; });
+    if (it != layouts_.end()) *it = *old;
+    else layouts_.push_back(*old);  // a deleted layout comes back
+    writeFile(*old);
+    if (id == activeId_) publish(*old);
     return true;
 }
 

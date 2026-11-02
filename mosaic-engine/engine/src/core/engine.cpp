@@ -44,7 +44,8 @@ std::set<std::string> neededSources(const Layout& l) {
         bool hidden = false;
         for (size_t j = i + 1; j < l.sources.size() && !hidden; ++j) {
             const SourceConfig& o = l.sources[j];
-            bool opaque = o.enabled && o.opacity >= 1.f && (o.type != SourceType::Solid || o.color[3] >= 1.f);
+            // Images may have transparent pixels, so they never hide what's under them.
+            bool opaque = o.enabled && o.opacity >= 1.f && o.type != SourceType::Image && (o.type != SourceType::Solid || o.color[3] >= 1.f);
             hidden = opaque && covers(o.rect, r);
         }
         if (!hidden) needed.insert(s.id);
@@ -128,6 +129,9 @@ void Engine::stop() {
         previewByReadback_.clear();
     }
     for (auto& [id, s] : sources_) destroySource(s);
+    for (auto& [name, fb] : fallbacks_)
+        if (fb.tex) renderer_.destroyTexture(fb.tex);
+    fallbacks_.clear();
     sources_.clear();
     if (canvas_) renderer_.destroyTexture(canvas_);
     canvas_ = 0;
@@ -232,10 +236,10 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
             ++drawn;
         }
     const SourceState* direct = nullptr;
-    if (drawn == 1 && fadeMs_ <= 0 && only->opacity >= 1.f && only->type != SourceType::Solid && only->crop.w == 0 &&
+    if (drawn == 1 && fadeMs_ <= 0 && only->opacity >= 1.f && only->type != SourceType::Solid && only->type != SourceType::Image && only->crop.w == 0 &&
         only->rect.x == 0 && only->rect.y == 0 && only->rect.w == canvasW_ && only->rect.h == canvasH_) {
         auto it = sources_.find(only->id);
-        if (it != sources_.end() && it->second.hasFrame) direct = &it->second;
+        if (it != sources_.end() && it->second.hasFrame && !(it->second.signalLost && fallbackFor(layout, *only))) direct = &it->second;
     }
     if (direct) {
         view_ = {direct->tex[direct->current], float(direct->w), float(direct->h)};
@@ -338,6 +342,15 @@ void Engine::renderCanvas(const Layout& layout, const std::set<std::string>& nee
         SourceState& s = it->second;
         Uniforms u = makeUniforms(float(sc.rect.x), float(sc.rect.y), float(sc.rect.w), float(sc.rect.h));
         u.fparams[3] = sc.opacity;
+        if (sc.type == SourceType::Ndi && s.signalLost) {
+            if (const ImageTex* fb = fallbackFor(layout, sc)) {
+                u.sizes[0] = u.crop[2] = float(fb->w);
+                u.sizes[1] = u.crop[3] = float(fb->h);
+                if (fb->hasAlpha) u.iparams[3] |= 2;
+                renderer_.drawTextured(fb->tex, u);
+                continue;
+            }
+        }
         if (sc.type == SourceType::Solid || !s.hasFrame) {
             const float* c = sc.type == SourceType::Solid ? sc.color.data() : kNoSignal;
             std::copy(c, c + 3, u.bg);
@@ -353,6 +366,7 @@ void Engine::renderCanvas(const Layout& layout, const std::set<std::string>& nee
         u.crop[1] = cropped ? float(sc.crop.y) : 0.f;
         u.crop[2] = cropped ? float(sc.crop.w) : float(s.w);
         u.crop[3] = cropped ? float(sc.crop.h) : float(s.h);
+        if (s.hasAlpha) u.iparams[3] |= 2;  // blend by the image's own alpha too
         renderer_.drawTextured(s.tex[s.current], u);
     }
     if (fadeMs_ > 0) {
@@ -386,7 +400,26 @@ void Engine::syncDelivered(uint64_t frameId, bool delivered) {
     }
 }
 
+// No frame for 2 s (or none at all 3 s after connecting) counts as a lost signal.
+constexpr auto kSignalLostAfter = std::chrono::seconds(2);
+constexpr auto kNoFirstFrameAfter = std::chrono::seconds(3);
+
+const Engine::ImageTex* Engine::fallbackFor(const Layout& layout, const SourceConfig& sc) const {
+    const WallConfig* w = layout.findWall(sc.group);
+    const std::string& name = w && !w->fallbackImage.empty() ? w->fallbackImage : layout.fallbackImage;
+    auto it = name.empty() ? fallbacks_.end() : fallbacks_.find(name);
+    return it != fallbacks_.end() && it->second.uploaded ? &it->second : nullptr;
+}
+
 void Engine::updateSources(const Layout& layout, const std::set<std::string>& needed, uint64_t frameId, double seconds) {
+    for (auto& [name, fb] : fallbacks_)
+        if (!fb.pending.empty()) {
+            renderer_.uploadBGRA(fb.tex, fb.pending.data(), fb.w * 4);
+            fb.pending.clear();
+            fb.pending.shrink_to_fit();
+            fb.uploaded = true;
+        }
+    auto now = Clock::now();
     json status = json::array();
     for (auto& [id, s] : sources_) {
         json st = {{"id", id}, {"type", toString(s.cfg.type)}, {"width", s.w}, {"height", s.h}};
@@ -410,6 +443,9 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
         } else if (s.cfg.type == SourceType::Ndi) {
             if (!s.rx) {
                 st["status"] = ndi_ ? "receiver failed" : "NDI unavailable";
+                s.signalLost = now - s.createdAt > kNoFirstFrameAfter;  // nothing will arrive
+                st["signal"] = s.signalLost ? "lost" : "ok";
+                if (s.signalLost && fallbackFor(layout, s.cfg)) st["showing"] = "fallback image";
             } else {
                 InputFrame f;
                 if (s.rx->acquireLatest(f)) {
@@ -427,13 +463,25 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
                     renderer_.uploadBGRA(s.tex[s.current], f.data, f.stride);
                     s.rx->release(f);
                     s.hasFrame = true;
+                    s.lastFrameAt = now;
                 }
+                s.signalLost = s.hasFrame ? now - s.lastFrameAt > kSignalLostAfter : now - s.createdAt > kNoFirstFrameAfter;
+                st["signal"] = s.signalLost ? "lost" : "ok";
+                if (s.signalLost && fallbackFor(layout, s.cfg)) st["showing"] = "fallback image";
                 st["status"] = s.rx->connected() ? "ok" : (s.hasFrame ? "no signal (holding last frame)" : "waiting for source");
                 st["inputFps"] = s.rx->inputFps();
                 st["framesReceived"] = s.rx->framesReceived();
                 st["width"] = s.w;
                 st["height"] = s.h;
             }
+        } else if (s.cfg.type == SourceType::Image) {
+            if (!s.pending.empty()) {
+                renderer_.uploadBGRA(s.tex[0], s.pending.data(), s.w * 4);
+                s.pending.clear();
+                s.pending.shrink_to_fit();
+                s.hasFrame = true;
+            }
+            st["status"] = s.error.empty() ? "ok" : s.error;
         } else {
             st["status"] = "ok";
         }
@@ -579,6 +627,7 @@ void Engine::reconcile(const Layout& layout) {
     for (auto it = sources_.begin(); it != sources_.end();) {
         const SourceConfig* c = layout.findSource(it->first);
         bool keep = c && c->type == it->second.cfg.type && c->ndiName == it->second.cfg.ndiName &&
+                    c->image == it->second.cfg.image &&
                     (c->type != SourceType::TestPattern || (c->rect.w == it->second.w && c->rect.h == it->second.h));
         if (keep) {
             if (c->animated != it->second.cfg.animated) it->second.patternDrawn = false;
@@ -612,9 +661,44 @@ void Engine::reconcile(const Layout& layout) {
             s.hasFrame = true;
         } else if (c.type == SourceType::Ndi && ndi_) {
             s.rx = ndi_->createReceiver(c.ndiName);
+        } else if (c.type == SourceType::Image) {
+            // Decoded here, uploaded on the next frame. Names are plain file names inside the media folder.
+            std::string err;
+            bool safe = !c.image.empty() && c.image.find_first_of("/\\") == std::string::npos && c.image.find("..") == std::string::npos;
+            if (!safe) s.error = c.image.empty() ? "no image chosen" : "bad image name";
+            else if (!loadImageBGRA((mediaDir_ / c.image).string(), s.pending, s.w, s.h, err)) s.error = "image not found or unreadable: " + err;
+            else {
+                for (size_t i = 3; i < s.pending.size() && !s.hasAlpha; i += 4) s.hasAlpha = s.pending[i] < 255;
+                s.tex[0] = renderer_.createTexture(s.w, s.h, TexUsage::Upload);
+                s.texCount = 1;
+            }
         }
     }
     for (auto& [name, s] : spare) destroySource(s);
+
+    // Fallback images: load the ones the layout names, free the rest.
+    std::set<std::string> wanted;
+    if (!layout.fallbackImage.empty()) wanted.insert(layout.fallbackImage);
+    for (auto& w : layout.walls)
+        if (!w.fallbackImage.empty()) wanted.insert(w.fallbackImage);
+    for (auto it = fallbacks_.begin(); it != fallbacks_.end();) {
+        if (wanted.count(it->first)) {
+            ++it;
+            continue;
+        }
+        if (it->second.tex) renderer_.destroyTexture(it->second.tex);
+        it = fallbacks_.erase(it);
+    }
+    for (auto& name : wanted) {
+        if (fallbacks_.count(name) || name.find_first_of("/\\") != std::string::npos || name.find("..") != std::string::npos) continue;
+        ImageTex& fb = fallbacks_[name];
+        if (!loadImageBGRA((mediaDir_ / name).string(), fb.pending, fb.w, fb.h, fb.error)) {
+            std::cerr << "[engine] fallback image '" << name << "': " << fb.error << "\n";
+            continue;
+        }
+        for (size_t i = 3; i < fb.pending.size() && !fb.hasAlpha; i += 4) fb.hasAlpha = fb.pending[i] < 255;
+        fb.tex = renderer_.createTexture(fb.w, fb.h, TexUsage::Upload);
+    }
 
     // Outputs: a channel is recreated only when its resolution or stream name
     // changes. Crop, rotation, scaling, source and enable apply live per frame.

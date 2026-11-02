@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, wallBounds, type Layout, type Wall } from "./api";
 import { FADES } from "./Panels";
+import { MediaSelect } from "./Settings";
 
 // What a wall group shows: one NDI stream filling it, or a saved preset (any arrangement
 // of sources inside the group). Control systems use the same calls (docs/CONTROL_API.md).
@@ -94,6 +95,18 @@ export function GroupContent({
             Clear group
           </button>
         </div>
+      </div>
+
+      <div className="group">
+        <label className="field wide">
+          <span>If a stream drops, show</span>
+          <MediaSelect
+            value={wall.fallbackImage ?? ""}
+            placeholder={layout.fallbackImage ? `The layout's default (${layout.fallbackImage})` : "The last frame (no image)"}
+            onError={onError}
+            onChange={(fallbackImage) => run(api.patchWall(wall.id, { fallbackImage }))}
+          />
+        </label>
       </div>
 
       <div className="group">

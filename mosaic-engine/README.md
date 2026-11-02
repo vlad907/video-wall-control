@@ -29,6 +29,9 @@ in the style of Resolume's Advanced Output drives the running engine through a R
 | Wall groups: several walls and single displays per layout (grids with bezel gaps in px or mm, portrait panels, 1 × 1 for one display) | **Working, pixel-checked** (`tools/ci_check.py`) |
 | Editor: layer list (drag to reorder, bring to front / send to back), snapping to other frames' edges and centres (can be turned off) | **Working**, tested in the browser |
 | Endpoints: receiving PCs set up from the editor (which output on which screen), with online / playing status | **Working**, tested with the dashboard and mock Studio Monitors on macOS |
+| Layout history (restore any of the last 50 versions), export / import | **Working, checked** (`tools/ci_check.py`) |
+| Image sources (PNG / JPEG / BMP / GIF, with transparency), signal-loss fallback image per group | **Working, pixel-checked** |
+| Optional editor PIN and API key for changes | **Working**, tested in the browser |
 | Presets per wall group, one-call "show this NDI stream on this group", control API ([docs/CONTROL_API.md](docs/CONTROL_API.md)) | **Working, pixel-checked** (with colour sources; NDI switching not yet tried on Windows) |
 | Free-form mosaics: any position, gap and tilt angle per panel | **Working, pixel-checked**; rotate handle and `[` `]` keys in the editor |
 | Layered sources with opacity and source crop; scenes with crossfade | **Working, pixel-checked** on Metal; checked on Direct3D 11 by CI |
@@ -161,6 +164,21 @@ Monitors to match; it also reports its screens and what each display is playing,
 which PCs are online and which displays play the right stream. PCs that check in but aren't set up
 yet are listed with a *Set up* button. Endpoints are saved with the layout. See the top-level README.
 
+**Settings** (gear in the left rail):
+- **History.** Before a change, the engine keeps a copy of the layout (at most one every 30 s, so a drag doesn't make
+  hundreds), and always before a restore or a delete. The last 50 per layout are kept in `data/history/<layout>/`.
+  *Restore* puts one back, and what was there goes into the history first. A deleted layout can be restored the same way.
+- **Export / Import** downloads the layout as a `.json` file, or loads one (a backup, or a copy for a spare server).
+- **Media**: images uploaded for image layers and slates, stored in `data/media/`. *Inputs → + Add → Image*
+  adds an image layer; transparent PNG areas show what's underneath.
+- **Signal loss**: when an NDI stream sends nothing for 2 s (or nothing at all 3 s after it's added), the engine shows
+  the chosen image in its area instead of the frozen last frame. A group can choose its own (group → *Content*).
+  The status bar shows "N inputs without signal", and `/api/control` lists them per group (`noSignal`).
+- **Access**: with an editor PIN or an API key set (`data/security.json`), any request that changes something needs
+  one of them in an `X-Api-Key` header. Reading, previews and receiving-PC check-ins stay open. The editor asks for
+  the PIN the first time a change is refused and remembers it in that browser. If the PIN is lost, delete
+  `data/security.json` and restart the engine.
+
 **Scenes** are saved arrangements of sources, stored with the layout. Recall one with a cut
 or a crossfade of 0.5–2 s (`POST /api/scenes/:id/recall {"transitionMs":1000}`). Outputs
 don't change. Activating another layout can crossfade too, when its canvas is the same size.
@@ -211,6 +229,13 @@ Across the whole source there's also:
 | DELETE | `/api/walls/:id/presets/:preset` | |
 | POST | `/api/walls/:id/show` | fill the group with one NDI stream: `{"ndiName": "PC (Stream)", "transitionMs": N}` |
 | POST | `/api/walls/:id/clear` | remove the group's content; optional `{"transitionMs": N}` |
+| GET | `/api/layouts/:id/history` | earlier versions of a layout, newest first |
+| POST | `/api/layouts/:id/history/:version/restore` | put that version back (the current one is kept in the history) |
+| GET | `/api/layouts/:id?download=1` | the layout as a file (export); `POST /api/layouts` with it imports it |
+| GET / POST | `/api/media` | list image files / upload one: raw file as the body, `?name=logo.png` |
+| GET / DELETE | `/api/media/:name` | the image itself / delete it |
+| PATCH | `/api/walls/:id` | change a group's `name` or `fallbackImage` without regenerating its outputs |
+| GET / PUT | `/api/security` | whether a PIN / API key is set / set them: `{"editorPin", "apiKey"}` (`""` removes one) |
 | GET / POST | `/api/endpoints` | list endpoints with live status, plus PCs that checked in but aren't set up (`unassigned`) / create one: `{"name", "host", "displays": [{"output", "screen"}]}` |
 | PUT / DELETE | `/api/endpoints/:id` | change `name`, `host` or `displays` / remove it (the PC keeps showing what it shows) |
 | POST | `/api/endpoints/checkin` | used by the receiving PC's dashboard: `{host, screens, panels}`, reply is its assignment |

@@ -1,5 +1,6 @@
 import { wallBounds, type Layout, type Rect, type Source } from "./api";
 import { NumberField, TextField } from "./Inspector";
+import { MediaSelect } from "./Settings";
 
 // Edits one source: where it sits on the canvas, what part of it is shown, and how opaque it is.
 export function SourceInspector({
@@ -53,12 +54,18 @@ export function SourceInspector({
         </label>
       </div>
       <small className="muted">
-        {source.type === "ndi" ? source.ndiName : source.type === "solid" ? "solid colour" : "test pattern"}
+        {source.type === "ndi" ? source.ndiName : source.type === "solid" ? "solid colour" : source.type === "image" ? "image" : "test pattern"}
         {source.status ? ` · ${source.status.status}` : ""}
       </small>
 
       <div className="group">
         <TextField label="Name" value={source.name} onCommit={(name) => onPatch({ name })} />
+        {source.type === "image" && (
+          <label className="field wide">
+            <span>Image</span>
+            <MediaSelect value={source.image ?? ""} placeholder="Choose an image…" onError={() => {}} onChange={(image) => onPatch({ image })} />
+          </label>
+        )}
       </div>
 
       <div className="group">
