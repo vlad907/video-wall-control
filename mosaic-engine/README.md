@@ -164,6 +164,25 @@ Monitors to match; it also reports its screens and what each display is playing,
 which PCs are online and which displays play the right stream. PCs that check in but aren't set up
 yet are listed with a *Set up* button. Endpoints are saved with the layout. See the top-level README.
 
+**Editor shortcuts.**
+
+| Keys | Does |
+|---|---|
+| Mouse wheel / trackpad pinch | zoom at the pointer (the zoom bar at the bottom right has −, +, Fit, Selection) |
+| Drag empty space, Space + drag, middle-drag | pan |
+| Shift+1 / Shift+2 | fit the canvas / zoom to the selection (its whole group, for a group's panel) |
+| + / − | zoom in / out |
+| Arrow keys (Shift: 10 px) | nudge the selection |
+| `[` / `]` (Shift: 1°) | tilt the selected output by 0.1° |
+| Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z (or Ctrl+Y) | undo / redo (also the buttons above the canvas) |
+| Delete / Backspace | remove the selected output or layer (asks first) |
+| Ctrl/Cmd+D | duplicate it (a new output gets the next free stream name) |
+| Alt while dragging | place freely, without snapping |
+
+Undo steps back through the layout as the engine saved it, including changes made from another browser. Changes less
+than 1.5 s apart (one drag) are one step, and switching layouts starts a fresh history. For older versions, use
+Settings → History.
+
 **Settings** (gear in the left rail):
 - **History.** Before a change, the engine keeps a copy of the layout (at most one every 30 s, so a drag doesn't make
   hundreds), and always before a restore or a delete. The last 50 per layout are kept in `data/history/<layout>/`.

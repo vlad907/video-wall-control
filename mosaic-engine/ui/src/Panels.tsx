@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { dialog, toast } from "./Dialogs";
 import { api, type Layout, type LayoutSummary, type Output, type Source } from "./api";
 import { COLORS } from "./CanvasEditor";
 
@@ -56,9 +57,9 @@ export function LayoutBar({
       </label>
       <button
         className="ghost"
-        onClick={() => {
-          const name = prompt("Save the current layout as:", `${layout.name} copy`);
-          if (name) run(api.saveAs(name).then((l) => api.activate(l.id)));
+        onClick={async () => {
+          const name = await dialog.prompt("Save layout as", { message: "Saves a copy of this layout and switches to it.", value: `${layout.name} copy` });
+          if (name) run(api.saveAs(name).then((l) => (toast(`Saved "${name}"`), api.activate(l.id))));
         }}
       >
         Save as…
@@ -66,11 +67,15 @@ export function LayoutBar({
       <button
         className="ghost"
         title="Delete a saved layout (not the active one)"
-        onClick={() => {
+        onClick={async () => {
           const others = layouts.filter((l) => !l.active);
-          if (!others.length) return alert("The active layout can't be deleted, and there are no others.");
-          const id = prompt(`Delete which layout? Type its id:\n${others.map((l) => `${l.id}  (${l.name})`).join("\n")}`);
-          if (id) run(api.deleteLayout(id.trim()));
+          if (!others.length) return dialog.alert("Nothing to delete", "The layout on air can't be deleted, and there are no others.");
+          const id = await dialog.prompt("Delete a layout", {
+            message: "The layout on air can't be deleted. A deleted layout can still be restored from its history (Settings).",
+            choices: others.map((l) => ({ value: l.id, label: l.name })),
+            okLabel: "Delete",
+          });
+          if (id) run(api.deleteLayout(id).then(() => toast("Layout deleted")));
         }}
       >
         Delete…
@@ -84,9 +89,10 @@ export function LayoutBar({
             const p = presets.find(([, w, h]) => `${w}x${h}` === e.target.value);
             if (p) resizeCanvas(p[1], p[2]);
             else {
-              const v = prompt("Canvas size (W x H):", `${layout.canvas.width}x${layout.canvas.height}`);
-              const m = v?.match(/(\d+)\s*[x×]\s*(\d+)/);
-              if (m) resizeCanvas(+m[1], +m[2]);
+              dialog.prompt("Canvas size", { message: "Width × height in pixels, up to 16384 each.", value: `${layout.canvas.width}x${layout.canvas.height}`, okLabel: "Resize" }).then((v) => {
+                const m = v?.match(/(\d+)\s*[x×]\s*(\d+)/);
+                if (m) resizeCanvas(+m[1], +m[2]);
+              });
             }
           }}
         >
@@ -322,9 +328,9 @@ export function ScenesPanel({ layout, onChanged, onError }: { layout: Layout; on
       <div className="list-head">
         <h3>Scenes</h3>
         <button
-          onClick={() => {
-            const name = prompt("Save the current sources as scene:", `Scene ${layout.scenes.length + 1}`);
-            if (name) run(api.saveScene(name));
+          onClick={async () => {
+            const name = await dialog.prompt("Save scene", { message: "Saves all current sources (the whole canvas).", value: `Scene ${layout.scenes.length + 1}` });
+            if (name) run(api.saveScene(name).then(() => toast(`Scene "${name}" saved`)));
           }}
         >
           + Save
@@ -340,10 +346,10 @@ export function ScenesPanel({ layout, onChanged, onError }: { layout: Layout; on
           <button title="Recall" onClick={() => run(api.recallScene(sc.id, fade))}>
             ▶
           </button>
-          <button title="Overwrite with the current sources" onClick={() => confirm(`Overwrite "${sc.name}"?`) && run(api.saveScene(sc.name))}>
+          <button title="Overwrite with the current sources" onClick={async () => (await dialog.confirm(`Overwrite "${sc.name}"?`, { message: "It will hold the current sources.", okLabel: "Overwrite" })) && run(api.saveScene(sc.name))}>
             ⟳
           </button>
-          <button title="Delete" onClick={() => confirm(`Delete "${sc.name}"?`) && run(api.deleteScene(sc.id))}>
+          <button title="Delete" onClick={async () => (await dialog.confirm(`Delete scene "${sc.name}"?`, { okLabel: "Delete", danger: true })) && run(api.deleteScene(sc.id))}>
             ✕
           </button>
         </div>

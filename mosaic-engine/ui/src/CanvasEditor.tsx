@@ -165,7 +165,38 @@ export function CanvasEditor({
   }, []);
 
   const { width: cw, height: ch } = layout.canvas;
-  const scale = Math.min(box.w / cw, box.h / ch);
+  // Zoom is relative to "fit"; x/y is where the canvas's top-left sits in the stage. null = fitted and centred.
+  const [view, setView] = useState<{ zoom: number; x: number; y: number } | null>(null);
+  const fit = Math.min((box.w - 56) / cw, (box.h - 56) / ch);
+  const scale = fit * (view?.zoom ?? 1);
+  const origin = view ? { x: view.x, y: view.y } : { x: (box.w - cw * fit) / 2, y: (box.h - ch * fit) / 2 };
+  const [panning, setPanning] = useState(false);
+  const spaceDown = useRef(false);
+
+  // Zooms by `factor` keeping the canvas point under (sx, sy) (stage pixels) where it is.
+  const zoomAt = (factor: number, sx = box.w / 2, sy = box.h / 2) => {
+    const zoom = Math.min(32, Math.max(0.25, (view?.zoom ?? 1) * factor));
+    const s2 = fit * zoom;
+    const px = (sx - origin.x) / scale;
+    const py = (sy - origin.y) / scale;
+    setView({ zoom, x: sx - px * s2, y: sy - py * s2 });
+  };
+  // Frames a canvas rectangle in the stage (zoom to selection / group).
+  const zoomTo = (r: Rect) => {
+    const zoom = Math.min(32, Math.max(0.25, Math.min((box.w - 120) / r.w, (box.h - 120) / r.h) / fit));
+    const s2 = fit * zoom;
+    setView({ zoom, x: box.w / 2 - (r.x + r.w / 2) * s2, y: box.h / 2 - (r.y + r.h / 2) * s2 });
+  };
+  // The canvas size changed (another layout, a resize): start fitted again.
+  useEffect(() => setView(null), [cw, ch]);
+  // Keep the browser from zooming the whole page on ctrl+wheel / trackpad pinch over the canvas.
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const stop = (e: WheelEvent) => e.preventDefault();
+    el.addEventListener("wheel", stop, { passive: false });
+    return () => el.removeEventListener("wheel", stop);
+  }, []);
 
   const items: Item[] =
     mode === "outputs"
@@ -291,9 +322,88 @@ export function CanvasEditor({
 
   const shift = (r: Rect, group?: string) => (liveGroup && group === liveGroup.id ? { ...r, x: r.x + liveGroup.dx, y: r.y + liveGroup.dy } : r);
 
+  // Drag on empty space (or with Space held, or the middle button) pans; a click without moving deselects.
+  const onStageDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 && e.button !== 1) return;
+    e.preventDefault();
+    const start = { x: e.clientX, y: e.clientY, ox: origin.x, oy: origin.y, zoom: view?.zoom ?? 1 };
+    let moved = false;
+    const move = (ev: PointerEvent) => {
+      const dx = ev.clientX - start.x, dy = ev.clientY - start.y;
+      if (!moved && Math.hypot(dx, dy) < 4) return;
+      moved = true;
+      setPanning(true);
+      setView({ zoom: start.zoom, x: start.ox + dx, y: start.oy + dy });
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setPanning(false);
+      if (!moved) onSelect(null);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  const selectedRect = (() => {
+    const it = items.find((x) => x.id === selectedId);
+    if (!it) return null;
+    const g = it.group ? groups.find((x) => x.id === it.group) : undefined;
+    return g && g.count > 1 && mode === "outputs" ? g.rect : it.rect;
+  })();
+
+  // Keys: + / - zoom, Shift+1 fits, Shift+2 zooms to the selection (or its group); Space-drag pans.
+  useEffect(() => {
+    const typing = (e: KeyboardEvent) => ["INPUT", "SELECT", "TEXTAREA"].includes((e.target as HTMLElement).tagName);
+    const down = (e: KeyboardEvent) => {
+      if (typing(e) || e.metaKey || e.ctrlKey) return;
+      if (e.code === "Space") (spaceDown.current = true), e.preventDefault();
+      else if (e.key === "+" || e.key === "=") zoomAt(1.25);
+      else if (e.key === "-" || e.key === "_") zoomAt(0.8);
+      else if (e.shiftKey && e.code === "Digit1") setView(null);
+      else if (e.shiftKey && e.code === "Digit2") selectedRect ? zoomTo(selectedRect) : setView(null);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.code === "Space") spaceDown.current = false;
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => (window.removeEventListener("keydown", down), window.removeEventListener("keyup", up));
+  });
+
   return (
-    <div className="stage" ref={stageRef} onPointerDown={() => onSelect(null)}>
-      <div className="canvas" style={{ width: cw * scale, height: ch * scale }}>
+    <div
+      className={`stage${panning ? " panning" : ""}`}
+      ref={stageRef}
+      onPointerDown={onStageDown}
+      onPointerDownCapture={(e) => {
+        // Space or the middle button pans even over frames.
+        if (spaceDown.current || e.button === 1) (e.stopPropagation(), onStageDown(e));
+      }}
+      onWheel={(e) => {
+        const r = stageRef.current!.getBoundingClientRect();
+        // Pinch on a trackpad arrives as ctrl+wheel; both zoom at the pointer.
+        zoomAt(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)), e.clientX - r.left, e.clientY - r.top);
+      }}
+    >
+      <div className="zoom-bar" onPointerDown={(e) => e.stopPropagation()}>
+        <button onClick={() => zoomAt(0.8)} title="Zoom out (-)">
+          −
+        </button>
+        <span className="zoom-value" title="Zoom (relative to fitting the canvas)">
+          {Math.round((view?.zoom ?? 1) * 100)}%
+        </span>
+        <button onClick={() => zoomAt(1.25)} title="Zoom in (+)">
+          +
+        </button>
+        <button onClick={() => setView(null)} title="Fit the canvas (Shift+1)">
+          Fit
+        </button>
+        <button disabled={!selectedRect} onClick={() => selectedRect && zoomTo(selectedRect)} title="Zoom to the selection, or its whole group (Shift+2)">
+          Selection
+        </button>
+      </div>
+      <div className="canvas" style={{ width: cw * scale, height: ch * scale, left: origin.x, top: origin.y }}>
         <LivePreview target="canvas" className="canvas-preview" />
         {items.map((it) => {
           const r = shift(live[it.id] ?? it.rect, it.group);

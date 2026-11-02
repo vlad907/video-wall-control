@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { dialog, toast } from "./Dialogs";
 import { api, wallBounds, type Layout, type Wall } from "./api";
 import { FADES } from "./Panels";
 import { MediaSelect } from "./Settings";
@@ -126,10 +127,10 @@ export function GroupContent({
               <button title="Show this preset" onClick={() => run(api.recallGroupPreset(wall.id, p.id, fade))}>
                 ▶
               </button>
-              <button title="Overwrite with what the group shows now" onClick={() => confirm(`Overwrite "${p.name}"?`) && run(api.saveGroupPreset(wall.id, p.name))}>
+              <button title="Overwrite with what the group shows now" onClick={async () => (await dialog.confirm(`Overwrite "${p.name}"?`, { message: `It will hold what ${wall.name} shows now.`, okLabel: "Overwrite" })) && run(api.saveGroupPreset(wall.id, p.name).then(() => toast(`"${p.name}" updated`)))}>
                 ⟳
               </button>
-              <button title="Delete" onClick={() => confirm(`Delete "${p.name}"?`) && run(api.deleteGroupPreset(wall.id, p.id))}>
+              <button title="Delete" onClick={async () => (await dialog.confirm(`Delete preset "${p.name}"?`, { message: "Control systems that recall it will get an error.", okLabel: "Delete", danger: true })) && run(api.deleteGroupPreset(wall.id, p.id))}>
                 ✕
               </button>
             </div>
@@ -137,9 +138,9 @@ export function GroupContent({
         </div>
         <button
           className="wide-note"
-          onClick={() => {
-            const name = prompt(`Save what "${wall.name}" shows now as preset:`, `Preset ${wall.presets.length + 1}`);
-            if (name) run(api.saveGroupPreset(wall.id, name));
+          onClick={async () => {
+            const name = await dialog.prompt("Save preset", { message: `Saves what ${wall.name} shows now. The same name overwrites a preset.`, value: `Preset ${wall.presets.length + 1}` });
+            if (name) run(api.saveGroupPreset(wall.id, name).then((p) => toast(`Preset saved · id ${p.id}`)));
           }}
         >
           + Save current as preset

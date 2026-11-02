@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { dialog } from "./Dialogs";
 import { api, type EndpointDisplay, type EndpointsInfo, type EndpointView, type Layout, type Screen } from "./api";
 import { TextField } from "./Inspector";
 
@@ -203,7 +204,7 @@ export function EndpointPanel({
         The PC sets itself up within a few seconds: one Studio Monitor per display, full screen on its screen, playing the
         output's stream. Its own dashboard then shows it as managed here.
       </small>
-      <button className="danger" onClick={() => confirm(`Remove endpoint "${endpoint.name}"? The PC keeps showing what it shows now.`) && api.deleteEndpoint(endpoint.id).then(() => (onClose(), onChanged())).catch(onError)}>
+      <button className="danger" onClick={async () => (await dialog.confirm(`Remove endpoint "${endpoint.name}"?`, { message: "The PC keeps showing what it shows now, and goes back to manual setup.", okLabel: "Remove", danger: true })) && api.deleteEndpoint(endpoint.id).then(() => (onClose(), onChanged())).catch(onError)}>
         Remove endpoint
       </button>
     </div>

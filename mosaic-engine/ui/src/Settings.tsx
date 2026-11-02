@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { dialog, toast } from "./Dialogs";
 import { api, storeKey, storedKey, type Layout, type LayoutVersion, type MediaFile } from "./api";
 
 const kb = (n: number) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
@@ -74,23 +75,28 @@ export function SettingsPanel({ layout, onChanged, onError }: { layout: Layout; 
       const l = JSON.parse(await file.text()) as Layout;
       if (!l.outputs || !l.canvas) throw new Error("That file isn't a layout export.");
       const existing = await api.layouts();
-      if (existing.some((x) => x.id === l.id) && !confirm(`A layout "${l.id}" exists. Replace it? (Its current version stays in its history.)`)) {
-        const name = prompt("Import under a new name:", `${l.name} (imported)`);
+      if (
+        existing.some((x) => x.id === l.id) &&
+        !(await dialog.confirm(`Replace layout "${l.name}"?`, { message: "A layout with this id exists. Its current version stays in its history. Cancel to import under a new name.", okLabel: "Replace" }))
+      ) {
+        const name = await dialog.prompt("Import under a new name", { value: `${l.name} (imported)`, okLabel: "Import" });
         if (!name) return;
         l.id = "";
         l.name = name;
       }
       const saved = await api.importLayout(l);
-      if (confirm(`Imported "${saved.name}". Switch to it now?`)) await api.activate(saved.id);
+      toast(`Imported "${saved.name}"`);
+      if (await dialog.confirm(`Switch to "${saved.name}" now?`, { okLabel: "Switch" })) await api.activate(saved.id);
       onChanged();
     } catch (e) {
       onError(e);
     }
   };
 
-  const setKey = (field: "editorPin" | "apiKey", label: string) => {
-    const v = prompt(`New ${label} (leave empty to remove it):`);
+  const setKey = async (field: "editorPin" | "apiKey", label: string) => {
+    const v = await dialog.prompt(`Set the ${label}`, { message: "Leave it empty to remove it.", allowEmpty: true, password: field === "editorPin" });
     if (v === null) return;
+    toast(v.trim() ? `${label[0].toUpperCase()}${label.slice(1)} set` : `${label[0].toUpperCase()}${label.slice(1)} removed`);
     api
       .putSecurity({ [field]: v.trim() })
       .then((s) => {
@@ -145,7 +151,10 @@ export function SettingsPanel({ layout, onChanged, onError }: { layout: Layout; 
             </div>
             <button
               title="Put this version back (what's there now is kept in the history)"
-              onClick={() => confirm(`Restore the layout as it was at ${v.time}?`) && api.restore(layout.id, v.version).then(() => (onChanged(), loadHistory())).catch(onError)}
+              onClick={async () =>
+                (await dialog.confirm(`Restore the layout as it was at ${v.time}?`, { message: "What's there now is kept in the history.", okLabel: "Restore" })) &&
+                api.restore(layout.id, v.version).then(() => (toast("Layout restored"), onChanged(), loadHistory())).catch(onError)
+              }
             >
               Restore
             </button>
@@ -179,7 +188,7 @@ export function SettingsPanel({ layout, onChanged, onError }: { layout: Layout; 
               <div>{f.name}</div>
               <small>{kb(f.bytes)}</small>
             </div>
-            <button title="Delete" onClick={() => confirm(`Delete ${f.name}?`) && api.deleteMedia(f.name).then(loadMedia).catch(onError)}>
+            <button title="Delete" onClick={async () => (await dialog.confirm(`Delete ${f.name}?`, { message: "Layers and slates that use it show nothing.", okLabel: "Delete", danger: true })) && api.deleteMedia(f.name).then(loadMedia).catch(onError)}>
               ✕
             </button>
           </div>

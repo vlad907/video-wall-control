@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DialogHost, dialog, toast } from "./Dialogs";
 import { api, LockedError, type EndpointsInfo, type Layout, type Metrics, type Output, type Rect, type Screen, type Source } from "./api";
 import { CanvasEditor, type EditMode } from "./CanvasEditor";
 import { EndpointList, EndpointPanel } from "./Endpoints";
@@ -50,9 +51,38 @@ export function App() {
   };
   const versionRef = useRef<number>(-1);
 
-  const reload = useCallback(() => api.layout().then(setLayout).catch((e) => setError(String(e))), []);
+  // Undo / redo: every layout the engine reports (after any change, from any editor) is a step.
+  // Changes within 1.5 s of each other (a drag) count as one step.
+  const undoStack = useRef<Layout[]>([]);
+  const redoStack = useRef<Layout[]>([]);
+  const confirmed = useRef<Layout | null>(null); // the engine's layout as last loaded
+  const lastStep = useRef(0);
+  const replaying = useRef(false);
+  const [, setSteps] = useState(0); // re-render when the stacks change
+  const reload = useCallback(
+    () =>
+      api
+        .layout()
+        .then((l) => {
+          const prev = confirmed.current;
+          if (prev && prev.id === l.id && JSON.stringify(prev) !== JSON.stringify(l)) {
+            if (replaying.current) replaying.current = false;
+            else {
+              if (performance.now() - lastStep.current > 1500) undoStack.current = [...undoStack.current.slice(-99), prev];
+              lastStep.current = performance.now();
+              redoStack.current = [];
+            }
+            setSteps((n) => n + 1);
+          }
+          if (prev && prev.id !== l.id) (undoStack.current = []), (redoStack.current = []); // another layout: its own history
+          confirmed.current = l;
+          setLayout(l);
+        })
+        .catch((e) => setError(String(e))),
+    [],
+  );
   // A refused change opens the PIN prompt instead of an error banner.
-  const onError = useCallback((e: unknown) => (e instanceof LockedError ? undefined : setError(e instanceof Error ? e.message : String(e))), []);
+  const onError = useCallback((e: unknown) => (e instanceof LockedError ? undefined : toast(e instanceof Error ? e.message : String(e), "error")), []);
   const [unlock, setUnlock] = useState(false);
   useEffect(() => {
     const open = () => setUnlock(true);
@@ -189,6 +219,63 @@ export function App() {
   }, [layout, mode, selectedId, sourceId, onRectChange, onAngleChange]);
 
   const onCanvasRect = useCallback((id: string, rect: Rect, final: boolean) => onRectChange(mode, id, rect, final), [mode, onRectChange]);
+
+  // Puts a whole earlier layout back (everything but its id).
+  const replay = useCallback(
+    (from: React.MutableRefObject<Layout[]>, to: React.MutableRefObject<Layout[]>, label: string) => {
+      const target = from.current[from.current.length - 1];
+      const now = confirmed.current;
+      if (!target || !now) return;
+      from.current = from.current.slice(0, -1);
+      to.current = [...to.current, now];
+      replaying.current = true;
+      lastStep.current = 0;
+      const { id: _id, ...rest } = target;
+      api
+        .putLayout(rest)
+        .then(() => (toast(label), reload()))
+        .catch((e) => ((replaying.current = false), onError(e)));
+    },
+    [onError, reload],
+  );
+  const undo = useCallback(() => replay(undoStack, redoStack, "Undone"), [replay]);
+  const redo = useCallback(() => replay(redoStack, undoStack, "Redone"), [replay]);
+
+  // Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl+Y redo, Delete removes the selection, Ctrl/Cmd+D duplicates it.
+  useEffect(() => {
+    const onKey = async (e: KeyboardEvent) => {
+      if (["INPUT", "SELECT", "TEXTAREA"].includes((e.target as HTMLElement).tagName) || document.querySelector(".modal") || !layout) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === "z") return e.preventDefault(), e.shiftKey ? redo() : undo();
+      if (mod && e.key.toLowerCase() === "y") return e.preventDefault(), redo();
+      const out = mode === "outputs" ? layout.outputs.find((o) => o.id === selectedId) : undefined;
+      const src = mode === "sources" ? layout.sources.find((x) => x.id === sourceId) : undefined;
+      if ((e.key === "Delete" || e.key === "Backspace") && (out || src)) {
+        e.preventDefault();
+        const name = (out ?? src)!.name;
+        if (!(await dialog.confirm(`Remove ${name}?`, { message: out ? "Its NDI stream stops. Ctrl+Z brings it back." : "Ctrl+Z brings it back.", okLabel: "Remove", danger: true }))) return;
+        (out ? api.deleteOutput(out.id).then(() => setSelectedId(null)) : api.deleteSource(src!.id).then(() => setSourceId(null))).then(reload).catch(onError);
+      }
+      if (mod && e.key.toLowerCase() === "d" && (out || src)) {
+        e.preventDefault();
+        if (out) {
+          const { id: _id, ndiName: _n, group: _g, ...copy } = out;
+          api
+            .addOutput({ ...copy, name: `${out.name} copy`, crop: { ...out.crop, x: out.crop.x + 60, y: out.crop.y + 60 } })
+            .then((o) => (toast(`Duplicated as ${o.ndiName}`), selectOutput(o.id), reload()))
+            .catch(onError);
+        } else if (src) {
+          const { id: _id, status: _s, ...copy } = src;
+          api
+            .addSource({ ...copy, name: `${src.name} copy`, rect: { ...src.rect, x: src.rect.x + 60, y: src.rect.y + 60 } })
+            .then((x) => (selectSource(x.id), reload()))
+            .catch(onError);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [layout, mode, selectedId, sourceId, undo, redo, reload, onError, selectOutput, selectSource]);
   const onGroupMove = useCallback(
     (id: string, x: number, y: number) =>
       api
@@ -215,10 +302,10 @@ export function App() {
 
   // A PC that checked in (or a name typed in): one display slot per screen, the main screen left
   // out when there are others (it's usually the control screen).
-  const setUpEndpoint = (host: string, screens: Screen[]) => {
-    const pcName = host || prompt("PC name of the receiving PC (as shown in its dashboard):")?.trim();
+  const setUpEndpoint = async (host: string, screens: Screen[]) => {
+    const pcName = host || (await dialog.prompt("Add an endpoint", { message: "The receiving PC's name, as its dashboard shows it (Endpoint: not set up, PC name …).", placeholder: "WALL-PC-1", okLabel: "Next" }));
     if (!pcName) return;
-    const name = prompt("Name for this endpoint:", pcName)?.trim();
+    const name = await dialog.prompt("Name this endpoint", { message: `How ${pcName} is shown in the editor.`, value: pcName, okLabel: "Add" });
     if (!name) return;
     const usable = screens.length > 1 ? screens.filter((s) => !s.primary) : screens;
     api
@@ -274,8 +361,8 @@ export function App() {
         source={{ ...selectedSource, status: metrics?.sources.find((x) => x.id === selectedSource.id) }}
         onPatch={(p) => patchSource(selectedSource.id, p)}
         onReorder={(to) => reorderSource(selectedSource.id, to)}
-        onDelete={() => {
-          if (!confirm(`Remove ${selectedSource.name}?`)) return;
+        onDelete={async () => {
+          if (!(await dialog.confirm(`Remove ${selectedSource.name}?`, { okLabel: "Remove", danger: true }))) return;
           api
             .deleteSource(selectedSource.id)
             .then(() => (setSourceId(null), reload()))
@@ -290,8 +377,8 @@ export function App() {
         output={selected}
         shownOn={shownOn(selected.id)}
         onPatch={(p) => patch(selected.id, p)}
-        onDelete={() => {
-          if (!confirm(`Remove ${selected.name}?`)) return;
+        onDelete={async () => {
+          if (!(await dialog.confirm(`Remove ${selected.name}?`, { message: "Its NDI stream stops.", okLabel: "Remove", danger: true }))) return;
           api
             .deleteOutput(selected.id)
             .then(() => (setSelectedId(null), reload()))
@@ -421,11 +508,6 @@ export function App() {
   return (
     <div className="app">
       <LayoutBar layout={layout} status={engineStatus} onChanged={reload} onError={onError} />
-      {error && (
-        <div className="error" onClick={() => setError(null)}>
-          {error} <small>(click to dismiss)</small>
-        </div>
-      )}
       <nav className="rail">
         {SECTIONS.map(([id, label, title]) => (
           <button key={id} className={section === id ? "on" : ""} onClick={() => openSection(id)} title={title}>
@@ -448,6 +530,12 @@ export function App() {
                 {mode === "outputs" ? "Drag a frame to choose what a display shows · a group's tab moves the group · [ ] tilts" : "Drag a layer to place it · arrow keys nudge"}
               </span>
               <span className="spacer" />
+              <button className="icon-toggle" disabled={!undoStack.current.length} onClick={undo} title="Undo (Ctrl+Z)">
+                ↶ Undo
+              </button>
+              <button className="icon-toggle" disabled={!redoStack.current.length} onClick={redo} title="Redo (Ctrl+Shift+Z)">
+                ↷ Redo
+              </button>
               <button className={`icon-toggle${smartSnap ? " on" : ""}`} onClick={() => toggleSmartSnap(!smartSnap)} title="Snap to other frames' edges and centres (hold Alt to drag freely)">
                 <Icon name="magnet" size={16} /> Snap
               </button>
@@ -480,6 +568,7 @@ export function App() {
       <aside className="right">{right}</aside>
       <StatusBar metrics={metrics} onOpen={() => openSection("monitor")} />
       {unlock && <UnlockDialog onClose={() => (setUnlock(false), reload())} />}
+      <DialogHost />
     </div>
   );
 }

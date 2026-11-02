@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { dialog } from "./Dialogs";
 import type { Layout, Wall } from "./api";
 import { GroupContent } from "./GroupContent";
 import { NumberField } from "./Inspector";
@@ -277,7 +278,7 @@ export function WallPanel({
           <button onClick={() => onRemove(false)} title="Keeps the outputs as standalone outputs, forgets the group">
             Ungroup
           </button>
-          <button className="danger" onClick={() => confirm(`Delete "${wall.name}" and its ${count} output(s)?`) && onRemove(true)}>
+          <button className="danger" onClick={async () => (await dialog.confirm(`Delete "${wall.name}"?`, { message: `Its ${count} output(s) and their NDI streams are removed.`, okLabel: "Delete", danger: true })) && onRemove(true)}>
             Delete group
           </button>
         </div>
