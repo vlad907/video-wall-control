@@ -31,6 +31,7 @@ in the style of Resolume's Advanced Output drives the running engine through a R
 | Endpoints: receiving PCs set up from the editor (which output on which screen), with online / playing status | **Working**, tested with the dashboard and mock Studio Monitors on macOS |
 | Layout history (restore any of the last 50 versions), export / import | **Working, checked** (`tools/ci_check.py`) |
 | Image sources (PNG / JPEG / BMP / GIF, with transparency), signal-loss fallback image per group | **Working, pixel-checked** |
+| Video file sources (MP4 / MOV: H.264, HEVC, AV1), up to 8K, with loop / pause / restart | **Working on macOS, pixel-checked** (8K HEVC at 30 fps); Windows hardware decoding written, checked in CI where Media Foundation exists, **not yet run on the media server** |
 | Optional editor PIN and API key for changes | **Working**, tested in the browser |
 | Presets per wall group, one-call "show this NDI stream on this group", control API ([docs/CONTROL_API.md](docs/CONTROL_API.md)) | **Working, pixel-checked** (with colour sources; NDI switching not yet tried on Windows) |
 | Free-form mosaics: any position, gap and tilt angle per panel | **Working, pixel-checked**; rotate handle and `[` `]` keys in the editor |
@@ -201,6 +202,20 @@ Settings → History.
 - **Export / Import** downloads the layout as a `.json` file, or loads one (a backup, or a copy for a spare server).
 - **Media**: images uploaded for image layers and slates, stored in `data/media/`. *Inputs → + Add → Image*
   adds an image layer; transparent PNG areas show what's underneath.
+- **Video files**: *Inputs → + Add → Video file*, then pick a file in the inspector, which also has
+  *Play / Pause*, *Restart* and *Loop*. It shows resolution, codec, whether the GPU decodes it, and the position.
+  A group's *Content* tab has *Restart videos*, which starts all its videos together. Video layers belong to groups
+  and presets like any other layer.
+  - **Formats:** MP4 / MOV / M4V with H.264, HEVC (H.265) or AV1. Video only; audio is ignored.
+  - **Windows:** Media Foundation decodes on the graphics card, and frames stay there (NV12 → BGRA on the GPU's
+    video processor), so 8K is practical.
+  - **For 8K, use HEVC or AV1.** Most GPUs decode H.264 only up to 4K, and above that Windows falls back to software
+    decoding, which is far too slow at 8K.
+  - **HEVC needs the HEVC Video Extensions** from the Microsoft Store. AV1 needs the free AV1 Video Extension.
+  - The inspector warns when a file decodes slower than its frame rate.
+- **Big files**: uploads stream straight to disk, with no size limit for videos. For multi-gigabyte files it's quicker to
+  copy them into the media folder (`mosaic-engine\data\media` on the media server, over a network share or a USB
+  drive); they appear in the list right away.
 - **Signal loss**: when an NDI stream sends nothing for 2 s (or nothing at all 3 s after it's added), the engine shows
   the chosen image in its area instead of the frozen last frame. A group can choose its own (group → *Content*).
   The status bar shows "N inputs without signal", and `/api/control` lists them per group (`noSignal`).
@@ -262,8 +277,10 @@ Across the whole source there's also:
 | GET | `/api/layouts/:id/history` | earlier versions of a layout, newest first |
 | POST | `/api/layouts/:id/history/:version/restore` | put that version back (the current one is kept in the history) |
 | GET | `/api/layouts/:id?download=1` | the layout as a file (export); `POST /api/layouts` with it imports it |
-| GET / POST | `/api/media` | list image files / upload one: raw file as the body, `?name=logo.png` |
-| GET / DELETE | `/api/media/:name` | the image itself / delete it |
+| GET / POST | `/api/media` | list images and videos (and the folder) / upload one: raw file as the body, `?name=clip.mp4` (streamed to disk; no size limit for videos) |
+| GET / DELETE | `/api/media/:name` | the file itself (streamed) / delete it |
+| POST | `/api/sources/:id/restart` | a video source from its first frame; pause / play with `PATCH /api/sources/:id {"playing": false}` |
+| POST | `/api/walls/:id/restart` | every video in a group, from the first frame, together |
 | PATCH | `/api/walls/:id` | change a group's `name` or `fallbackImage` without regenerating its outputs |
 | GET / PUT | `/api/security` | whether a PIN / API key is set / set them: `{"editorPin", "apiKey"}` (`""` removes one) |
 | GET / POST | `/api/endpoints` | list endpoints with live status, plus PCs that checked in but aren't set up (`unassigned`) / create one: `{"name", "host", "displays": [{"output", "screen"}]}` |

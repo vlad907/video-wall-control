@@ -59,7 +59,8 @@ Plan, phases and acceptance criteria: [RECEIVER.md](RECEIVER.md).
 
 ## Possible next features
 
-- Video file and still image sources
+- [x] Still image sources; video file sources (MP4 / MOV, up to 8K, hardware decoding on Windows)
+- Audio from video files
 - Edge blending and simple keystone / warping for projectors
 - Per-output colour adjustment (brightness / contrast) to match panels
 - Scene triggers over the REST API from a show controller (already possible with curl; a small OSC bridge would make it easier)

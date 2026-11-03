@@ -74,7 +74,7 @@ double nowSeconds() {
 
 constexpr double kEndpointOnlineSeconds = 20;
 
-// A media file name we accept: letters, digits, "-", "_", "." and an image extension.
+// A media file name we accept: letters, digits, "-", "_", "." and an image or video extension.
 std::string mediaName(const std::string& raw) {
     std::string name;
     for (char c : raw) {
@@ -85,11 +85,15 @@ std::string mediaName(const std::string& raw) {
     auto dot = name.rfind('.');
     std::string ext = dot == std::string::npos ? "" : name.substr(dot + 1);
     for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (ext != "png" && ext != "jpg" && ext != "jpeg" && ext != "bmp" && ext != "gif") return "";
+    if (ext != "png" && ext != "jpg" && ext != "jpeg" && ext != "bmp" && ext != "gif" && ext != "mp4" && ext != "mov" && ext != "m4v") return "";
     return name.substr(0, dot + 1) + ext;
 }
 
+bool isVideoName(const std::string& name) { return name.ends_with(".mp4") || name.ends_with(".mov") || name.ends_with(".m4v"); }
+
 const char* mediaType(const std::string& name) {
+    if (name.ends_with(".mp4") || name.ends_with(".m4v")) return "video/mp4";
+    if (name.ends_with(".mov")) return "video/quicktime";
     if (name.ends_with(".png")) return "image/png";
     if (name.ends_with(".bmp")) return "image/bmp";
     if (name.ends_with(".gif")) return "image/gif";
@@ -336,6 +340,15 @@ struct HttpApi::Impl {
             if (!ok) return sendError(res, 404, "no such source");
             sendJson(res, withProblems(*store.active()->findSource(id), problems));
         }));
+        // A video source from its first frame again.
+        s.Post(R"(/api/sources/([A-Za-z0-9_\-]+)/restart)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            const SourceConfig* src = store.active()->findSource(id);
+            if (!src) return sendError(res, 404, "no such source");
+            if (src->type != SourceType::Video) return sendError(res, 400, "not a video source");
+            engine.restartVideo(id);
+            sendJson(res, {{"restarted", id}});
+        }));
         s.Delete(R"(/api/sources/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
             std::string id = req.matches[1];
             bool ok = store.mutateActive([&](Layout& l) {
@@ -562,6 +575,16 @@ struct HttpApi::Impl {
             store.mutateActive([&](Layout& l) { return showOnGroup(l, id, ndiName); });
             sendJson(res, {{"group", id}, {"showing", ndiName}, {"transitionMs", ms}});
         }));
+        // Restarts every video the group shows, together, from the first frame.
+        s.Post(R"(/api/walls/([A-Za-z0-9_\-]+)/restart)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            auto l = store.active();
+            if (!l->findWall(id)) return sendError(res, 404, "no such wall group");
+            json restarted = json::array();
+            for (auto& src : l->sources)
+                if (src.group == id && src.type == SourceType::Video) engine.restartVideo(src.id), restarted.push_back(src.id);
+            sendJson(res, {{"group", id}, {"restarted", restarted}});
+        }));
         // Removes the group's content (it then shows whatever lies under it, usually the background).
         s.Post(R"(/api/walls/([A-Za-z0-9_\-]+)/clear)", guard([this](const httplib::Request& req, httplib::Response& res) {
             std::string id = req.matches[1];
@@ -578,37 +601,59 @@ struct HttpApi::Impl {
         s.Get("/api/media", guard([this](const httplib::Request&, httplib::Response& res) {
             json files = json::array();
             std::error_code ec;
-            for (auto& e : std::filesystem::directory_iterator(engine.mediaDir(), ec))
-                if (e.is_regular_file() && !mediaName(e.path().filename().string()).empty())
-                    files.push_back({{"name", e.path().filename().string()}, {"bytes", e.file_size()}});
+            for (auto& e : std::filesystem::directory_iterator(engine.mediaDir(), ec)) {
+                std::string name = e.path().filename().string();
+                if (e.is_regular_file() && !mediaName(name).empty())
+                    files.push_back({{"name", name}, {"bytes", e.file_size()}, {"kind", isVideoName(name) ? "video" : "image"}});
+            }
             std::sort(files.begin(), files.end(), [](auto& a, auto& b) { return a["name"] < b["name"]; });
-            sendJson(res, {{"files", files}});
+            sendJson(res, {{"files", files}, {"folder", std::filesystem::absolute(engine.mediaDir()).string()}});
         }));
-        // Upload: the raw file as the body, ?name=logo.png. The same name replaces the file.
-        s.Post("/api/media", guard([this](const httplib::Request& req, httplib::Response& res) {
+        // Upload: the raw file as the body, ?name=clip.mp4. Written to disk as it arrives, so
+        // multi-gigabyte (8K) videos don't need the memory. The same name replaces the file.
+        s.Post("/api/media", [this](const httplib::Request& req, httplib::Response& res, const httplib::ContentReader& content) {
             std::string name = mediaName(req.get_param_value("name"));
-            if (name.empty()) return sendError(res, 400, "name must be a .png, .jpg, .bmp or .gif file name");
-            if (req.body.empty()) return sendError(res, 400, "empty file");
-            if (req.body.size() > 64u * 1024 * 1024) return sendError(res, 413, "image larger than 64 MB");
+            if (name.empty()) return sendError(res, 400, "name must be an image (.png .jpg .bmp .gif) or video (.mp4 .mov .m4v) file name");
             auto path = engine.mediaDir() / name;
             auto tmp = path;
-            tmp += ".tmp";
+            tmp += ".part";
+            uint64_t bytes = 0;
+            const uint64_t limit = isVideoName(name) ? UINT64_MAX : 64ull * 1024 * 1024;
+            bool ok = true;
             {
                 std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-                out.write(req.body.data(), static_cast<std::streamsize>(req.body.size()));
-                if (!out) return sendError(res, 500, "cannot write " + name);
+                if (!out) return sendError(res, 500, "cannot write to the media folder");
+                ok = content([&](const char* data, size_t len) {
+                    bytes += len;
+                    if (bytes > limit) return false;
+                    out.write(data, static_cast<std::streamsize>(len));
+                    return static_cast<bool>(out);
+                });
+                ok = ok && static_cast<bool>(out);
             }
             std::error_code ec;
+            if (!ok || bytes == 0) {
+                std::filesystem::remove(tmp, ec);
+                return sendError(res, bytes > limit ? 413 : 400, bytes > limit ? "images can be at most 64 MB" : "the upload was cut off or empty");
+            }
             std::filesystem::rename(tmp, path, ec);
             if (ec) return sendError(res, 500, ec.message());
-            sendJson(res, {{"name", name}, {"bytes", req.body.size()}}, 201);
-        }));
+            sendJson(res, {{"name", name}, {"bytes", bytes}, {"kind", isVideoName(name) ? "video" : "image"}}, 201);
+        });
+        // The file itself, streamed from disk (videos can be gigabytes).
         s.Get(R"(/api/media/([A-Za-z0-9_.\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
             std::string name = mediaName(req.matches[1]);
-            std::ifstream in(engine.mediaDir() / name, std::ios::binary);
-            if (name.empty() || !in) return sendError(res, 404, "no such file");
-            std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-            res.set_content(data, mediaType(name));
+            auto path = engine.mediaDir() / name;
+            std::error_code ec;
+            auto size = std::filesystem::file_size(path, ec);
+            if (name.empty() || ec) return sendError(res, 404, "no such file");
+            auto in = std::make_shared<std::ifstream>(path, std::ios::binary);
+            res.set_content_provider(static_cast<size_t>(size), mediaType(name), [in](size_t offset, size_t length, httplib::DataSink& sink) {
+                std::vector<char> buf(std::min<size_t>(length, 1 << 20));
+                in->seekg(static_cast<std::streamoff>(offset));
+                in->read(buf.data(), static_cast<std::streamsize>(buf.size()));
+                return sink.write(buf.data(), static_cast<size_t>(in->gcount()));
+            });
         }));
         s.Delete(R"(/api/media/([A-Za-z0-9_.\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
             std::string name = mediaName(req.matches[1]);

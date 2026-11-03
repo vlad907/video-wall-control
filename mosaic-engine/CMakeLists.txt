@@ -80,6 +80,7 @@ set(ENGINE_SOURCES
   engine/src/api/http_api.cpp
   engine/src/util/image.cpp
   engine/src/util/realtime.cpp
+  engine/src/io/video_file.cpp
 )
 if(MOSAIC_HAVE_NDI)
   list(APPEND ENGINE_SOURCES engine/src/io/ndi_sdk.cpp)
@@ -88,9 +89,9 @@ else()
 endif()
 
 if(APPLE)
-  list(APPEND ENGINE_SOURCES engine/src/render/metal/metal_renderer.mm)
+  list(APPEND ENGINE_SOURCES engine/src/render/metal/metal_renderer.mm engine/src/io/video_avf.mm)
 elseif(WIN32)
-  list(APPEND ENGINE_SOURCES engine/src/render/d3d11/d3d11_renderer.cpp)
+  list(APPEND ENGINE_SOURCES engine/src/render/d3d11/d3d11_renderer.cpp engine/src/io/video_mf.cpp)
 else()
   message(FATAL_ERROR "Only Windows (Direct3D 11) and macOS (Metal) backends are implemented.")
 endif()
@@ -116,11 +117,12 @@ if(MOSAIC_HAVE_NDI)
 endif()
 
 if(APPLE)
-  set_source_files_properties(engine/src/render/metal/metal_renderer.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-  target_link_libraries(mosaic_engine PRIVATE "-framework Metal" "-framework Foundation" "-framework IOKit" "-framework CoreFoundation" "-framework CFNetwork")
+  set_source_files_properties(engine/src/render/metal/metal_renderer.mm engine/src/io/video_avf.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  target_link_libraries(mosaic_engine PRIVATE "-framework Metal" "-framework Foundation" "-framework IOKit" "-framework CoreFoundation" "-framework CFNetwork"
+                        "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo")
 elseif(WIN32)
   target_compile_definitions(mosaic_engine PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
-  target_link_libraries(mosaic_engine PRIVATE d3d11 dxgi d3dcompiler pdh ws2_32 avrt winmm)
+  target_link_libraries(mosaic_engine PRIVATE d3d11 dxgi d3dcompiler pdh ws2_32 avrt winmm mfplat mfreadwrite mfuuid propsys)
   if(MSVC)
     target_compile_options(mosaic_engine PRIVATE /W3 /utf-8 /permissive-)
   endif()

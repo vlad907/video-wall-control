@@ -306,3 +306,6 @@ button.danger.solid:hover { background: #ff6b6b; }
 .bezel-value input { width: 72px; text-align: right; height: 26px; }
 .bezel-value button { width: 26px !important; height: 26px; padding: 0; }
 .bezel-field input[type="range"] { width: 100%; }
+.upload-progress { width: 100%; height: 6px; accent-color: var(--accent); }
+.uploading { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.thumb.video { display: inline-flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted); }

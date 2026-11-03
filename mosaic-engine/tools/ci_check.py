@@ -12,6 +12,7 @@ Runs the engine on a frozen test pattern and checks real pixels:
   - wall groups: a second (1x1) group, moving it, deleting it with its outputs
   - group presets: save, clear, recall with a crossfade limited to the group
   - image sources, the signal-loss fallback image, and layout history / restore
+  - a video file: plays, pauses, restarts and loops (skipped where Media Foundation is missing)
   - endpoints: check-in, assignment and status of a receiving PC
   - every rendered frame reached every output (no partial frames)
 
@@ -266,6 +267,41 @@ with tempfile.TemporaryDirectory() as tmp:
         check(st.get("signal") == "lost" and st.get("showing") == "fallback image", f"status reports the lost signal ({st.get('signal')}, {st.get('showing')})")
         call("DELETE", f"/api/sources/{ndi_src['id']}")
         call("PUT", "/api/layout", {"fallbackImage": ""})
+
+        print("video file:", flush=True)
+        clip = open(os.path.join(here, "test-clip.mp4"), "rb").read()  # 1 s red, then 1 s blue (H.264, 30 fps)
+        req = urllib.request.Request(BASE + "/api/media?name=clip.mp4", method="POST", data=clip, headers={"Content-Type": "video/mp4"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            check(json.loads(r.read())["kind"] == "video", "video uploaded")
+        vid = call("POST", "/api/sources", {"name": "Clip", "type": "video", "video": "clip.mp4", "loop": True,
+                                            "rect": {"x": 0, "y": 0, "w": 1920, "h": 1080}})
+        def vstatus():
+            return next(x for x in json.loads(get("/api/sources")[1])["sources"] if x["id"] == vid["id"])["status"]
+        time.sleep(0.6)
+        st = vstatus()
+        print(f"  ..   {st.get('status')} · {st.get('video')}", flush=True)
+        if "Media Foundation" in st.get("status", "") or "no decoder" in st.get("status", ""):
+            print("  skip this machine can't decode H.264 (no Media Foundation): video checks skipped", flush=True)
+        else:
+            check(st.get("video", {}).get("codec") == "H.264" and st["video"]["width"] == 320, "video opened (H.264, 320x180)")
+            call("POST", f"/api/sources/{vid['id']}/restart", {})
+            time.sleep(0.4)
+            check(close(pixel(frame("out-1"), *spot), (255, 0, 0), 40), f"plays the first second (red) {pixel(frame('out-1'), *spot)}")
+            time.sleep(1.0)
+            check(close(pixel(frame("out-1"), *spot), (0, 0, 255), 40), f"then the next (blue) {pixel(frame('out-1'), *spot)}")
+            call("PATCH", f"/api/sources/{vid['id']}", {"playing": False})
+            time.sleep(0.3)
+            held = pixel(frame("out-1"), *spot)
+            time.sleep(1.2)
+            check(close(pixel(frame("out-1"), *spot), held, 12) and vstatus()["status"] == "paused", "pausing holds the picture")
+            call("PATCH", f"/api/sources/{vid['id']}", {"playing": True})
+            call("POST", f"/api/sources/{vid['id']}/restart", {})
+            time.sleep(0.4)
+            check(close(pixel(frame("out-1"), *spot), (255, 0, 0), 40), "restart goes back to the first frame (red)")
+            time.sleep(2.2)
+            check(vstatus()["status"] == "playing", "it loops (still playing after the end)")
+        call("DELETE", f"/api/sources/{vid['id']}")
+        call("DELETE", "/api/media/clip.mp4")
 
         print("layout history:", flush=True)
         hist = json.loads(get("/api/layouts/ci/history")[1])["history"]

@@ -5,8 +5,26 @@ import { api, storeKey, storedKey, type Layout, type LayoutVersion, type MediaFi
 const kb = (n: number) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 // Picks an image file from the media folder; offers to upload one too.
-export function MediaSelect({ value, onChange, placeholder, onError }: { value: string; onChange: (name: string) => void; placeholder: string; onError: (e: unknown) => void }) {
-  const [files, setFiles] = useState<MediaFile[]>([]);
+const IMAGE_TYPES = "image/png,image/jpeg,image/bmp,image/gif";
+const VIDEO_TYPES = "video/mp4,video/quicktime,.mp4,.mov,.m4v";
+
+// Picks a file from the media folder (images, or videos with kind="video"); offers to upload one too.
+export function MediaSelect({
+  value,
+  onChange,
+  placeholder,
+  onError,
+  kind = "image",
+}: {
+  value: string;
+  onChange: (name: string) => void;
+  placeholder: string;
+  onError: (e: unknown) => void;
+  kind?: "image" | "video";
+}) {
+  const [all, setFiles] = useState<MediaFile[]>([]);
+  const [progress, setProgress] = useState<number | null>(null);
+  const files = all.filter((f) => (f.kind ?? "image") === kind);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
     api.media().then(setFiles).catch(() => {});
@@ -24,17 +42,24 @@ export function MediaSelect({ value, onChange, placeholder, onError }: { value: 
           </option>
         ))}
         {value && !files.some((f) => f.name === value) && <option value={value}>{value} (missing)</option>}
-        <option value={"\u0000upload"}>Upload an image…</option>
+        <option value={"\u0000upload"}>{kind === "video" ? "Upload a video…" : "Upload an image…"}</option>
       </select>
+      {progress !== null && <progress className="upload-progress" value={progress} max={1} />}
       <input
         ref={input}
         type="file"
-        accept="image/png,image/jpeg,image/bmp,image/gif"
+        accept={kind === "video" ? VIDEO_TYPES : IMAGE_TYPES}
         hidden
         onChange={(e) => {
           const f = e.target.files?.[0];
           e.target.value = "";
-          if (f) api.uploadMedia(f).then((m) => (api.media().then(setFiles), onChange(m.name))).catch(onError);
+          if (!f) return;
+          setProgress(0);
+          api
+            .uploadMedia(f, setProgress)
+            .then((m) => (api.media().then(setFiles), onChange(m.name)))
+            .catch(onError)
+            .finally(() => setProgress(null));
         }}
       />
     </>
@@ -46,6 +71,8 @@ export function SettingsPanel({ layout, onChanged, onError }: { layout: Layout; 
   const [history, setHistory] = useState<LayoutVersion[]>([]);
   const [media, setMedia] = useState<MediaFile[]>([]);
   const [security, setSecurity] = useState<{ pinSet: boolean; apiKeySet: boolean } | null>(null);
+  const [uploading, setUploading] = useState<{ name: string; fraction: number } | null>(null);
+  const [folder, setFolder] = useState("");
   const importInput = useRef<HTMLInputElement>(null);
   const uploadInput = useRef<HTMLInputElement>(null);
 
@@ -58,6 +85,7 @@ export function SettingsPanel({ layout, onChanged, onError }: { layout: Layout; 
   useEffect(() => {
     loadMedia();
     loadSecurity();
+    api.mediaFolder().then(setFolder).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const exportLayout = async () => {
@@ -170,20 +198,40 @@ export function SettingsPanel({ layout, onChanged, onError }: { layout: Layout; 
         <input
           ref={uploadInput}
           type="file"
-          accept="image/png,image/jpeg,image/bmp,image/gif"
+          accept={`${IMAGE_TYPES},${VIDEO_TYPES}`}
           multiple
           hidden
           onChange={async (e) => {
             const files = [...(e.target.files ?? [])];
             e.target.value = "";
-            for (const f of files) await api.uploadMedia(f).catch(onError);
+            for (const f of files) {
+              setUploading({ name: f.name, fraction: 0 });
+              await api
+                .uploadMedia(f, (fraction) => setUploading({ name: f.name, fraction }))
+                .then(() => toast(`Uploaded ${f.name}`))
+                .catch(onError);
+            }
+            setUploading(null);
             loadMedia();
           }}
         />
-        {media.length === 0 && <small className="muted">Images for image layers and signal-loss slates (PNG, JPEG, BMP, GIF).</small>}
+        {uploading && (
+          <div className="uploading">
+            <small>
+              Uploading {uploading.name} · {Math.round(uploading.fraction * 100)}%
+            </small>
+            <progress className="upload-progress" value={uploading.fraction} max={1} />
+          </div>
+        )}
+        {media.length === 0 && <small className="muted">Images (PNG, JPEG, BMP, GIF) and videos (MP4, MOV) for layers and signal-loss slates.</small>}
+        {folder && (
+          <small className="muted">
+            Very large videos are quicker to copy straight into <code>{folder}</code> (a network share or USB); they show up here.
+          </small>
+        )}
         {media.map((f) => (
           <div key={f.name} className="list-item">
-            <img className="thumb" src={`/api/media/${encodeURIComponent(f.name)}`} alt="" />
+            {f.kind === "video" ? <span className="thumb video">▶</span> : <img className="thumb" src={`/api/media/${encodeURIComponent(f.name)}`} alt="" />}
             <div className="list-text">
               <div>{f.name}</div>
               <small>{kb(f.bytes)}</small>

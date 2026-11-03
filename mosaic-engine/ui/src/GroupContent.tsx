@@ -54,7 +54,7 @@ export function GroupContent({
             {[...showing].reverse().map((s) => (
               <button key={s.id} className="link" onClick={() => onEditSources(s.id)} title="Edit this layer">
                 {s.name}
-                {s.type === "ndi" ? "" : ` (${s.type === "solid" ? "colour" : "pattern"})`}
+                {s.type === "ndi" ? "" : ` (${s.type === "solid" ? "colour" : s.type === "image" ? "image" : s.type === "video" ? "video" : "pattern"})`}
               </button>
             ))}
           </div>
@@ -95,6 +95,11 @@ export function GroupContent({
           <button disabled={!showing.length} onClick={() => run(api.clearGroup(wall.id, fade))}>
             Clear group
           </button>
+          {showing.some((s) => s.type === "video") && (
+            <button onClick={() => run(api.restartWall(wall.id))} title="Every video in this group from its first frame, together">
+              ⟲ Restart videos
+            </button>
+          )}
         </div>
       </div>
 

@@ -12,6 +12,10 @@ hidden sources (see [NEXT.md](NEXT.md)). If it's still under 60 fps:
 - use an NDI input rather than the animated test pattern, or set the pattern's `animated` to false
 - keep the canvas no larger than the wall needs
 
+**Video files.** For HEVC (H.265) videos, which you need for 8K, install **HEVC Video Extensions** from the
+Microsoft Store. For AV1, install the free **AV1 Video Extension**. H.264 works out of the box but is limited to
+4K by most GPUs' decoders.
+
 **Media server.** After building, run `install-engine.bat` (repo root) to start the engine at logon and keep it
 running; `update.bat` later updates, rebuilds and restarts it in one go. See the top-level README.
 

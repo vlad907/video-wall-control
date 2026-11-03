@@ -27,6 +27,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -117,9 +118,14 @@ public:
     explicit D3D11Renderer(bool warp) {
         UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
         const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
-        check(D3D11CreateDevice(nullptr, warp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels, 2, D3D11_SDK_VERSION,
-                                &device_, nullptr, &ctx_),
-              "D3D11CreateDevice");
+        // Video support lets Media Foundation decode video files on this device (hardware decoding,
+        // frames stay on the GPU). Some drivers / WARP refuse it; then videos decode in software.
+        HRESULT hr = D3D11CreateDevice(nullptr, warp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                       flags | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, levels, 2, D3D11_SDK_VERSION, &device_, nullptr, &ctx_);
+        if (FAILED(hr))
+            check(D3D11CreateDevice(nullptr, warp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels, 2,
+                                    D3D11_SDK_VERSION, &device_, nullptr, &ctx_),
+                  "D3D11CreateDevice");
 
         ComPtr<IDXGIDevice> dxgi;
         ComPtr<IDXGIAdapter> adapter;
@@ -227,7 +233,73 @@ public:
         return id;
     }
 
-    void destroyTexture(TexId id) override { textures_.erase(id); }
+    void destroyTexture(TexId id) override {
+        textures_.erase(id);
+        videoOutViews_.erase(id);
+    }
+
+    void* nativeDevice() override { return device_.Get(); }
+
+    // NV12 (from the decoder) to BGRA with the GPU's video processor: hardware colour conversion
+    // and scaling, no shader or CPU work, and fine at 8K.
+    bool blitVideoFrame(TexId dst, void* nativeNV12Texture, unsigned arraySlice) override {
+        auto it = textures_.find(dst);
+        if (it == textures_.end() || !it->second.rtv || !nativeNV12Texture) return false;
+        Texture& out = it->second;
+        if (!videoDev_ && (FAILED(device_.As(&videoDev_)) || FAILED(ctx_.As(&videoCtx_)))) return false;
+        auto* src = static_cast<ID3D11Texture2D*>(nativeNV12Texture);
+        D3D11_TEXTURE2D_DESC sd{};
+        src->GetDesc(&sd);
+        if (!vp_ || vpIn_[0] != sd.Width || vpIn_[1] != sd.Height || vpOut_[0] != UINT(out.w) || vpOut_[1] != UINT(out.h)) {
+            vp_.Reset();
+            vpe_.Reset();
+            videoInViews_.clear();
+            videoOutViews_.clear();
+            D3D11_VIDEO_PROCESSOR_CONTENT_DESC cd{};
+            cd.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+            cd.InputWidth = sd.Width;
+            cd.InputHeight = sd.Height;
+            cd.OutputWidth = out.w;
+            cd.OutputHeight = out.h;
+            cd.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+            if (FAILED(videoDev_->CreateVideoProcessorEnumerator(&cd, &vpe_)) || FAILED(videoDev_->CreateVideoProcessor(vpe_.Get(), 0, &vp_))) return false;
+            vpIn_[0] = sd.Width;
+            vpIn_[1] = sd.Height;
+            vpOut_[0] = out.w;
+            vpOut_[1] = out.h;
+            // Video files are BT.709 limited range; the canvas is full-range RGB.
+            ComPtr<ID3D11VideoContext1> vc1;
+            if (SUCCEEDED(videoCtx_.As(&vc1))) {
+                vc1->VideoProcessorSetStreamColorSpace1(vp_.Get(), 0, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
+                vc1->VideoProcessorSetOutputColorSpace1(vp_.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+            }
+            videoCtx_->VideoProcessorSetStreamFrameFormat(vp_.Get(), 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+            videoCtx_->VideoProcessorSetStreamAutoProcessingMode(vp_.Get(), 0, FALSE);
+        }
+        // Views are kept per decoder surface (the decoder reuses a small pool of them).
+        auto key = std::make_pair(static_cast<void*>(src), arraySlice);
+        if (!videoInViews_.count(key)) {
+            if (videoInViews_.size() > 64) videoInViews_.clear();  // the decoder moved to new surfaces
+            D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC iv{};
+            iv.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+            iv.Texture2D.ArraySlice = arraySlice;
+            ComPtr<ID3D11VideoProcessorInputView> view;
+            if (FAILED(videoDev_->CreateVideoProcessorInputView(src, vpe_.Get(), &iv, &view))) return false;
+            videoInViews_[key] = view;
+        }
+        auto& outView = videoOutViews_[dst];
+        if (!outView) {
+            D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ov{};
+            ov.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+            if (FAILED(videoDev_->CreateVideoProcessorOutputView(out.tex.Get(), vpe_.Get(), &ov, &outView))) return false;
+        }
+        RECT r{0, 0, out.w, out.h};
+        videoCtx_->VideoProcessorSetOutputTargetRect(vp_.Get(), TRUE, &r);
+        D3D11_VIDEO_PROCESSOR_STREAM st{};
+        st.Enable = TRUE;
+        st.pInputSurface = videoInViews_[key].Get();
+        return SUCCEEDED(videoCtx_->VideoProcessorBlt(vp_.Get(), outView.Get(), 0, 1, &st));
+    }
 
     ReadbackId createReadback(int w, int h, int slots) override {
         auto rb = std::make_shared<Readback>();
@@ -374,6 +446,15 @@ private:
         ComPtr<ID3D11RenderTargetView> rtv;
         int w = 0, h = 0;
     };
+    // Video processor (blitVideoFrame), created for one input / output size at a time.
+    ComPtr<ID3D11VideoDevice> videoDev_;
+    ComPtr<ID3D11VideoContext> videoCtx_;
+    ComPtr<ID3D11VideoProcessorEnumerator> vpe_;
+    ComPtr<ID3D11VideoProcessor> vp_;
+    UINT vpIn_[2] = {0, 0}, vpOut_[2] = {0, 0};
+    std::map<std::pair<void*, unsigned>, ComPtr<ID3D11VideoProcessorInputView>> videoInViews_;
+    std::map<TexId, ComPtr<ID3D11VideoProcessorOutputView>> videoOutViews_;
+
     struct Readback {
         int w = 0, h = 0;
         std::vector<ComPtr<ID3D11Texture2D>> staging;

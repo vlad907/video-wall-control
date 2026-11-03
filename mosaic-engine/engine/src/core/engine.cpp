@@ -420,6 +420,18 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
             fb.uploaded = true;
         }
     auto now = Clock::now();
+    std::vector<std::string> restarts;
+    {
+        std::lock_guard l(videoRestartMutex_);
+        restarts.swap(videoRestarts_);
+    }
+    for (auto& id : restarts) {
+        auto it = sources_.find(id);
+        if (it == sources_.end() || !it->second.video) continue;
+        it->second.video->restart();
+        it->second.playStart = now;
+        if (it->second.pausedAt >= 0) it->second.pausedAt = 0;
+    }
     json status = json::array();
     for (auto& [id, s] : sources_) {
         json st = {{"id", id}, {"type", toString(s.cfg.type)}, {"width", s.w}, {"height", s.h}};
@@ -471,6 +483,39 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
                 st["status"] = s.rx->connected() ? "ok" : (s.hasFrame ? "no signal (holding last frame)" : "waiting for source");
                 st["inputFps"] = s.rx->inputFps();
                 st["framesReceived"] = s.rx->framesReceived();
+                st["width"] = s.w;
+                st["height"] = s.h;
+            }
+        } else if (s.cfg.type == SourceType::Video) {
+            if (!s.video) {
+                st["status"] = s.error;
+            } else {
+                double t = s.pausedAt >= 0 ? s.pausedAt : std::chrono::duration<double>(now - s.playStart).count();
+                if (auto f = s.video->frameDue(t)) {
+                    bool gpu = f->gpuTexture != nullptr;
+                    if (!s.texCount || s.w != f->width || s.h != f->height || s.gpuFrames != gpu) {
+                        for (int i = 0; i < s.texCount; ++i) renderer_.destroyTexture(s.tex[i]);
+                        s.tex[0] = renderer_.createTexture(f->width, f->height, gpu ? TexUsage::RenderTarget : TexUsage::Upload);
+                        s.texCount = 1;
+                        s.current = 0;
+                        s.w = f->width;
+                        s.h = f->height;
+                        s.gpuFrames = gpu;
+                    }
+                    // Hidden videos keep time but aren't copied to the GPU.
+                    if (needed.count(id)) {
+                        bool ok = gpu ? renderer_.blitVideoFrame(s.tex[0], f->gpuTexture, f->arraySlice) : (renderer_.uploadBGRA(s.tex[0], f->bgra, f->stride), true);
+                        if (ok) s.hasFrame = true;
+                        else s.error = "the GPU couldn't convert the video frame";
+                    }
+                }
+                VideoInfo vi = s.video->info();
+                std::string vs = s.video->status();
+                st["status"] = vs != "ok" ? vs : !s.error.empty() ? s.error : s.video->finished() ? "ended (holding the last frame)" : s.pausedAt >= 0 ? "paused" : "playing";
+                st["video"] = {{"width", vi.width},  {"height", vi.height},       {"fps", vi.fps},
+                               {"codec", vi.codec},  {"hardware", vi.hardware},   {"durationS", vi.durationS},
+                               {"positionS", vi.durationS > 0 ? std::fmod(t, vi.durationS) : t},
+                               {"decodeFps", s.video->decodeFps()}, {"playing", s.pausedAt < 0}};
                 st["width"] = s.w;
                 st["height"] = s.h;
             }
@@ -579,8 +624,14 @@ std::unique_ptr<VideoSink> Engine::makeSink(const std::string& ndiName, std::str
     return createNullSink();
 }
 
+void Engine::restartVideo(const std::string& sourceId) {
+    std::lock_guard l(videoRestartMutex_);
+    videoRestarts_.push_back(sourceId);
+}
+
 void Engine::destroySource(SourceState& s) {
     s.rx.reset();
+    s.video.reset();  // before its textures: hardware decoders hold GPU surfaces
     for (int i = 0; i < s.texCount; ++i) renderer_.destroyTexture(s.tex[i]);
     s.texCount = 0;
     s.hasFrame = false;
@@ -627,10 +678,20 @@ void Engine::reconcile(const Layout& layout) {
     for (auto it = sources_.begin(); it != sources_.end();) {
         const SourceConfig* c = layout.findSource(it->first);
         bool keep = c && c->type == it->second.cfg.type && c->ndiName == it->second.cfg.ndiName &&
-                    c->image == it->second.cfg.image &&
+                    c->image == it->second.cfg.image && c->video == it->second.cfg.video &&
                     (c->type != SourceType::TestPattern || (c->rect.w == it->second.w && c->rect.h == it->second.h));
         if (keep) {
             if (c->animated != it->second.cfg.animated) it->second.patternDrawn = false;
+            SourceState& v = it->second;
+            if (v.video) {
+                if (c->loop != v.cfg.loop) v.video->setLoop(c->loop);
+                double pos = std::chrono::duration<double>(Clock::now() - v.playStart).count();
+                if (!c->playing && v.pausedAt < 0) v.pausedAt = pos;  // pause: hold the position
+                if (c->playing && v.pausedAt >= 0) {                  // resume from it
+                    v.playStart = Clock::now() - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(v.pausedAt));
+                    v.pausedAt = -1;
+                }
+            }
             it->second.cfg = *c;
             ++it;
         } else {
@@ -661,6 +722,16 @@ void Engine::reconcile(const Layout& layout) {
             s.hasFrame = true;
         } else if (c.type == SourceType::Ndi && ndi_) {
             s.rx = ndi_->createReceiver(c.ndiName);
+        } else if (c.type == SourceType::Video) {
+            bool safe = !c.video.empty() && c.video.find_first_of("/\\") == std::string::npos && c.video.find("..") == std::string::npos;
+            if (!safe) s.error = c.video.empty() ? "no video chosen" : "bad video name";
+            else {
+                std::string err;
+                s.video = openVideoFile((mediaDir_ / c.video).string(), renderer_.nativeDevice(), c.loop, err);
+                if (!s.video) s.error = "cannot play " + c.video + ": " + err;
+            }
+            s.playStart = Clock::now();
+            s.pausedAt = c.playing ? -1 : 0;
         } else if (c.type == SourceType::Image) {
             // Decoded here, uploaded on the next frame. Names are plain file names inside the media folder.
             std::string err;

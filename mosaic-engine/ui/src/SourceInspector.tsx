@@ -1,6 +1,8 @@
-import { wallBounds, type Layout, type Rect, type Source } from "./api";
+import { api, wallBounds, type Layout, type Rect, type Source } from "./api";
 import { NumberField, TextField } from "./Inspector";
 import { MediaSelect } from "./Settings";
+
+const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 // Edits one source: where it sits on the canvas, what part of it is shown, and how opaque it is.
 export function SourceInspector({
@@ -54,7 +56,15 @@ export function SourceInspector({
         </label>
       </div>
       <small className="muted">
-        {source.type === "ndi" ? source.ndiName : source.type === "solid" ? "solid colour" : source.type === "image" ? "image" : "test pattern"}
+        {source.type === "ndi"
+          ? source.ndiName
+          : source.type === "solid"
+            ? "solid colour"
+            : source.type === "image"
+              ? "image"
+              : source.type === "video"
+                ? "video file"
+                : "test pattern"}
         {source.status ? ` · ${source.status.status}` : ""}
       </small>
 
@@ -65,6 +75,35 @@ export function SourceInspector({
             <span>Image</span>
             <MediaSelect value={source.image ?? ""} placeholder="Choose an image…" onError={() => {}} onChange={(image) => onPatch({ image })} />
           </label>
+        )}
+        {source.type === "video" && (
+          <>
+            <label className="field wide">
+              <span>Video</span>
+              <MediaSelect kind="video" value={source.video ?? ""} placeholder="Choose a video…" onError={() => {}} onChange={(video) => onPatch({ video })} />
+            </label>
+            <div className="row buttons">
+              <button className={source.playing === false ? "primary" : ""} onClick={() => onPatch({ playing: source.playing === false })}>
+                {source.playing === false ? "▶ Play" : "❚❚ Pause"}
+              </button>
+              <button onClick={() => api.restartSource(source.id).catch(() => {})} title="From the first frame">
+                ⟲ Restart
+              </button>
+            </div>
+            <label className="toggle wide-note">
+              <input type="checkbox" checked={source.loop !== false} onChange={(e) => onPatch({ loop: e.target.checked })} />
+              Loop (otherwise it stops on the last frame)
+            </label>
+            {source.status?.video && (
+              <small className={`wide-note ${source.status.video.decodeFps && source.status.video.decodeFps < source.status.video.fps * 0.9 ? "warn" : "muted"}`}>
+                {source.status.video.width}×{source.status.video.height} · {source.status.video.codec} · {source.status.video.fps.toFixed(2)} fps ·{" "}
+                {source.status.video.hardware ? "GPU decoding" : "software decoding"} · {fmtTime(source.status.video.positionS)} / {fmtTime(source.status.video.durationS)}
+                {source.status.video.decodeFps && source.status.video.decodeFps < source.status.video.fps * 0.9
+                  ? ` · decoding only ${source.status.video.decodeFps.toFixed(1)} fps: the file is too heavy for this decoder`
+                  : ""}
+              </small>
+            )}
+          </>
         )}
       </div>
 

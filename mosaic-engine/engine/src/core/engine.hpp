@@ -21,6 +21,7 @@
 #include "core/layout_store.hpp"
 #include "core/metrics.hpp"
 #include "core/output_channel.hpp"
+#include "io/video_file.hpp"
 #include "io/video_io.hpp"
 #include "render/renderer.hpp"
 
@@ -48,6 +49,9 @@ public:
     // Call before changing the layout; returns false if the render thread didn't respond.
     bool captureForTransition(int ms, Rect region = {});
 
+    // Starts a video source from its first frame again (any thread; done on the next frame).
+    void restartVideo(const std::string& sourceId);
+
     // Low-res BGRA preview of "canvas" or an output id, encoded as JPEG.
     bool previewJpeg(const std::string& target, std::string& jpeg);
     // Full-resolution JPEG of the next frame an output sends.
@@ -69,7 +73,14 @@ private:
         Clock::time_point createdAt = Clock::now(), lastFrameAt;  // NDI: for spotting a lost signal
         bool signalLost = false;
         std::unique_ptr<NdiReceiver> rx;
+        // Video files: the decoder, and the playback clock (paused = position held).
+        std::unique_ptr<VideoFileDecoder> video;
+        Clock::time_point playStart = Clock::now();
+        double pausedAt = -1;   // seconds into the video while paused; -1 = playing
+        bool gpuFrames = false; // its texture takes hardware-decoded frames (render target) rather than uploads
     };
+    std::mutex videoRestartMutex_;
+    std::vector<std::string> videoRestarts_;
     struct PreviewState {
         std::string target;
         int w = 0, h = 0;

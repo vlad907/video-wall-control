@@ -47,6 +47,7 @@ const char* toString(SourceType t) {
         case SourceType::Ndi: return "ndi";
         case SourceType::Solid: return "solid";
         case SourceType::Image: return "image";
+        case SourceType::Video: return "video";
         default: return "test_pattern";
     }
 }
@@ -63,6 +64,7 @@ static SourceType sourceTypeFrom(const std::string& s) {
     if (s == "ndi") return SourceType::Ndi;
     if (s == "solid") return SourceType::Solid;
     if (s == "image") return SourceType::Image;
+    if (s == "video") return SourceType::Video;
     return SourceType::TestPattern;
 }
 
@@ -103,6 +105,11 @@ void to_json(json& j, const SourceConfig& s) {
     if (s.type == SourceType::Solid) j["color"] = s.color;
     if (s.type == SourceType::TestPattern) j["animated"] = s.animated;
     if (s.type == SourceType::Image) j["image"] = s.image;
+    if (s.type == SourceType::Video) {
+        j["video"] = s.video;
+        j["loop"] = s.loop;
+        j["playing"] = s.playing;
+    }
     if (!s.group.empty()) j["group"] = s.group;
 }
 
@@ -112,6 +119,9 @@ void from_json(const json& j, SourceConfig& s) {
     s.type = sourceTypeFrom(j.value("type", std::string(toString(s.type))));
     s.ndiName = j.value("ndiName", s.ndiName);
     s.image = j.value("image", s.image);
+    s.video = j.value("video", s.video);
+    s.loop = j.value("loop", s.loop);
+    s.playing = j.value("playing", s.playing);
     if (j.contains("rect")) s.rect = j.at("rect").get<Rect>();
     if (j.contains("crop")) from_json(j.at("crop"), s.crop);
     s.opacity = j.value("opacity", s.opacity);

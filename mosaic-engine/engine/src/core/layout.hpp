@@ -16,7 +16,7 @@ struct Rect {
 };
 
 enum class ScaleMode { Stretch, Fit, Fill };
-enum class SourceType { TestPattern, Ndi, Solid, Image };
+enum class SourceType { TestPattern, Ndi, Solid, Image, Video };
 // Wire format of an output. UYVY is NDI's native 4:2:2 format (half the bytes of BGRA).
 enum class PixelFormat { Uyvy, Bgra };
 
@@ -26,6 +26,9 @@ struct SourceConfig {
     SourceType type = SourceType::TestPattern;
     std::string ndiName;                      // for SourceType::Ndi
     std::string image;                        // for SourceType::Image: a file in the media folder (data/media)
+    std::string video;                        // for SourceType::Video: a file in the media folder
+    bool loop = true;                         // video: start again at the end (else hold the last frame)
+    bool playing = true;                      // video: false = paused
     Rect rect;                                // placement on the canvas, in canvas pixels
     Rect crop;                                // region of the source drawn, in source pixels (w/h 0 = all of it)
     float opacity = 1.f;                      // 0..1, blended over the sources below it

@@ -56,6 +56,7 @@ Every change is saved on the media server and is still there after a restart.
 | Recall a preset on a group | `POST /api/walls/{group}/presets/{preset}/recall` |
 | Show one NDI stream on a whole group | `POST /api/walls/{group}/show` with `{"ndiName": "..."}` |
 | Blank a group | `POST /api/walls/{group}/clear` |
+| Restart the videos a group shows, together | `POST /api/walls/{group}/restart` |
 | Recall a scene (all groups) | `POST /api/scenes/{scene}/recall` |
 | Switch layout | `POST /api/layouts/{layout}/activate` |
 | Is the engine up? | `GET /api/health` |
@@ -165,6 +166,13 @@ optional: `{"transitionMs": 500}`.
 ```json
 { "group": "lobby-display", "cleared": true, "transitionMs": 500 }
 ```
+
+### `POST /api/walls/{group}/restart`
+
+Starts every video file the group shows from its first frame, at the same moment, for example at the
+start of a show segment. Reply: `{"group": "main-wall", "restarted": ["main-wall--video"]}`. To pause and resume
+one video, `PATCH /api/sources/{source}` with `{"playing": false}` / `{"playing": true}`. The source id is
+listed by `GET /api/sources`.
 
 ### `POST /api/scenes/{scene}/recall`
 

@@ -2,7 +2,19 @@
 
 export type Rect = { x: number; y: number; w: number; h: number };
 export type ScaleMode = "stretch" | "fit" | "fill";
-export type SourceType = "test_pattern" | "ndi" | "solid" | "image";
+export type SourceType = "test_pattern" | "ndi" | "solid" | "image" | "video";
+
+export interface VideoStatus {
+  width: number;
+  height: number;
+  fps: number;
+  codec: string;
+  hardware: boolean;
+  durationS: number;
+  positionS: number;
+  decodeFps: number;
+  playing: boolean;
+}
 
 export interface Source {
   id: string;
@@ -10,13 +22,16 @@ export interface Source {
   type: SourceType;
   ndiName?: string;
   image?: string; // media file name (type "image")
+  video?: string; // media file name (type "video")
+  loop?: boolean; // video: start again at the end
+  playing?: boolean; // video: false = paused
   rect: Rect;
   crop: Rect; // region of the source drawn; w/h 0 = all of it
   opacity: number;
   color?: [number, number, number, number];
   animated?: boolean;
   enabled: boolean;
-  status?: { status: string; inputFps?: number; width: number; height: number; signal?: "ok" | "lost"; showing?: string };
+  status?: { status: string; inputFps?: number; width: number; height: number; signal?: "ok" | "lost"; showing?: string; video?: VideoStatus };
   group?: string; // wall group whose content this is (set by the group's presets)
 }
 
@@ -153,6 +168,7 @@ export interface LayoutVersion {
 export interface MediaFile {
   name: string;
   bytes: number;
+  kind?: "image" | "video";
 }
 
 export interface LayoutSummary {
@@ -203,7 +219,7 @@ export interface Metrics {
     ndi: string;
     layout: string;
   };
-  sources: { id: string; type: string; status: string; inputFps?: number; width: number; height: number; signal?: "ok" | "lost"; showing?: string }[];
+  sources: { id: string; type: string; status: string; inputFps?: number; width: number; height: number; signal?: "ok" | "lost"; showing?: string; video?: VideoStatus }[];
   outputs: OutputMetrics[];
   sync: { framesComplete: number; framesPartial: number; completeRatio: number; lastFrameIdSpread: number };
 }
@@ -257,8 +273,35 @@ export const api = {
   restore: (layoutId: string, version: string) => call("POST", `/api/layouts/${layoutId}/history/${version}/restore`, {}),
   getLayout: (id: string) => call<Layout>("GET", `/api/layouts/${id}`),
   importLayout: (l: Layout) => call<Layout>("POST", "/api/layouts", l),
-  media: () => call<{ files: MediaFile[] }>("GET", "/api/media").then((r) => r.files),
-  uploadMedia: (file: File) => call<MediaFile>("POST", `/api/media?name=${encodeURIComponent(file.name)}`, undefined, file),
+  media: () => call<{ files: MediaFile[]; folder: string }>("GET", "/api/media").then((r) => r.files),
+  mediaFolder: () => call<{ files: MediaFile[]; folder: string }>("GET", "/api/media").then((r) => r.folder),
+  // XHR rather than fetch, for upload progress (8K videos take a while).
+  uploadMedia: (file: File, onProgress?: (fraction: number) => void) =>
+    new Promise<MediaFile>((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      x.open("POST", `/api/media?name=${encodeURIComponent(file.name)}`);
+      x.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+      const key = storedKey();
+      if (key) x.setRequestHeader("X-Api-Key", key);
+      x.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
+      x.onload = () => {
+        let data: { error?: string } = {};
+        try {
+          data = JSON.parse(x.responseText);
+        } catch {
+          /* not JSON */
+        }
+        if (x.status === 401) {
+          window.dispatchEvent(new Event("mosaic-locked"));
+          reject(new LockedError("Enter the PIN to make changes."));
+        } else if (x.status >= 300) reject(new Error(data.error ?? x.statusText));
+        else resolve(data as MediaFile);
+      };
+      x.onerror = () => reject(new Error(`Uploading ${file.name} failed (connection lost?)`));
+      x.send(file);
+    }),
+  restartSource: (id: string) => call("POST", `/api/sources/${id}/restart`, {}),
+  restartWall: (id: string) => call("POST", `/api/walls/${id}/restart`, {}),
   deleteMedia: (name: string) => call("DELETE", `/api/media/${encodeURIComponent(name)}`),
   layout: () => call<Layout>("GET", "/api/layout"),
   putLayout: (patch: Partial<Layout>) => call<Layout>("PUT", "/api/layout", patch),
