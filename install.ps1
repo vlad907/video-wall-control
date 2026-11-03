@@ -92,6 +92,14 @@ if (Test-Path $MosaicExe) {
     Write-Host "re-run this installer then to add its firewall rule."
 }
 
+# --- Mosaic Receiver (optional player instead of Studio Monitor) -----------
+$ReceiverExe = Join-Path $AppDir "mosaic-engine\build\Release\mosaic_receiver.exe"
+if (Test-Path $ReceiverExe) {
+    Get-NetFirewallRule -DisplayName "Mosaic Receiver NDI" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    New-NetFirewallRule -DisplayName "Mosaic Receiver NDI" -Direction Inbound -Program $ReceiverExe -Action Allow -Profile Any | Out-Null
+    Write-Host "Mosaic Receiver found; firewall rule added for it."
+}
+
 if (-not $NoStart) {
     Start-ScheduledTask -TaskName $TaskName
     Write-Host "Started. Dashboard: http://localhost:$DashboardPort (or http://<this-pc-ip>:$DashboardPort)"

@@ -953,9 +953,166 @@ def sync_endpoint(displays):
             apply_panel(p)
 
 
+# --------------------------------------------------------------------------
+# Mosaic Receiver: our own player, used instead of Studio Monitor when the endpoint's
+# player is "mosaic". One process shows every display, in step (mosaic-engine/docs/RECEIVER.md).
+# --------------------------------------------------------------------------
+
+RECEIVER_PORT = 8095
+receiver_state = {"proc": None, "sent": None, "last_start": 0.0, "warned": 0.0}
+
+
+def receiver_mode():
+    return cfg("player") == "mosaic"
+
+
+def find_receiver_exe():
+    name = "mosaic_receiver.exe" if IS_WINDOWS else "mosaic_receiver"
+    for rel in ("build/Release", "build", "build/RelWithDebInfo"):
+        candidate = MOSAIC_DIR / rel / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def receiver_call(method, path, body=None, timeout=1.5):
+    try:
+        return http_json(method, "http://127.0.0.1:%d%s" % (RECEIVER_PORT, path), body, timeout=timeout)
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def start_receiver():
+    """Starts the receiver unless it answers already. True when it's up."""
+    if receiver_call("GET", "/health"):
+        return True
+    exe = find_receiver_exe()
+    if not exe:
+        if time.time() - receiver_state["warned"] > 300:
+            receiver_state["warned"] = time.time()
+            log.warning("Mosaic Receiver not built on this PC (looked in %s); run update.bat", MOSAIC_DIR / "build")
+        return False
+    if time.time() - receiver_state["last_start"] < 10:
+        return False  # just started one; give it time
+    stop_receiver()
+    LOG_DIR.mkdir(exist_ok=True)
+    out = open(LOG_DIR / "mosaic-receiver.log", "ab")
+    args = [exe, "--port", str(RECEIVER_PORT)]
+    log.info("Starting Mosaic Receiver: %s", " ".join(args))
+    receiver_state["last_start"] = time.time()
+    receiver_state["sent"] = None  # a new process needs its displays again
+    try:
+        kwargs = dict(cwd=str(Path(exe).parent), stdin=subprocess.DEVNULL, stdout=out, stderr=out, close_fds=True)
+        if IS_WINDOWS:
+            receiver_state["proc"] = subprocess.Popen(args, creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, **kwargs)
+        else:
+            receiver_state["proc"] = subprocess.Popen(args, **kwargs)
+    except OSError as exc:
+        log.error("Could not start the Mosaic Receiver: %s", exc)
+        return False
+    finally:
+        out.close()
+    for _ in range(20):
+        time.sleep(0.25)
+        if receiver_call("GET", "/health"):
+            return True
+    log.error("Mosaic Receiver did not answer (see logs/mosaic-receiver.log)")
+    return False
+
+
+def stop_receiver():
+    proc = receiver_state["proc"]
+    receiver_state["proc"] = None
+    receiver_state["sent"] = None
+    if proc and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    elif IS_WINDOWS:
+        subprocess.run(["taskkill", "/F", "/IM", "mosaic_receiver.exe"], capture_output=True, timeout=15,
+                       creationflags=CREATE_NO_WINDOW)
+
+
+def receiver_displays(displays):
+    """The receiver's config: each display slot on a screen (pinned, or the next free one;
+    the main screen last when there are more screens than displays)."""
+    screens = enumerate_displays()
+    pinned = {d.get("screen") for d in displays if d.get("screen")}
+    free = [s for s in screens if s["device"] not in pinned]
+    if len(screens) > len(displays):
+        free.sort(key=lambda s: s.get("primary", False))
+    out = []
+    for i, d in enumerate(displays):
+        screen = next((s for s in screens if s["device"] == d.get("screen")), None) or (free.pop(0) if free else None)
+        # No screen info (not Windows): side by side, for testing.
+        rect = ({"x": screen["x"], "y": screen["y"], "w": screen["width"], "h": screen["height"]} if screen
+                else {"x": i * 1920, "y": 0, "w": 1920, "h": 1080})
+        out.append({"index": d.get("index", i + 1), "stream": d["stream"], "label": d.get("label") or "",
+                    "window": rect, "screen": screen["device"] if screen else ""})
+    return out
+
+
+def sync_receiver(displays=None):
+    """Keeps the receiver running with the right displays (saved, so it comes back after a reboot)."""
+    if displays is not None:
+        with config_lock:
+            config["receiver_displays"] = receiver_displays([d for d in displays if d.get("stream")])
+        save_config()
+    if not start_receiver():
+        return
+    wanted = {"displays": cfg("receiver_displays") or []}
+    if receiver_state["sent"] != wanted:
+        if receiver_call("PUT", "/config", wanted, timeout=3) is not None:
+            receiver_state["sent"] = wanted
+            log.info("Mosaic Receiver: %s", ", ".join("%s -> %s" % (d["label"] or d["index"], d["stream"]) for d in wanted["displays"]) or "no displays")
+
+
+def receiver_panels():
+    """What each display shows, from the receiver, in the dashboard's panel shape."""
+    status = receiver_call("GET", "/status") or {}
+    shown = {d.get("index"): d for d in status.get("displays") or []}
+    out = []
+    for i, d in enumerate(cfg("receiver_displays") or [], start=1):
+        st = shown.get(d.get("index")) or {}
+        ok = st.get("status") == "ok"
+        out.append({"index": i, "port": RECEIVER_PORT, "name": d.get("label") or "Display %d" % i, "screen": d.get("screen", ""),
+                    "ndi_source": d["stream"], "playing": d["stream"] if ok else "", "reachable": bool(status),
+                    "status": st.get("status", "receiver not running"), "frame": st.get("shownFrameId", 0)})
+    return out, status
+
+
+def set_player(player):
+    """Switches this PC between Studio Monitor and the Mosaic Receiver."""
+    if (cfg("player") or "studio_monitor") == player:
+        return
+    with config_lock:
+        config["player"] = player
+    save_config()
+    log.info("Player is now %s", "Mosaic Receiver" if player == "mosaic" else "NDI Studio Monitor")
+    if player == "mosaic":
+        if processes_managed():
+            with action_lock:
+                kill_all_instances()
+    else:
+        stop_receiver()
+        with config_lock:
+            config["receiver_displays"] = []
+        save_config()
+        if processes_managed():
+            restart_all("player switched back to Studio Monitor")
+
+
 def endpoint_checkin():
     body = {"host": socket.gethostname(), "version": "videowall/1", "dashboardPort": int(cfg("dashboard_port")),
-            "screens": enumerate_displays(), "panels": endpoint_report()}
+            "screens": enumerate_displays(), "player": cfg("player") or "studio_monitor"}
+    if receiver_mode():
+        panels_now, rx = receiver_panels()
+        body["panels"] = panels_now
+        body["receiver"] = rx or {"error": "the Mosaic Receiver isn't running"}
+    else:
+        body["panels"] = endpoint_report()
     try:
         reply = http_json("POST", mosaic_url("/api/endpoints/checkin"), body, timeout=3)
     except (urllib.error.URLError, OSError, ValueError) as exc:
@@ -973,7 +1130,11 @@ def endpoint_checkin():
         return
     if not was:
         log.info("Managed by the mosaic engine as endpoint '%s'", reply["endpoint"].get("name"))
-    sync_endpoint(endpoint_state["displays"])
+    set_player(reply["endpoint"].get("player") or "studio_monitor")
+    if receiver_mode():
+        sync_receiver(endpoint_state["displays"])
+    else:
+        sync_endpoint(endpoint_state["displays"])
 
 
 def endpoint_loop():
@@ -1029,6 +1190,12 @@ def initial_startup():
         # The engine first, so its streams exist when the monitors look for them.
         state["phase"] = "starting engine"
         start_mosaic()
+    if receiver_mode():
+        # Our own player: it shows every display; no Studio Monitor windows.
+        state["phase"] = "starting receiver"
+        sync_receiver()
+        state["phase"] = "running"
+        return
     with action_lock:
         state["phase"] = "launching"
         ports = [p["port"] for p in panels()]
@@ -1051,6 +1218,9 @@ def watchdog_tick():
         mosaic_watchdog()
     except Exception:
         log.exception("Mosaic engine check failed")
+    if receiver_mode():
+        sync_receiver()  # restarts it if it stopped, and gives it its displays again
+        return
     expected = panels()
     if processes_managed():
         running = count_processes()
@@ -1187,7 +1357,11 @@ def enumerate_displays():
 
 def status_payload():
     result = []
-    for p in panels():
+    if receiver_mode():
+        for p in receiver_panels()[0]:
+            result.append(dict(p, reachable=p["status"] == "ok", current_source=p["playing"] or None,
+                               current_display=p["screen"], current_config=None))
+    for p in ([] if receiver_mode() else panels()):
         current = get_configuration(p["port"])
         window = (current or {}).get("window") or {}
         result.append(dict(p, reachable=current is not None,
@@ -1197,7 +1371,7 @@ def status_payload():
     return {
         "panels": result,
         "phase": state["phase"],
-        "process_count": state["process_count"] if processes_managed() else None,
+        "process_count": state["process_count"] if processes_managed() and not receiver_mode() else None,
         "processes_managed": processes_managed(),
         "exe_path": find_exe() if processes_managed() else None,
         "exe_configured": cfg("exe_path"),
@@ -1208,6 +1382,7 @@ def status_payload():
         "fullscreen": cfg("fullscreen"),
         "screens": enumerate_displays(),
         "hostname": socket.gethostname(),
+        "player": cfg("player") or "studio_monitor",
         "endpoint": {"managed": endpoint_managed(), "name": (endpoint_state["endpoint"] or {}).get("name"),
                      "error": endpoint_state["error"], "last_ok": endpoint_state["last_ok"]},
     }

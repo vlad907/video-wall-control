@@ -196,13 +196,14 @@ void from_json(const json& j, EndpointDisplay& d) {
 }
 
 void to_json(json& j, const Endpoint& e) {
-    j = json{{"id", e.id}, {"name", e.name}, {"host", e.host}, {"displays", e.displays}};
+    j = json{{"id", e.id}, {"name", e.name}, {"host", e.host}, {"player", e.player}, {"displays", e.displays}};
 }
 
 void from_json(const json& j, Endpoint& e) {
     e.id = j.value("id", e.id);
     e.name = j.value("name", e.name);
     e.host = j.value("host", e.host);
+    e.player = j.value("player", e.player);
     if (j.contains("displays")) e.displays = j.at("displays").get<std::vector<EndpointDisplay>>();
 }
 
@@ -353,6 +354,7 @@ std::vector<std::string> normalize(Layout& l) {
         if (e.id.empty() || ids.count(e.id)) e.id = "endpoint-" + std::to_string(n);
         ids.insert(e.id);
         if (e.name.empty()) e.name = e.host.empty() ? e.id : e.host;
+        if (e.player != "mosaic") e.player = "studio_monitor";
     }
 
     ids.clear();

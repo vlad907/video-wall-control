@@ -129,3 +129,43 @@ endif()
 if(NOT MSVC)
   target_compile_options(mosaic_engine PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
+
+# ---------------------------------------------------------------------------
+# Receiver: plays the engine's outputs on a receiving PC's displays, in step (docs/RECEIVER.md)
+# ---------------------------------------------------------------------------
+set(RECEIVER_SOURCES
+  receiver/src/main.cpp
+  receiver/src/receiver.cpp
+  receiver/src/present_headless.cpp
+)
+if(MOSAIC_HAVE_NDI)
+  list(APPEND RECEIVER_SOURCES receiver/src/ndi_input.cpp)
+else()
+  list(APPEND RECEIVER_SOURCES receiver/src/ndi_input_none.cpp)
+endif()
+if(WIN32)
+  list(APPEND RECEIVER_SOURCES receiver/src/present_d3d11.cpp)
+endif()
+
+add_executable(mosaic_receiver ${RECEIVER_SOURCES})
+target_link_libraries(mosaic_receiver PRIVATE nlohmann_json::nlohmann_json httplib::httplib)
+if(MOSAIC_HAVE_NDI)
+  target_include_directories(mosaic_receiver PRIVATE ${NDI_INCLUDE_DIR})
+  target_link_libraries(mosaic_receiver PRIVATE ${NDI_LIBRARY})
+  if(WIN32 AND _ndi_dll)
+    add_custom_command(TARGET mosaic_receiver POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_ndi_dll} $<TARGET_FILE_DIR:mosaic_receiver>)
+  endif()
+endif()
+if(WIN32)
+  target_compile_definitions(mosaic_receiver PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00 UNICODE _UNICODE)
+  target_link_libraries(mosaic_receiver PRIVATE d3d11 dxgi d3dcompiler user32 ws2_32)
+  if(MSVC)
+    target_compile_options(mosaic_receiver PRIVATE /W3 /utf-8 /permissive-)
+  endif()
+else()
+  target_compile_options(mosaic_receiver PRIVATE -Wall -Wextra -Wno-unused-parameter)
+endif()
+if(APPLE)
+  target_link_libraries(mosaic_receiver PRIVATE "-framework CoreFoundation" "-framework CFNetwork")  # httplib's resolver
+endif()

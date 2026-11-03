@@ -292,6 +292,12 @@ with tempfile.TemporaryDirectory() as tmp:
               f"its check-in returns its displays ({streams})")
         e = next(x for x in json.loads(get("/api/endpoints")[1])["endpoints"] if x["id"] == "wall-pc")
         check(e["online"] and not e["displays"][0]["ok"], "status shows it online, display 1 playing the wrong stream")
+        call("PUT", "/api/endpoints/wall-pc", {"player": "mosaic"})
+        r = call("POST", "/api/endpoints/checkin", {"host": "wall-pc", "panels": [], "receiver": {"spreadMax10s": 0, "alignedRatio": 1.0, "refreshHz": 60,
+                                                    "displays": [{"index": 1, "shownFrameId": 1234, "late": 2}]}})
+        check(r["endpoint"]["player"] == "mosaic", "the check-in tells the PC to use the Mosaic Receiver")
+        e = next(x for x in json.loads(get("/api/endpoints")[1])["endpoints"] if x["id"] == "wall-pc")
+        check(e["receiver"]["spreadMax10s"] == 0 and e["displays"][0]["shownFrameId"] == 1234, "the receiver's sync status reaches the editor")
 
         print("frame delivery:", flush=True)
         time.sleep(2)

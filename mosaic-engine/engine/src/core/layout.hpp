@@ -96,6 +96,7 @@ struct Endpoint {
     std::string id;
     std::string name;
     std::string host;  // the PC's name, matched without case and domain
+    std::string player = "studio_monitor";  // what shows the streams there: "studio_monitor" or "mosaic" (Mosaic Receiver)
     std::vector<EndpointDisplay> displays;
 };
 

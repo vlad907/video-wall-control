@@ -81,6 +81,7 @@ export interface Endpoint {
   id: string;
   name: string;
   host: string; // the PC's name
+  player?: "studio_monitor" | "mosaic"; // what shows the streams on that PC
   displays: EndpointDisplay[];
 }
 
@@ -102,7 +103,10 @@ export interface EndpointView extends Omit<Endpoint, "displays"> {
   address: string;
   version: string;
   screens: Screen[];
+  receiver?: { spreadMax10s: number; alignedRatio: number; refreshHz: number; presenter: string; error: string };
   displays: (EndpointDisplay & {
+    shownFrameId?: number;
+    late?: number;
     index: number;
     label?: string;
     stream?: string;

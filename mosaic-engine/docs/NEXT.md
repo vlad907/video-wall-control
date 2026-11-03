@@ -46,6 +46,17 @@ Why each item is planned this way:
 - **Multi-instance.** If outputs are split across machines, share the layout through the
   REST API and align on NDI timecode.
 
+## Milestone 4: Mosaic Receiver (planned)
+
+Our own player for receiving PCs, replacing NDI Studio Monitor per endpoint, so frames show in
+step on all displays of a PC, and later across PCs. It also reports what's really on screen.
+Plan, phases and acceptance criteria: [RECEIVER.md](RECEIVER.md).
+
+- [x] Phase 1: one PC: frame-aligned multi-display player, dashboard supervision, player choice per endpoint
+      (self-test and Windows CI; still to run on the receiving PCs, see RECEIVER.md "Using it")
+- [ ] Phase 2: across PCs: clock sync with the engine and scheduled presentation
+- [ ] Phase 3: per-display colour matching, identify overlay, local test patterns
+
 ## Possible next features
 
 - Video file and still image sources

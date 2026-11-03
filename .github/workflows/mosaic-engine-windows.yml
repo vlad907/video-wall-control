@@ -1,4 +1,4 @@
-# Builds the mosaic engine with MSVC on Windows and runs its Direct3D 11 path
+# Builds the mosaic engine and receiver with MSVC on Windows and runs their Direct3D 11 paths
 # on WARP (Windows' software rasterizer; CI machines have no GPU). This checks
 # that it compiles, that the HLSL compiles in D3DCompile, and that outputs map
 # correctly pixel-for-pixel. It does not measure real GPU speed or test NDI.
@@ -56,6 +56,25 @@ jobs:
         run: |
           python -m pip install --quiet numpy
           python tools/check_uyvy.py build/Release/mosaic_engine.exe
+
+      - name: Receiver self-test (frame alignment, synthetic streams)
+        run: build/Release/mosaic_receiver.exe --self-test 6
+
+      # The real Direct3D 11 presenter on WARP: windows + flip-model swap chains + present loop.
+      # Informational: CI machines may not have a desktop session to put windows on.
+      - name: Receiver on Direct3D 11 (WARP), smoke test
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $cfg = '{"displays":[{"index":1,"stream":"synthetic","synthetic":{"width":320,"height":180},"window":{"x":0,"y":0,"w":640,"h":360}},{"index":2,"stream":"synthetic","synthetic":{"width":320,"height":180,"delayMs":5},"window":{"x":640,"y":0,"w":640,"h":360}}]}'
+          Set-Content -Path rx.json -Value $cfg
+          $p = Start-Process build/Release/mosaic_receiver.exe -ArgumentList "--software-gpu","--config","rx.json","--port","8095" -PassThru
+          Start-Sleep -Seconds 6
+          $s = Invoke-RestMethod http://127.0.0.1:8095/status
+          $s | ConvertTo-Json -Depth 5
+          Stop-Process -Id $p.Id
+          if ($s.presenter -ne "Direct3D 11") { Write-Error "presenter is $($s.presenter)" }
+          if ($s.spreadMax10s -gt 1) { Write-Error "displays out of step: $($s.spreadMax10s)" }
 
       - name: Upload snapshots and metrics
         if: always()

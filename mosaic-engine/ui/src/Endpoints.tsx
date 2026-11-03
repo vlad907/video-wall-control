@@ -130,6 +130,26 @@ export function EndpointPanel({
       <div className="group">
         <TextField label="Name" value={endpoint.name} onCommit={(name) => api.putEndpoint(endpoint.id, { name }).then(onChanged).catch(onError)} />
         <TextField label="PC name" value={endpoint.host} onCommit={(host) => api.putEndpoint(endpoint.id, { host }).then(onChanged).catch(onError)} />
+        <label className="field wide">
+          <span>Player</span>
+          <select
+            value={endpoint.player ?? "studio_monitor"}
+            onChange={(e) => api.putEndpoint(endpoint.id, { player: e.target.value as "studio_monitor" | "mosaic" }).then(onChanged).catch(onError)}
+          >
+            <option value="studio_monitor">NDI Studio Monitor (one window per display)</option>
+            <option value="mosaic">Mosaic Receiver (displays in step)</option>
+          </select>
+        </label>
+        {endpoint.player === "mosaic" && endpoint.receiver && (
+          <small className={`wide-note ${endpoint.receiver.error || endpoint.receiver.spreadMax10s > 1 ? "warn" : "muted"}`}>
+            {endpoint.receiver.error
+              ? `Receiver: ${endpoint.receiver.error}`
+              : `In step ${(endpoint.receiver.alignedRatio * 100).toFixed(1)}% of refreshes · at most ${endpoint.receiver.spreadMax10s} frame(s) apart (last 10 s) · ${Math.round(endpoint.receiver.refreshHz)} Hz · ${endpoint.receiver.presenter}`}
+          </small>
+        )}
+        {endpoint.player === "mosaic" && !endpoint.receiver && endpoint.online && (
+          <small className="wide-note muted">Starting the Mosaic Receiver on the PC… (it needs the receiver built there: update.bat)</small>
+        )}
       </div>
 
       <div className="group">
@@ -152,7 +172,11 @@ export function EndpointPanel({
               <div className="slot-head">
                 <span className={`dot ${d.ok ? "on" : endpoint.online ? "warn" : "off"}`} />
                 <b>Display {d.index}</b>
-                <small className="muted grow">{state}</small>
+                <small className="muted grow">
+                  {state}
+                  {d.shownFrameId ? ` · frame ${d.shownFrameId}` : ""}
+                  {d.late ? ` · ${d.late} late` : ""}
+                </small>
                 <button title="Remove this display" onClick={() => save(slots.filter((_, j) => j !== i))}>
                   ✕
                 </button>

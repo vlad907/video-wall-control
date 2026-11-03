@@ -306,7 +306,7 @@ async function refreshStatus() {
   try {
     status = await api("/api/status");
     $("phase").textContent = status.phase;
-    $("procWrap").hidden = !status.processes_managed;
+    $("procWrap").hidden = !status.processes_managed || status.player === "mosaic";
     const expected = status.panels.length;
     $("procs").textContent = status.process_count == null ? "?" : `${status.process_count}/${expected}`;
     $("procs").style.color = status.process_count >= expected ? "var(--ok)" : "var(--warn)";
@@ -316,7 +316,7 @@ async function refreshStatus() {
     $("exeBanner").hidden = !status.processes_managed || !!status.exe_path;
     $("exeRoots").textContent = (status.exe_search_roots || []).join(", ") || "Program Files";
     const ep = status.endpoint || {};
-    $("endpoint").textContent = ep.managed ? `${ep.name} (set in the mosaic editor)` : ep.error ? "engine not reachable" : `not set up (PC name ${status.hostname})`;
+    $("endpoint").textContent = ep.managed ? `${ep.name} (set in the mosaic editor${status.player === "mosaic" ? ", Mosaic Receiver" : ""})` : ep.error ? "engine not reachable" : `not set up (PC name ${status.hostname})`;
     $("endpoint").style.color = ep.managed ? "var(--ok)" : ep.error ? "var(--warn)" : "inherit";
     $("endpoint").title = ep.error || "";
     $("btnApplyAll").hidden = !!ep.managed;

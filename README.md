@@ -116,6 +116,11 @@ media server is unreachable, the PC keeps showing what it showed last, and it st
 Endpoints are matched by PC name: a replacement PC with the same name picks up the same setup.
 Removing the endpoint in the editor hands the PC back to manual control.
 
+**Player.** By default an endpoint shows its streams with NDI Studio Monitor windows. With
+*Player: Mosaic Receiver* (endpoint panel in the editor), the PC uses our own player instead: one
+process shows all its displays in step, and reports how far apart they are. It needs
+`mosaic_receiver.exe` on that PC. See [mosaic-engine/docs/RECEIVER.md](mosaic-engine/docs/RECEIVER.md).
+
 ## config.json
 
 | Key | Default | Meaning |

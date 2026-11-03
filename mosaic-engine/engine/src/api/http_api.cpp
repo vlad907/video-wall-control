@@ -207,6 +207,15 @@ struct HttpApi::Impl {
         j["address"] = last.value("address", "");
         j["version"] = last.value("version", "");
         j["screens"] = last.value("screens", json::array());
+        // With the Mosaic Receiver, how far apart its displays were (frames) and how often in step.
+        json rx = last.value("receiver", json::object());
+        if (!rx.empty())
+            j["receiver"] = {{"spreadMax10s", rx.value("spreadMax10s", 0)},
+                             {"alignedRatio", rx.value("alignedRatio", 1.0)},
+                             {"refreshHz", rx.value("refreshHz", 0.0)},
+                             {"presenter", rx.value("presenter", "")},
+                             {"error", rx.value("error", "")}};
+        json rxDisplays = rx.value("displays", json::array());
         json panels = last.value("panels", json::array());
         for (auto& d : displays) {
             // The dashboard numbers its panels like the display slots.
@@ -215,6 +224,11 @@ struct HttpApi::Impl {
                     d["reachable"] = p.value("reachable", false);
                     d["playing"] = p.value("playing", "");
                     d["onScreen"] = p.value("screen", "");
+                }
+            for (auto& r : rxDisplays)
+                if (r.value("index", 0) == d["index"]) {
+                    d["shownFrameId"] = r.value("shownFrameId", 0);
+                    d["late"] = r.value("late", 0);
                 }
             d["ok"] = j["online"].get<bool>() && d.value("reachable", false) && d.contains("stream") &&
                       d.value("playing", "") == d.value("stream", "");
@@ -694,7 +708,7 @@ struct HttpApi::Impl {
             auto l = store.active();
             for (auto& e : l->endpoints)
                 if (hostKey(e.host) == hostKey(host))
-                    return sendJson(res, {{"endpoint", {{"id", e.id}, {"name", e.name}}},
+                    return sendJson(res, {{"endpoint", {{"id", e.id}, {"name", e.name}, {"player", e.player}}},
                                           {"layout", l->id},
                                           {"engineHost", machine},
                                           {"displays", endpointDisplays(*l, e, engine.discoveredNdiSources())}});
@@ -733,7 +747,9 @@ struct HttpApi::Impl {
                 json v = endpointView(*l, e, discovered);
                 int ok = 0;
                 for (auto& d : v["displays"]) ok += d.value("ok", false) ? 1 : 0;
-                endpoints.push_back({{"id", e.id}, {"name", e.name}, {"online", v["online"]}, {"displays", e.displays.size()}, {"displaysOk", ok}});
+                json ep = {{"id", e.id}, {"name", e.name}, {"player", e.player}, {"online", v["online"]}, {"displays", e.displays.size()}, {"displaysOk", ok}};
+                if (v.contains("receiver")) ep["syncSpreadFrames"] = v["receiver"]["spreadMax10s"];
+                endpoints.push_back(ep);
             }
             sendJson(res, {{"layout", {{"id", l->id}, {"name", l->name}}},
                            {"groups", groups},
