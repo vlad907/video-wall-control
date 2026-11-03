@@ -8,12 +8,17 @@ and each endpoint chooses its player, so a PC can switch back at any time.
 
 ## Using it (phase 1)
 
-1. **Build it on the receiving PC.** `mosaic_receiver.exe` is built with the engine (same project, same
-   steps as `docs/WINDOWS.md`, with the NDI SDK). After that, `update.bat` keeps it up to date. If you'd
-   rather not install the build tools there, copy `mosaic_receiver.exe` and `Processing.NDI.Lib.x64.dll`
-   from the media server's `mosaic-engine\build\Release\` into the same folder on the receiving PC.
-   Then run `install.bat` again: it adds the receiver's firewall rule.
-2. **In the editor:** *Endpoints* → the PC → **Player: Mosaic Receiver**.
+1. **Nothing to install by hand.** The media server builds `mosaic_receiver.exe` with the engine and hands
+   it out (`GET /api/receiver/package`, `/api/receiver/files/...`), together with the NDI DLL.
+   - **Each receiving PC's dashboard** compares that version with its own on every check-in. When they differ, it
+     downloads the files, swaps them in, and restarts the receiver, which takes a few seconds. After `update.bat`
+     on the media server, every receiving PC updates itself within about 5 seconds.
+   - **The endpoint panel** shows "Receiver up to date (version)", or what went wrong.
+   - **Firewall:** run `install.bat` once on each receiving PC after its first download, to add the receiver's
+     firewall rule.
+2. **In the editor:** *Endpoints* → the PC → **Player: Mosaic Receiver**. A PC only switches once it has the
+   receiver. If the download fails, it stays on Studio Monitor (the screens never go black) and the endpoint
+   panel says why.
 3. **On the PC, within a few seconds,** the dashboard:
    - stops the Studio Monitor windows
    - starts the receiver, with one full-screen window per display on its screen

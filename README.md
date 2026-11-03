@@ -118,8 +118,9 @@ Removing the endpoint in the editor hands the PC back to manual control.
 
 **Player.** By default an endpoint shows its streams with NDI Studio Monitor windows. With
 *Player: Mosaic Receiver* (endpoint panel in the editor), the PC uses our own player instead: one
-process shows all its displays in step, and reports how far apart they are. It needs
-`mosaic_receiver.exe` on that PC. See [mosaic-engine/docs/RECEIVER.md](mosaic-engine/docs/RECEIVER.md).
+process shows all its displays in step, and reports how far apart they are. The PC downloads
+`mosaic_receiver.exe` from the media server by itself, and updates it whenever the media server has a
+newer one, so nothing is copied by hand. See [mosaic-engine/docs/RECEIVER.md](mosaic-engine/docs/RECEIVER.md).
 
 ## config.json
 

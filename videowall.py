@@ -16,6 +16,7 @@ import logging
 import logging.handlers
 import os
 import re
+import shutil
 import socket
 import struct
 import subprocess
@@ -881,7 +882,7 @@ def assign_mosaic_to_panels():
 # --------------------------------------------------------------------------
 
 ENDPOINT_INTERVAL = 5  # seconds between check-ins
-endpoint_state = {"endpoint": None, "error": None, "last_ok": None, "displays": []}
+endpoint_state = {"endpoint": None, "error": None, "last_ok": None, "displays": [], "receiver_update": ""}
 
 
 def endpoint_managed():
@@ -959,11 +960,66 @@ def sync_endpoint(displays):
 # --------------------------------------------------------------------------
 
 RECEIVER_PORT = 8095
-receiver_state = {"proc": None, "sent": None, "last_start": 0.0, "warned": 0.0}
+receiver_state = {"proc": None, "sent": None, "last_start": 0.0, "warned": 0.0, "update_failed": 0.0}
 
 
 def receiver_mode():
     return cfg("player") == "mosaic"
+
+
+RECEIVER_DIR = MOSAIC_DIR / ("build/Release" if IS_WINDOWS else "build")
+
+
+def update_receiver(package):
+    """Keeps this PC's Mosaic Receiver the same as the one the engine hands out: downloads it
+    when the version differs, swaps it in and lets the receiver restart. True when this PC has
+    a receiver it can run (old or new)."""
+    have = find_receiver_exe() is not None
+    if not package or not package.get("available"):
+        return have
+    if package.get("version") == cfg("receiver_version") and have:
+        return True
+    if time.time() - receiver_state["update_failed"] < 60:
+        return have  # after a failed attempt, wait a minute
+    receiver_state["update_failed"] = time.time()  # cleared below when it works
+    RECEIVER_DIR.mkdir(parents=True, exist_ok=True)
+    downloaded = []
+    try:
+        for f in package.get("files") or []:
+            tmp = RECEIVER_DIR / (f["name"] + ".download")
+            with urllib.request.urlopen(mosaic_url("/api/receiver/files/" + f["name"]), timeout=120) as r, open(tmp, "wb") as out:
+                shutil.copyfileobj(r, out, 1 << 20)
+            downloaded.append(tmp)
+            if tmp.stat().st_size != int(f["bytes"]):
+                raise OSError("incomplete download of %s" % f["name"])
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        endpoint_state["receiver_update"] = "download failed: %s" % getattr(exc, "reason", exc)
+        log.error("Mosaic Receiver update failed: %s", endpoint_state["receiver_update"])
+        for tmp in downloaded:
+            tmp.unlink(missing_ok=True)
+        return have
+    # The running receiver keeps its files locked (Windows): stop it, swap, and it's started again.
+    was_running = receiver_call("GET", "/health") is not None
+    if was_running:
+        stop_receiver()
+        time.sleep(1)
+    try:
+        for tmp in downloaded:
+            os.replace(tmp, tmp.with_suffix(""))
+    except OSError as exc:
+        endpoint_state["receiver_update"] = "couldn't replace the receiver files: %s" % exc
+        log.error("Mosaic Receiver update: %s", endpoint_state["receiver_update"])
+        return find_receiver_exe() is not None
+    exe = find_receiver_exe()
+    if exe and not IS_WINDOWS:
+        os.chmod(exe, 0o755)
+    with config_lock:
+        config["receiver_version"] = package["version"]
+    save_config()
+    endpoint_state["receiver_update"] = ""
+    receiver_state["update_failed"] = 0.0
+    log.info("Mosaic Receiver %s from the mosaic engine (version %s)", "updated" if have else "installed", package["version"][:8])
+    return True
 
 
 def find_receiver_exe():
@@ -1106,7 +1162,8 @@ def set_player(player):
 
 def endpoint_checkin():
     body = {"host": socket.gethostname(), "version": "videowall/1", "dashboardPort": int(cfg("dashboard_port")),
-            "screens": enumerate_displays(), "player": cfg("player") or "studio_monitor"}
+            "screens": enumerate_displays(), "player": cfg("player") or "studio_monitor",
+            "receiverVersion": cfg("receiver_version") or "", "receiverUpdate": endpoint_state.get("receiver_update") or ""}
     if receiver_mode():
         panels_now, rx = receiver_panels()
         body["panels"] = panels_now
@@ -1130,7 +1187,14 @@ def endpoint_checkin():
         return
     if not was:
         log.info("Managed by the mosaic engine as endpoint '%s'", reply["endpoint"].get("name"))
-    set_player(reply["endpoint"].get("player") or "studio_monitor")
+    # Keep the receiver current (it's downloaded from the engine), and only switch to it when this
+    # PC has one: otherwise Studio Monitor stays, so the screens never go black.
+    ready = update_receiver(reply.get("receiverPackage"))
+    player = reply["endpoint"].get("player") or "studio_monitor"
+    if player == "mosaic" and not ready:
+        endpoint_state["receiver_update"] = endpoint_state.get("receiver_update") or "the mosaic engine has no receiver to hand out (build it on the media server)"
+        player = "studio_monitor"
+    set_player(player)
     if receiver_mode():
         sync_receiver(endpoint_state["displays"])
     else:

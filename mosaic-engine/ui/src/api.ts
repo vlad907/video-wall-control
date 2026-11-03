@@ -120,6 +120,8 @@ export interface EndpointView extends Omit<Endpoint, "displays"> {
   address: string;
   version: string;
   screens: Screen[];
+  receiverVersion?: string; // the receiver this PC installed (from the engine)
+  receiverUpdate?: string;  // why it couldn't update or switch, if so
   receiver?: { spreadMax10s: number; alignedRatio: number; refreshHz: number; presenter: string; error: string; presentFps?: number; uploadMs?: number };
   displays: (EndpointDisplay & {
     shownFrameId?: number;
@@ -140,6 +142,7 @@ export interface EndpointsInfo {
   endpoints: EndpointView[];
   unassigned: { host: string; address: string; screens: Screen[]; online: boolean }[];
   engineHost: string;
+  receiverVersion?: string; // the receiver the engine hands out
 }
 
 export interface Scene {

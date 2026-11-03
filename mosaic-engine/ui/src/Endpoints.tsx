@@ -70,12 +70,14 @@ export function EndpointList({
 export function EndpointPanel({
   layout,
   endpoint,
+  receiverVersion,
   onChanged,
   onError,
   onClose,
 }: {
   layout: Layout;
   endpoint: EndpointView;
+  receiverVersion?: string; // the version the engine hands out
   onChanged: () => void;
   onError: (e: unknown) => void;
   onClose: () => void;
@@ -147,9 +149,20 @@ export function EndpointPanel({
               : `In step ${(endpoint.receiver.alignedRatio * 100).toFixed(1)}% of refreshes · at most ${endpoint.receiver.spreadMax10s} frame(s) apart (last 10 s) · presenting ${Math.round(endpoint.receiver.presentFps ?? 0)} of ${Math.round(endpoint.receiver.refreshHz)} Hz · upload ${(endpoint.receiver.uploadMs ?? 0).toFixed(1)} ms · ${endpoint.receiver.presenter}`}
           </small>
         )}
-        {endpoint.player === "mosaic" && !endpoint.receiver && endpoint.online && (
-          <small className="wide-note muted">Starting the Mosaic Receiver on the PC… (it needs the receiver built there: update.bat)</small>
+        {endpoint.player === "mosaic" && !endpoint.receiver && endpoint.online && !endpoint.receiverUpdate && (
+          <small className="wide-note muted">Starting the Mosaic Receiver on the PC…</small>
         )}
+        {endpoint.receiverUpdate ? (
+          <small className="wide-note warn">Receiver: {endpoint.receiverUpdate}</small>
+        ) : endpoint.online && receiverVersion ? (
+          <small className="wide-note muted">
+            {endpoint.receiverVersion === receiverVersion
+              ? `Receiver up to date (${receiverVersion.slice(0, 8)})`
+              : endpoint.receiverVersion
+                ? `Receiver updating to ${receiverVersion.slice(0, 8)} (has ${endpoint.receiverVersion.slice(0, 8)})…`
+                : "Receiver: downloading it from this media server…"}
+          </small>
+        ) : null}
       </div>
 
       <div className="group">

@@ -354,6 +354,7 @@ export function App() {
         key={selectedEndpoint.id}
         layout={layout}
         endpoint={selectedEndpoint}
+        receiverVersion={endpoints?.receiverVersion}
         onChanged={() => (loadEndpoints(), reload())}
         onError={onError}
         onClose={() => setEndpointId(null)}

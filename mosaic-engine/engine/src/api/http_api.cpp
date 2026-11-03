@@ -227,6 +227,8 @@ struct HttpApi::Impl {
         j["online"] = ago >= 0 && ago < kEndpointOnlineSeconds;
         j["lastSeenSecondsAgo"] = ago < 0 ? json(nullptr) : json(std::round(ago));
         j["address"] = last.value("address", "");
+        j["receiverVersion"] = last.value("receiverVersion", "");
+        j["receiverUpdate"] = last.value("receiverUpdate", "");
         j["version"] = last.value("version", "");
         j["screens"] = last.value("screens", json::array());
         // With the Mosaic Receiver, how far apart its displays were (frames) and how often in step.
@@ -263,6 +265,41 @@ struct HttpApi::Impl {
     }
 
     Impl(Engine& e, LayoutStore& s) : engine(e), store(s) {}
+
+    // ---- the Mosaic Receiver, handed out to receiving PCs (their dashboards update themselves) ----
+    std::filesystem::path binDir;
+
+    static const std::vector<std::string>& receiverFileNames() {
+#ifdef _WIN32
+        static const std::vector<std::string> names = {"mosaic_receiver.exe", "Processing.NDI.Lib.x64.dll"};
+#else
+        static const std::vector<std::string> names = {"mosaic_receiver"};
+#endif
+        return names;
+    }
+
+    // The files that exist, and a version: size and modification time of each, so a rebuild
+    // changes it. Receiving PCs compare it with what they installed.
+    json receiverPackage() const {
+        json files = json::array();
+        std::string version;
+        for (auto& name : receiverFileNames()) {
+            std::error_code ec;
+            auto p = binDir / name;
+            auto size = std::filesystem::file_size(p, ec);
+            if (ec) continue;
+            long long mtime = static_cast<long long>(std::filesystem::last_write_time(p, ec).time_since_epoch().count());
+            files.push_back({{"name", name}, {"bytes", size}});
+            version += name + ":" + std::to_string(size) + ":" + std::to_string(mtime) + ";";
+        }
+        bool ok = !files.empty() && files[0]["name"] == receiverFileNames()[0];
+        // Short and stable: FNV-1a of the description.
+        uint64_t h = 1469598103934665603ull;
+        for (unsigned char c : version) h = (h ^ c) * 1099511628211ull;
+        char buf[17];
+        std::snprintf(buf, sizeof buf, "%016llx", static_cast<unsigned long long>(h));
+        return {{"available", ok}, {"version", ok ? std::string(buf) : ""}, {"files", files}};
+    }
 
     // Wraps a handler so malformed JSON and unexpected errors become 400/500 replies.
     template <class F>
@@ -618,6 +655,25 @@ struct HttpApi::Impl {
             sendJson(res, {{"group", id}, {"cleared", true}, {"transitionMs", ms}});
         }));
 
+        // ---- Mosaic Receiver distribution ----
+        s.Get("/api/receiver/package", guard([this](const httplib::Request&, httplib::Response& res) { sendJson(res, receiverPackage()); }));
+        s.Get(R"(/api/receiver/files/([A-Za-z0-9_.\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string name = req.matches[1];
+            auto& names = receiverFileNames();
+            if (std::find(names.begin(), names.end(), name) == names.end()) return sendError(res, 404, "not a receiver file");
+            auto path = binDir / name;
+            std::error_code ec;
+            auto size = std::filesystem::file_size(path, ec);
+            if (ec) return sendError(res, 404, "the receiver isn't built on this machine");
+            auto in = std::make_shared<std::ifstream>(path, std::ios::binary);
+            res.set_content_provider(static_cast<size_t>(size), "application/octet-stream", [in](size_t offset, size_t length, httplib::DataSink& sink) {
+                std::vector<char> buf(std::min<size_t>(length, 1 << 20));
+                in->seekg(static_cast<std::streamoff>(offset));
+                in->read(buf.data(), static_cast<std::streamsize>(buf.size()));
+                return sink.write(buf.data(), static_cast<size_t>(in->gcount()));
+            });
+        }));
+
         // ---- media: image files for image sources (data/media) ----
         s.Get("/api/media", guard([this](const httplib::Request&, httplib::Response& res) {
             json files = json::array();
@@ -705,7 +761,7 @@ struct HttpApi::Impl {
                                               {"screens", c.value("screens", json::array())},
                                               {"online", now - c.value("time", 0.0) < kEndpointOnlineSeconds}});
             }
-            sendJson(res, {{"endpoints", list}, {"unassigned", unassigned}, {"engineHost", machine}});
+            sendJson(res, {{"endpoints", list}, {"unassigned", unassigned}, {"engineHost", machine}, {"receiverVersion", receiverPackage()["version"]}});
         }));
         s.Post("/api/endpoints", guard([this](const httplib::Request& req, httplib::Response& res) {
             json body = parseBody(req);
@@ -778,8 +834,10 @@ struct HttpApi::Impl {
                     return sendJson(res, {{"endpoint", {{"id", e.id}, {"name", e.name}, {"player", e.player}}},
                                           {"layout", l->id},
                                           {"engineHost", machine},
+                                          {"receiverPackage", receiverPackage()},
                                           {"displays", endpointDisplays(*l, e, engine.discoveredNdiSources())}});
-            sendJson(res, {{"endpoint", nullptr}, {"layout", l->id}, {"engineHost", machine}, {"displays", json::array()}});
+            sendJson(res, {{"endpoint", nullptr}, {"layout", l->id}, {"engineHost", machine}, {"displays", json::array()},
+                           {"receiverPackage", receiverPackage()}});
         }));
 
         // ---- one-call summary for control systems ----
@@ -982,7 +1040,9 @@ struct HttpApi::Impl {
     }
 };
 
-HttpApi::HttpApi(Engine& engine, LayoutStore& store, std::filesystem::path uiDir) : impl_(std::make_unique<Impl>(engine, store)) {
+HttpApi::HttpApi(Engine& engine, LayoutStore& store, std::filesystem::path uiDir, std::filesystem::path binDir)
+    : impl_(std::make_unique<Impl>(engine, store)) {
+    impl_->binDir = std::move(binDir);
     impl_->server.new_task_queue = [] { return new httplib::ThreadPool(24); };
     impl_->routes();
     if (std::filesystem::is_directory(uiDir)) impl_->server.set_mount_point("/", uiDir.string());

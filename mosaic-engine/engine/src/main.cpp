@@ -105,7 +105,9 @@ int main(int argc, char** argv) {
     engine.setMediaDir(std::filesystem::path(opt.data) / "media");
     engine.start();
 
-    HttpApi api(engine, store, opt.ui);
+    std::error_code binEc;
+    auto binDir = std::filesystem::weakly_canonical(std::filesystem::absolute(argv[0]), binEc).parent_path();
+    HttpApi api(engine, store, opt.ui, binDir);
     std::thread http([&] {
         if (!api.listen(opt.host, opt.port)) {
             std::cerr << "cannot listen on " << opt.host << ":" << opt.port << "\n";
