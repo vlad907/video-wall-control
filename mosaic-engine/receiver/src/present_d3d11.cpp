@@ -44,13 +44,26 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
             return 0;  // only the receiver closes its windows
         case WM_MOUSEACTIVATE:
             return MA_NOACTIVATE;
+        case WM_DPICHANGED:
+            return 0;  // stay exactly on the monitor rectangle we were given (physical pixels)
     }
     return DefWindowProcW(h, msg, w, l);
+}
+
+// Windows scales the windows of programs that don't say they handle display scaling, so on a
+// 4K monitor at 200 % a 3840 x 2160 window would come out twice as big (showing a quarter of
+// the picture). The dashboard places windows in physical pixels, so the receiver uses them too.
+void usePhysicalPixels() {
+    using SetContext = BOOL(WINAPI*)(HANDLE);
+    auto fn = reinterpret_cast<SetContext>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext"));
+    if (!fn || !fn(reinterpret_cast<HANDLE>(-4)))  // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 (Windows 10 1703+)
+        SetProcessDPIAware();
 }
 
 class D3D11Presenter final : public Presenter {
 public:
     bool init(bool software, std::string& error) {
+        usePhysicalPixels();
         UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
         D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0};
         HRESULT hr = D3D11CreateDevice(nullptr, software ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels, 1,
