@@ -17,6 +17,7 @@ struct DecodedFrame {
     // Hardware decoding (Windows): an NV12 texture and array slice on the renderer's device.
     void* gpuTexture = nullptr;
     unsigned arraySlice = 0;
+    int colorSpace = 0;  // 0 = BT.709 (SDR), 1 = BT.2020 PQ (HDR10), 2 = BT.2020 HLG
     // Otherwise: BGRA pixels in memory.
     const uint8_t* bgra = nullptr;
     int stride = 0;
@@ -28,6 +29,8 @@ struct VideoInfo {
     double fps = 0, durationS = 0;
     std::string codec;      // "H.264", "HEVC", "AV1", …
     bool hardware = false;  // decoded by the GPU
+    bool hdr = false;       // HDR (PQ / HLG): shown converted to the wall's SDR
+    int bitDepth = 8;
 };
 
 // Platform part: reads one frame at a time, on the decoder thread only.

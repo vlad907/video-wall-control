@@ -14,6 +14,8 @@ export interface VideoStatus {
   positionS: number;
   decodeFps: number;
   playing: boolean;
+  hdr?: boolean;
+  bitDepth?: number;
 }
 
 export interface Source {

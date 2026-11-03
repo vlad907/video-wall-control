@@ -23,6 +23,7 @@
 
 #include "core/engine.hpp"
 #include "core/layout_store.hpp"
+#include "util/paths.hpp"
 
 using nlohmann::json;
 
@@ -87,6 +88,23 @@ std::string mediaName(const std::string& raw) {
     for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (ext != "png" && ext != "jpg" && ext != "jpeg" && ext != "bmp" && ext != "gif" && ext != "mp4" && ext != "mov" && ext != "m4v") return "";
     return name.substr(0, dot + 1) + ext;
+}
+
+// "image" or "video" by the extension, "" if it's neither. Any other characters are fine
+// (files copied into the folder by hand often have spaces, brackets and so on).
+std::string mediaKind(const std::string& name) {
+    auto dot = name.rfind('.');
+    if (dot == std::string::npos) return "";
+    std::string ext = name.substr(dot + 1);
+    for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "bmp" || ext == "gif") return "image";
+    if (ext == "mp4" || ext == "mov" || ext == "m4v") return "video";
+    return "";
+}
+
+// A file in the media folder named in a request: a plain name (no folders), of a media kind.
+bool safeMediaName(const std::string& name) {
+    return !name.empty() && name.find_first_of("/\\") == std::string::npos && name.find("..") == std::string::npos && !mediaKind(name).empty();
 }
 
 bool isVideoName(const std::string& name) { return name.ends_with(".mp4") || name.ends_with(".mov") || name.ends_with(".m4v"); }
@@ -602,12 +620,12 @@ struct HttpApi::Impl {
             json files = json::array();
             std::error_code ec;
             for (auto& e : std::filesystem::directory_iterator(engine.mediaDir(), ec)) {
-                std::string name = e.path().filename().string();
-                if (e.is_regular_file() && !mediaName(name).empty())
-                    files.push_back({{"name", name}, {"bytes", e.file_size()}, {"kind", isVideoName(name) ? "video" : "image"}});
+                std::string name = utf8(e.path().filename());
+                if (e.is_regular_file(ec) && !mediaKind(name).empty())
+                    files.push_back({{"name", name}, {"bytes", e.file_size(ec)}, {"kind", mediaKind(name)}});
             }
             std::sort(files.begin(), files.end(), [](auto& a, auto& b) { return a["name"] < b["name"]; });
-            sendJson(res, {{"files", files}, {"folder", std::filesystem::absolute(engine.mediaDir()).string()}});
+            sendJson(res, {{"files", files}, {"folder", utf8(std::filesystem::absolute(engine.mediaDir()))}});
         }));
         // Upload: the raw file as the body, ?name=clip.mp4. Written to disk as it arrives, so
         // multi-gigabyte (8K) videos don't need the memory. The same name replaces the file.
@@ -641,9 +659,10 @@ struct HttpApi::Impl {
             sendJson(res, {{"name", name}, {"bytes", bytes}, {"kind", isVideoName(name) ? "video" : "image"}}, 201);
         });
         // The file itself, streamed from disk (videos can be gigabytes).
-        s.Get(R"(/api/media/([A-Za-z0-9_.\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
-            std::string name = mediaName(req.matches[1]);
-            auto path = engine.mediaDir() / name;
+        s.Get(R"(/api/media/([^/]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string name = req.matches[1];
+            if (!safeMediaName(name)) return sendError(res, 404, "no such file");
+            auto path = engine.mediaDir() / pathFromUtf8(name);
             std::error_code ec;
             auto size = std::filesystem::file_size(path, ec);
             if (name.empty() || ec) return sendError(res, 404, "no such file");
@@ -655,10 +674,10 @@ struct HttpApi::Impl {
                 return sink.write(buf.data(), static_cast<size_t>(in->gcount()));
             });
         }));
-        s.Delete(R"(/api/media/([A-Za-z0-9_.\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
-            std::string name = mediaName(req.matches[1]);
+        s.Delete(R"(/api/media/([^/]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string name = req.matches[1];
             std::error_code ec;
-            if (name.empty() || !std::filesystem::remove(engine.mediaDir() / name, ec)) return sendError(res, 404, "no such file");
+            if (!safeMediaName(name) || !std::filesystem::remove(engine.mediaDir() / pathFromUtf8(name), ec)) return sendError(res, 404, "no such file");
             sendJson(res, {{"deleted", name}});
         }));
 

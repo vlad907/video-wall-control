@@ -97,6 +97,7 @@ export function SourceInspector({
             {source.status?.video && (
               <small className={`wide-note ${source.status.video.decodeFps && source.status.video.decodeFps < source.status.video.fps * 0.9 ? "warn" : "muted"}`}>
                 {source.status.video.width}×{source.status.video.height} · {source.status.video.codec} · {source.status.video.fps.toFixed(2)} fps ·{" "}
+                {source.status.video.hdr ? `HDR ${source.status.video.bitDepth ?? 10}-bit (shown as SDR) · ` : ""}
                 {source.status.video.hardware ? "GPU decoding" : "software decoding"} · {fmtTime(source.status.video.positionS)} / {fmtTime(source.status.video.durationS)}
                 {source.status.video.decodeFps && source.status.video.decodeFps < source.status.video.fps * 0.9
                   ? ` · decoding only ${source.status.video.decodeFps.toFixed(1)} fps: the file is too heavy for this decoder`

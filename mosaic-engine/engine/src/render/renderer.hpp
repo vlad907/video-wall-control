@@ -85,9 +85,10 @@ public:
     // ---- video files (render thread) ----
     // The native device (ID3D11Device* on Windows), so a hardware video decoder can use the same GPU.
     virtual void* nativeDevice() { return nullptr; }
-    // Converts a decoded NV12 frame (the decoder's texture and array slice, on nativeDevice()) into
-    // `dst`, a RenderTarget texture, on the GPU's video processor. False if the backend can't.
-    virtual bool blitVideoFrame(TexId dst, void* nativeNV12Texture, unsigned arraySlice) { return false; }
+    // Converts a decoded NV12 / P010 frame (the decoder's texture and array slice, on nativeDevice())
+    // into `dst`, a RenderTarget texture, on the GPU's video processor. colorSpace: 0 = BT.709,
+    // 1 = BT.2020 PQ (HDR10), 2 = BT.2020 HLG; HDR is mapped to SDR. False if the backend can't.
+    virtual bool blitVideoFrame(TexId dst, void* nativeYuvTexture, unsigned arraySlice, int colorSpace = 0) { return false; }
 
     // Marks a slot reusable. Thread-safe; the backend may defer the work
     // (D3D11 unmaps on the render thread at the next beginFrame).

@@ -7,6 +7,7 @@
 #include <set>
 
 #include "util/image.hpp"
+#include "util/paths.hpp"
 #include "util/realtime.hpp"
 
 using nlohmann::json;
@@ -504,7 +505,7 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
                     }
                     // Hidden videos keep time but aren't copied to the GPU.
                     if (needed.count(id)) {
-                        bool ok = gpu ? renderer_.blitVideoFrame(s.tex[0], f->gpuTexture, f->arraySlice) : (renderer_.uploadBGRA(s.tex[0], f->bgra, f->stride), true);
+                        bool ok = gpu ? renderer_.blitVideoFrame(s.tex[0], f->gpuTexture, f->arraySlice, f->colorSpace) : (renderer_.uploadBGRA(s.tex[0], f->bgra, f->stride), true);
                         if (ok) s.hasFrame = true;
                         else s.error = "the GPU couldn't convert the video frame";
                     }
@@ -515,7 +516,8 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
                 st["video"] = {{"width", vi.width},  {"height", vi.height},       {"fps", vi.fps},
                                {"codec", vi.codec},  {"hardware", vi.hardware},   {"durationS", vi.durationS},
                                {"positionS", vi.durationS > 0 ? std::fmod(t, vi.durationS) : t},
-                               {"decodeFps", s.video->decodeFps()}, {"playing", s.pausedAt < 0}};
+                               {"decodeFps", s.video->decodeFps()}, {"playing", s.pausedAt < 0},
+                               {"hdr", vi.hdr},      {"bitDepth", vi.bitDepth}};
                 st["width"] = s.w;
                 st["height"] = s.h;
             }
@@ -727,7 +729,7 @@ void Engine::reconcile(const Layout& layout) {
             if (!safe) s.error = c.video.empty() ? "no video chosen" : "bad video name";
             else {
                 std::string err;
-                s.video = openVideoFile((mediaDir_ / c.video).string(), renderer_.nativeDevice(), c.loop, err);
+                s.video = openVideoFile(utf8(mediaDir_ / pathFromUtf8(c.video)), renderer_.nativeDevice(), c.loop, err);
                 if (!s.video) s.error = "cannot play " + c.video + ": " + err;
             }
             s.playStart = Clock::now();
@@ -737,7 +739,7 @@ void Engine::reconcile(const Layout& layout) {
             std::string err;
             bool safe = !c.image.empty() && c.image.find_first_of("/\\") == std::string::npos && c.image.find("..") == std::string::npos;
             if (!safe) s.error = c.image.empty() ? "no image chosen" : "bad image name";
-            else if (!loadImageBGRA((mediaDir_ / c.image).string(), s.pending, s.w, s.h, err)) s.error = "image not found or unreadable: " + err;
+            else if (!loadImageBGRA(utf8(mediaDir_ / pathFromUtf8(c.image)), s.pending, s.w, s.h, err)) s.error = "image not found or unreadable: " + err;
             else {
                 for (size_t i = 3; i < s.pending.size() && !s.hasAlpha; i += 4) s.hasAlpha = s.pending[i] < 255;
                 s.tex[0] = renderer_.createTexture(s.w, s.h, TexUsage::Upload);
@@ -763,7 +765,7 @@ void Engine::reconcile(const Layout& layout) {
     for (auto& name : wanted) {
         if (fallbacks_.count(name) || name.find_first_of("/\\") != std::string::npos || name.find("..") != std::string::npos) continue;
         ImageTex& fb = fallbacks_[name];
-        if (!loadImageBGRA((mediaDir_ / name).string(), fb.pending, fb.w, fb.h, fb.error)) {
+        if (!loadImageBGRA(utf8(mediaDir_ / pathFromUtf8(name)), fb.pending, fb.w, fb.h, fb.error)) {
             std::cerr << "[engine] fallback image '" << name << "': " << fb.error << "\n";
             continue;
         }

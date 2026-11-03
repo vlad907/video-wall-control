@@ -85,6 +85,7 @@ public:
             if (FAILED(dxgi->GetResource(IID_PPV_ARGS(&tex))) || FAILED(dxgi->GetSubresourceIndex(&sub))) return true;
             out.gpuTexture = tex.Get();
             out.arraySlice = sub;
+            out.colorSpace = colorSpace_;
             // Holding the sample keeps the decoder's surface from being reused until we're done.
             auto* held = new ComPtr<IMFSample>(sample);
             out.hold = std::shared_ptr<void>(held, [](void* p) { delete static_cast<ComPtr<IMFSample>*>(p); });
@@ -156,12 +157,27 @@ private:
         info_.codec = codecName(sub);
         UINT32 num = 0, den = 0;
         if (SUCCEEDED(MFGetAttributeRatio(native.Get(), MF_MT_FRAME_RATE, &num, &den)) && den) info_.fps = double(num) / den;
+        // HDR: PQ (HDR10) or HLG transfer. The GPU's video processor maps it to the canvas's SDR.
+        UINT32 transfer = 0;
+        native->GetUINT32(MF_MT_TRANSFER_FUNCTION, &transfer);
+        colorSpace_ = transfer == MFVideoTransFunc_2084 ? 1 : transfer == MFVideoTransFunc_HLG ? 2 : 0;
+        info_.hdr = colorSpace_ != 0;
 
-        ComPtr<IMFMediaType> want;
-        MFCreateMediaType(&want);
-        want->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-        want->SetGUID(MF_MT_SUBTYPE, device_ ? MFVideoFormat_NV12 : MFVideoFormat_RGB32);
-        h = reader_->SetCurrentMediaType(kVideo, nullptr, want.Get());
+        // Hardware: 8-bit video comes out as NV12, 10-bit (most HDR / 8K HEVC) as P010.
+        // Software: always RGB32 (Media Foundation converts).
+        auto tryFormat = [&](const GUID& subtype) {
+            ComPtr<IMFMediaType> want;
+            MFCreateMediaType(&want);
+            want->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+            want->SetGUID(MF_MT_SUBTYPE, subtype);
+            return reader_->SetCurrentMediaType(kVideo, nullptr, want.Get());
+        };
+        h = tryFormat(device_ ? MFVideoFormat_NV12 : MFVideoFormat_RGB32);
+        info_.bitDepth = 8;
+        if (FAILED(h) && device_) {
+            h = tryFormat(MFVideoFormat_P010);
+            if (SUCCEEDED(h)) info_.bitDepth = 10;
+        }
         if (FAILED(h))
             return error = h == MF_E_TOPO_CODEC_NOT_FOUND || h == MF_E_INVALIDMEDIATYPE
                                ? "no decoder for " + info_.codec + " (for HEVC / AV1 install the free HEVC / AV1 Video Extensions from the Microsoft Store)"
@@ -210,6 +226,7 @@ private:
     ComPtr<IMFSourceReader> reader_;
     VideoInfo info_;
     LONG stride_ = 0;
+    int colorSpace_ = 0;
 };
 
 }  // namespace

@@ -242,7 +242,7 @@ public:
 
     // NV12 (from the decoder) to BGRA with the GPU's video processor: hardware colour conversion
     // and scaling, no shader or CPU work, and fine at 8K.
-    bool blitVideoFrame(TexId dst, void* nativeNV12Texture, unsigned arraySlice) override {
+    bool blitVideoFrame(TexId dst, void* nativeNV12Texture, unsigned arraySlice, int colorSpace) override {
         auto it = textures_.find(dst);
         if (it == textures_.end() || !it->second.rtv || !nativeNV12Texture) return false;
         Texture& out = it->second;
@@ -250,7 +250,7 @@ public:
         auto* src = static_cast<ID3D11Texture2D*>(nativeNV12Texture);
         D3D11_TEXTURE2D_DESC sd{};
         src->GetDesc(&sd);
-        if (!vp_ || vpIn_[0] != sd.Width || vpIn_[1] != sd.Height || vpOut_[0] != UINT(out.w) || vpOut_[1] != UINT(out.h)) {
+        if (!vp_ || vpIn_[0] != sd.Width || vpIn_[1] != sd.Height || vpOut_[0] != UINT(out.w) || vpOut_[1] != UINT(out.h) || vpFormat_ != sd.Format) {
             vp_.Reset();
             vpe_.Reset();
             videoInViews_.clear();
@@ -267,12 +267,10 @@ public:
             vpIn_[1] = sd.Height;
             vpOut_[0] = out.w;
             vpOut_[1] = out.h;
-            // Video files are BT.709 limited range; the canvas is full-range RGB.
+            vpFormat_ = sd.Format;
+            vpColorSpace_ = -1;
             ComPtr<ID3D11VideoContext1> vc1;
-            if (SUCCEEDED(videoCtx_.As(&vc1))) {
-                vc1->VideoProcessorSetStreamColorSpace1(vp_.Get(), 0, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
-                vc1->VideoProcessorSetOutputColorSpace1(vp_.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
-            }
+            if (SUCCEEDED(videoCtx_.As(&vc1))) vc1->VideoProcessorSetOutputColorSpace1(vp_.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
             videoCtx_->VideoProcessorSetStreamFrameFormat(vp_.Get(), 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
             videoCtx_->VideoProcessorSetStreamAutoProcessingMode(vp_.Get(), 0, FALSE);
         }
@@ -292,6 +290,17 @@ public:
             D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ov{};
             ov.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
             if (FAILED(videoDev_->CreateVideoProcessorOutputView(out.tex.Get(), vpe_.Get(), &ov, &outView))) return false;
+        }
+        if (colorSpace != vpColorSpace_) {
+            // Studio-range YUV in; full-range BT.709 RGB out (the canvas). For HDR the driver maps PQ / HLG to SDR.
+            ComPtr<ID3D11VideoContext1> vc1;
+            if (SUCCEEDED(videoCtx_.As(&vc1))) {
+                DXGI_COLOR_SPACE_TYPE in = colorSpace == 1 ? DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020
+                                           : colorSpace == 2 ? static_cast<DXGI_COLOR_SPACE_TYPE>(18)  // YCBCR_STUDIO_GHLG_TOPLEFT_P2020
+                                                             : DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;
+                vc1->VideoProcessorSetStreamColorSpace1(vp_.Get(), 0, in);
+            }
+            vpColorSpace_ = colorSpace;
         }
         RECT r{0, 0, out.w, out.h};
         videoCtx_->VideoProcessorSetOutputTargetRect(vp_.Get(), TRUE, &r);
@@ -452,6 +461,8 @@ private:
     ComPtr<ID3D11VideoProcessorEnumerator> vpe_;
     ComPtr<ID3D11VideoProcessor> vp_;
     UINT vpIn_[2] = {0, 0}, vpOut_[2] = {0, 0};
+    DXGI_FORMAT vpFormat_ = DXGI_FORMAT_UNKNOWN;
+    int vpColorSpace_ = -1;
     std::map<std::pair<void*, unsigned>, ComPtr<ID3D11VideoProcessorInputView>> videoInViews_;
     std::map<TexId, ComPtr<ID3D11VideoProcessorOutputView>> videoOutViews_;
 

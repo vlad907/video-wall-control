@@ -6,6 +6,7 @@
 #define STBI_WRITE_NO_STDIO
 #include "stb_image_write.h"
 #define STB_IMAGE_IMPLEMENTATION
+#define STBI_WINDOWS_UTF8  // paths are UTF-8 (only affects Windows)
 #define STBI_ONLY_PNG
 #define STBI_ONLY_JPEG
 #define STBI_ONLY_BMP
