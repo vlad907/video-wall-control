@@ -18,7 +18,8 @@ struct RxFrame {
     uint64_t frameId = 0;  // the engine's frame id (from NDI metadata); 0 = not a mosaic stream
     int64_t timecode = 0;  // NDI timecode, 100 ns units
     int width = 0, height = 0, stride = 0;
-    const uint8_t* data = nullptr;  // BGRA / BGRX
+    const uint8_t* data = nullptr;  // BGRA / BGRX, or UYVY 4:2:2 (2 bytes per pixel) when `uyvy`
+    bool uyvy = false;
     std::shared_ptr<void> hold;
     Clock::time_point arrived;
 };

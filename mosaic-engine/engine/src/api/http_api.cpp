@@ -235,6 +235,8 @@ struct HttpApi::Impl {
             j["receiver"] = {{"spreadMax10s", rx.value("spreadMax10s", 0)},
                              {"alignedRatio", rx.value("alignedRatio", 1.0)},
                              {"refreshHz", rx.value("refreshHz", 0.0)},
+                             {"presentFps", rx.value("presentFps", 0.0)},
+                             {"uploadMs", rx.value("uploadMs", 0.0)},
                              {"presenter", rx.value("presenter", "")},
                              {"error", rx.value("error", "")}};
         json rxDisplays = rx.value("displays", json::array());
@@ -251,6 +253,7 @@ struct HttpApi::Impl {
                 if (r.value("index", 0) == d["index"]) {
                     d["shownFrameId"] = r.value("shownFrameId", 0);
                     d["late"] = r.value("late", 0);
+                    d["fps"] = r.value("fps", 0.0);
                 }
             d["ok"] = j["online"].get<bool>() && d.value("reachable", false) && d.contains("stream") &&
                       d.value("playing", "") == d.value("stream", "");

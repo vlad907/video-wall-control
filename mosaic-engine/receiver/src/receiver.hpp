@@ -30,7 +30,7 @@ struct DisplayConfig {
 
 struct ReceiverConfig {
     std::vector<DisplayConfig> displays;
-    int lagFrames = 2;       // a stream this far behind the others stops holding them back
+    int lagFrames = 6;       // a stream this far behind the others stops holding them back (100 ms at 60 fps)
     int lostAfterMs = 500;   // no frame for this long = signal lost (stops being waited for)
 };
 
@@ -84,6 +84,13 @@ private:
     mutable std::mutex statusMutex_;
     nlohmann::json status_ = nlohmann::json::object();
     uint64_t presents_ = 0, alignedPresents_ = 0, comparedPresents_ = 0;
+    // Measured each second: refreshes actually presented, new pictures per stream, upload time.
+    Clock::time_point windowStart_ = Clock::now();
+    uint64_t windowPresents_ = 0;
+    double windowUploadMs_ = 0;
+    std::vector<uint64_t> windowShown_;
+    double presentFps_ = 0, uploadMs_ = 0;
+    std::vector<double> streamFps_;
     std::vector<uint64_t> recentSpread_;  // last ~10 s
     Clock::time_point started_ = Clock::now();
 

@@ -21,8 +21,13 @@ and each endpoint chooses its player, so a PC can switch back at any time.
    - brings it back after a reboot (the setup is saved in `config.json`)
 
    The PC's dashboard shows *Endpoint: … (Mosaic Receiver)*. The receiver's log is `logs\mosaic-receiver.log`.
-4. **The endpoint panel shows** how often the PC's displays were in step and the most frames they were
-   apart in the last 10 s, plus per display the frame it shows and how many refreshes it was late.
+4. **The endpoint panel shows:**
+   - how often the PC's displays were in step, and the most frames they were apart in the last 10 s
+   - **how many refreshes per second it really presents** (if this is well under the monitors' Hz, the PC can't keep up)
+   - **the upload time per refresh**
+   - per display: the frame it shows, the new pictures per second it shows, and how many refreshes it was late
+
+   A stream up to **6 frames** behind the others is waited for. That's 100 ms at 60 fps, enough to ride out uneven arrival.
    `/api/control` lists `syncSpreadFrames` per endpoint.
 5. **Switch back** by choosing *NDI Studio Monitor*: the receiver stops and the Studio Monitors return.
 
@@ -34,7 +39,8 @@ Checks without hardware:
   so frame alignment can be watched on the actual monitors.
 
 What phase 1 doesn't do yet:
-- **Frames are uploaded as BGRA.** UYVY upload, NDI's native format with half the bytes, is a later optimisation.
+- ~~Frames are uploaded as BGRA~~: the receiver now takes **UYVY** from NDI (what the engine sends, half the bytes,
+  no CPU colour conversion) and converts on the GPU.
 - **A lost stream holds its last frame** on the receiver. The engine-side fallback slate covers inputs to the engine.
 - **No editor screen for spanned displays (Eyefinity) yet.** The receiver already supports tiles inside one window.
 - **No present-time telemetry from DXGI frame statistics yet,** and no flash-test mode.

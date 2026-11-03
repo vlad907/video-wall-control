@@ -34,7 +34,8 @@ public:
         src.p_ndi_name = name_.c_str();
         NDIlib_recv_create_v3_t desc;
         desc.source_to_connect_to = src;
-        desc.color_format = NDIlib_recv_color_format_BGRX_BGRA;
+        // UYVY: what the engine sends, so NDI doesn't convert on the CPU; half the bytes of BGRA to upload.
+        desc.color_format = NDIlib_recv_color_format_UYVY_BGRA;
         desc.bandwidth = NDIlib_recv_bandwidth_highest;
         desc.allow_video_fields = false;
         desc.p_ndi_recv_name = "Mosaic Receiver";
@@ -61,8 +62,9 @@ private:
         while (!stop_) {
             NDIlib_video_frame_v2_t v;
             if (NDIlib_recv_capture_v3(recv_->instance, &v, nullptr, nullptr, 100) != NDIlib_frame_type_video) continue;
-            if (v.FourCC != NDIlib_FourCC_video_type_BGRA && v.FourCC != NDIlib_FourCC_video_type_BGRX) {
-                NDIlib_recv_free_video_v2(recv_->instance, &v);  // not expected with BGRX_BGRA requested
+            bool uyvy = v.FourCC == NDIlib_FourCC_video_type_UYVY;
+            if (!uyvy && v.FourCC != NDIlib_FourCC_video_type_BGRA && v.FourCC != NDIlib_FourCC_video_type_BGRX) {
+                NDIlib_recv_free_video_v2(recv_->instance, &v);  // not expected with UYVY_BGRA requested
                 continue;
             }
             RxFrame f;
@@ -72,6 +74,7 @@ private:
             f.height = v.yres;
             f.stride = v.line_stride_in_bytes;
             f.data = v.p_data;
+            f.uyvy = uyvy;
             f.arrived = Clock::now();
             auto recv = recv_;
             f.hold = std::shared_ptr<void>(new NDIlib_video_frame_v2_t(v), [recv](void* p) {

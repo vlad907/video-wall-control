@@ -174,6 +174,7 @@ void Receiver::frame() {
     target_ = c.target;
 
     uint64_t lo = UINT64_MAX, hi = 0;
+    auto uploadStart = Clock::now();
     for (size_t i = 0; i < streams_.size(); ++i) {
         auto& s = streams_[i];
         if (!s.input) continue;
@@ -192,7 +193,24 @@ void Receiver::frame() {
         if (views[i].synced && !views[i].stale && (c.lagging[i] || (c.target && s.shownId != c.target))) ++s.late;
         if (inStep) lo = std::min(lo, s.shownId), hi = std::max(hi, s.shownId);
     }
+    windowUploadMs_ += std::chrono::duration<double, std::milli>(Clock::now() - uploadStart).count();
     presenter_->present(tiles_);
+
+    // Real rates, once a second: how often we presented, how many new pictures each stream showed.
+    ++windowPresents_;
+    double span = std::chrono::duration<double>(now - windowStart_).count();
+    if (windowShown_.size() != streams_.size()) windowShown_.assign(streams_.size(), 0), streamFps_.assign(streams_.size(), 0);
+    if (span >= 1.0) {
+        presentFps_ = windowPresents_ / span;
+        uploadMs_ = windowUploadMs_ / static_cast<double>(windowPresents_);
+        for (size_t i = 0; i < streams_.size(); ++i) {
+            streamFps_[i] = (streams_[i].shown - windowShown_[i]) / span;
+            windowShown_[i] = streams_[i].shown;
+        }
+        windowStart_ = now;
+        windowPresents_ = 0;
+        windowUploadMs_ = 0;
+    }
 
     // Spread: how many frames apart the in-step displays are this refresh (0 = all the same frame).
     ++presents_;
@@ -216,6 +234,7 @@ void Receiver::frame() {
                             {"shownFrameId", s.shownId},
                             {"late", s.late},
                             {"framesShown", s.shown},
+                            {"fps", displayStream_[i] < static_cast<int>(streamFps_.size()) ? streamFps_[displayStream_[i]] : 0.0},
                             {"received", s.input ? s.input->queue().received() : 0},
                             {"width", s.width},
                             {"height", s.height}});
@@ -225,6 +244,8 @@ void Receiver::frame() {
     status_ = {{"ok", true},
                {"presenter", presenter_->name()},
                {"refreshHz", presenter_->refreshHz()},
+               {"presentFps", presentFps_},
+               {"uploadMs", uploadMs_},
                {"uptimeS", std::chrono::duration<double>(now - started_).count()},
                {"presents", presents_},
                {"targetFrameId", target_},

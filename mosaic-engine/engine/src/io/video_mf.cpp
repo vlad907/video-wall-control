@@ -93,10 +93,18 @@ public:
             return true;
         }
         if (device_) {
-            // Asked for GPU frames but got memory: there's no hardware decoder for this file.
-            // Reopen for software decoding into BGRA, from where we are.
+            // Asked for GPU frames but got memory. With 10-bit video (most 8K / HDR files), Windows
+            // accepts NV12 but then decodes in software to convert: ask the GPU for P010 instead.
+            // Only if that gives memory frames too is there no hardware decoder: decode in software.
             std::string err;
-            device_ = nullptr;
+            ID3D11Device* dev = device_;
+            if (!forceP010_) {
+                forceP010_ = true;
+                if (create(dev, err) && info_.bitDepth == 10) {
+                    seek(ts);
+                    return true;
+                }
+            }
             if (!create(nullptr, err)) return error = err, false;
             seek(ts);
             return true;
@@ -172,7 +180,7 @@ private:
             want->SetGUID(MF_MT_SUBTYPE, subtype);
             return reader_->SetCurrentMediaType(kVideo, nullptr, want.Get());
         };
-        h = tryFormat(device_ ? MFVideoFormat_NV12 : MFVideoFormat_RGB32);
+        h = forceP010_ && device_ ? E_FAIL : tryFormat(device_ ? MFVideoFormat_NV12 : MFVideoFormat_RGB32);
         info_.bitDepth = 8;
         if (FAILED(h) && device_) {
             h = tryFormat(MFVideoFormat_P010);
@@ -227,6 +235,7 @@ private:
     VideoInfo info_;
     LONG stride_ = 0;
     int colorSpace_ = 0;
+    bool forceP010_ = false;  // NV12 gave memory frames: the video is 10-bit; ask the GPU for P010
 };
 
 }  // namespace

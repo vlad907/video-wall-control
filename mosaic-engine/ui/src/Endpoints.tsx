@@ -144,7 +144,7 @@ export function EndpointPanel({
           <small className={`wide-note ${endpoint.receiver.error || endpoint.receiver.spreadMax10s > 1 ? "warn" : "muted"}`}>
             {endpoint.receiver.error
               ? `Receiver: ${endpoint.receiver.error}`
-              : `In step ${(endpoint.receiver.alignedRatio * 100).toFixed(1)}% of refreshes · at most ${endpoint.receiver.spreadMax10s} frame(s) apart (last 10 s) · ${Math.round(endpoint.receiver.refreshHz)} Hz · ${endpoint.receiver.presenter}`}
+              : `In step ${(endpoint.receiver.alignedRatio * 100).toFixed(1)}% of refreshes · at most ${endpoint.receiver.spreadMax10s} frame(s) apart (last 10 s) · presenting ${Math.round(endpoint.receiver.presentFps ?? 0)} of ${Math.round(endpoint.receiver.refreshHz)} Hz · upload ${(endpoint.receiver.uploadMs ?? 0).toFixed(1)} ms · ${endpoint.receiver.presenter}`}
           </small>
         )}
         {endpoint.player === "mosaic" && !endpoint.receiver && endpoint.online && (
@@ -174,6 +174,7 @@ export function EndpointPanel({
                 <b>Display {d.index}</b>
                 <small className="muted grow">
                   {state}
+                  {d.fps !== undefined && endpoint.player === "mosaic" ? ` · ${d.fps.toFixed(0)} fps` : ""}
                   {d.shownFrameId ? ` · frame ${d.shownFrameId}` : ""}
                   {d.late ? ` · ${d.late} late` : ""}
                 </small>

@@ -33,6 +33,17 @@ V vs(uint id : SV_VertexID) {
     return o;
 }
 float4 ps(V i) : SV_Target { return float4(tex.Sample(smp, i.uv).rgb, 1); }
+
+// UYVY 4:2:2 packed as one RGBA8 texel per pixel pair (r = U, g = Y0, b = V, a = Y1), BT.709 limited range.
+cbuffer Picture : register(b0) { float2 size; float2 pad; };  // picture size in pixels
+float4 ps_uyvy(V i) : SV_Target {
+    float2 p = min(floor(i.uv * size), size - 1);
+    float4 t = tex.Load(int3(int(p.x) / 2, int(p.y), 0));
+    float y = ((int(p.x) & 1) ? t.a : t.g) * 255.0 - 16.0;
+    float u = t.r * 255.0 - 128.0, v = t.b * 255.0 - 128.0;
+    float yy = y / 219.0, cb = u / 224.0, cr = v / 224.0;
+    return float4(saturate(float3(yy + 1.5748 * cr, yy - 0.1873 * cb - 0.4681 * cr, yy + 1.8556 * cb)), 1);
+}
 )";
 
 LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
@@ -81,6 +92,16 @@ public:
             return error = "shader compile failed", false;
         device_->CreateVertexShader(vsb->GetBufferPointer(), vsb->GetBufferSize(), nullptr, &vs_);
         device_->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr, &ps_);
+        ComPtr<ID3DBlob> uyb;
+        if (FAILED(D3DCompile(kShader, std::strlen(kShader), "receiver", nullptr, nullptr, "ps_uyvy", "ps_5_0", 0, 0, &uyb, &err)))
+            return error = "UYVY shader compile failed", false;
+        device_->CreatePixelShader(uyb->GetBufferPointer(), uyb->GetBufferSize(), nullptr, &psUyvy_);
+        D3D11_BUFFER_DESC cb = {};
+        cb.ByteWidth = 16;
+        cb.Usage = D3D11_USAGE_DYNAMIC;
+        cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        device_->CreateBuffer(&cb, nullptr, &picture_);
         D3D11_SAMPLER_DESC sd = {};
         sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
         sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -137,12 +158,13 @@ public:
 
     void upload(int stream, const RxFrame& f) override {
         auto& t = textures_[stream];
-        if (!t.tex || t.w != f.width || t.h != f.height) {
+        if (!t.tex || t.w != f.width || t.h != f.height || t.uyvy != f.uyvy) {
             D3D11_TEXTURE2D_DESC d = {};
-            d.Width = static_cast<UINT>(f.width);
+            // UYVY: half as wide, one RGBA8 texel per pixel pair; converted in ps_uyvy.
+            d.Width = static_cast<UINT>(f.uyvy ? (f.width + 1) / 2 : f.width);
             d.Height = static_cast<UINT>(f.height);
             d.MipLevels = d.ArraySize = 1;
-            d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            d.Format = f.uyvy ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
             d.SampleDesc.Count = 1;
             d.Usage = D3D11_USAGE_DYNAMIC;
             d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -152,10 +174,11 @@ public:
             device_->CreateShaderResourceView(t.tex.Get(), nullptr, &t.srv);
             t.w = f.width;
             t.h = f.height;
+            t.uyvy = f.uyvy;
         }
         D3D11_MAPPED_SUBRESOURCE m;
         if (FAILED(ctx_->Map(t.tex.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
-        const size_t row = static_cast<size_t>(f.width) * 4;
+        const size_t row = static_cast<size_t>(f.width) * (f.uyvy ? 2 : 4);
         for (int y = 0; y < f.height; ++y)
             std::memcpy(static_cast<uint8_t*>(m.pData) + static_cast<size_t>(y) * m.RowPitch, f.data + static_cast<size_t>(y) * f.stride, row);
         ctx_->Unmap(t.tex.Get(), 0);
@@ -177,6 +200,18 @@ public:
                 if (t.window != static_cast<int>(i) || tex == textures_.end() || !tex->second.srv) continue;
                 D3D11_VIEWPORT vp = {float(t.x), float(t.y), float(t.w), float(t.h), 0, 1};
                 ctx_->RSSetViewports(1, &vp);
+                if (tex->second.uyvy) {
+                    D3D11_MAPPED_SUBRESOURCE m;
+                    if (SUCCEEDED(ctx_->Map(picture_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+                        float size[4] = {float(tex->second.w), float(tex->second.h), 0, 0};
+                        std::memcpy(m.pData, size, sizeof size);
+                        ctx_->Unmap(picture_.Get(), 0);
+                    }
+                    ctx_->PSSetShader(psUyvy_.Get(), nullptr, 0);
+                    ctx_->PSSetConstantBuffers(0, 1, picture_.GetAddressOf());
+                } else {
+                    ctx_->PSSetShader(ps_.Get(), nullptr, 0);
+                }
                 ctx_->PSSetShaderResources(0, 1, tex->second.srv.GetAddressOf());
                 ctx_->Draw(3, 0);
             }
@@ -214,7 +249,8 @@ private:
     struct Tex {
         ComPtr<ID3D11Texture2D> tex;
         ComPtr<ID3D11ShaderResourceView> srv;
-        int w = 0, h = 0;
+        int w = 0, h = 0;  // picture size in pixels
+        bool uyvy = false;
     };
 
     double queryRefreshHz() const {
@@ -243,7 +279,8 @@ private:
     ComPtr<ID3D11DeviceContext> ctx_;
     ComPtr<IDXGIFactory2> factory_;
     ComPtr<ID3D11VertexShader> vs_;
-    ComPtr<ID3D11PixelShader> ps_;
+    ComPtr<ID3D11PixelShader> ps_, psUyvy_;
+    ComPtr<ID3D11Buffer> picture_;
     ComPtr<ID3D11SamplerState> sampler_;
     std::vector<Win> windows_;
     std::map<int, Tex> textures_;

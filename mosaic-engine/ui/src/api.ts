@@ -120,10 +120,11 @@ export interface EndpointView extends Omit<Endpoint, "displays"> {
   address: string;
   version: string;
   screens: Screen[];
-  receiver?: { spreadMax10s: number; alignedRatio: number; refreshHz: number; presenter: string; error: string };
+  receiver?: { spreadMax10s: number; alignedRatio: number; refreshHz: number; presenter: string; error: string; presentFps?: number; uploadMs?: number };
   displays: (EndpointDisplay & {
     shownFrameId?: number;
     late?: number;
+    fps?: number; // new pictures per second it really shows
     index: number;
     label?: string;
     stream?: string;
