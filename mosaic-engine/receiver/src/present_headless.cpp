@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <thread>
 
 #include "presenter.hpp"
@@ -12,7 +13,16 @@ public:
     std::string name() const override { return "headless"; }
     bool configure(const std::vector<WindowSpec>&, std::string&) override { return true; }
     void upload(int, const RxFrame&) override {}
-    void present(const std::vector<TileDraw>&) override {}
+    // Every window "reaches the screen" at the same moment, one present per refresh: the bookkeeping
+    // above it gets exercised (offsets 0, no missed refreshes).
+    void present(const std::vector<TileDraw>& tiles, const std::vector<bool>&) override {
+        int windows = 0;
+        for (auto& t : tiles) windows = std::max(windows, t.window + 1);
+        ++count_;
+        int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count();
+        timings_.assign(static_cast<size_t>(windows), {true, count_, count_, count_, now});
+    }
+    std::vector<PresentTiming> timings() override { return timings_; }
     void waitForRefresh() override {
         next_ += std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / hz_));
         auto now = Clock::now();
@@ -24,6 +34,8 @@ public:
 private:
     double hz_;
     Clock::time_point next_;
+    uint32_t count_ = 0;
+    std::vector<PresentTiming> timings_;
 };
 
 }  // namespace

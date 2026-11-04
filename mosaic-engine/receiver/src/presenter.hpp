@@ -15,6 +15,15 @@ struct WindowSpec {
     int x = 0, y = 0, w = 1920, h = 1080;  // desktop rectangle (a monitor, or a spanned group of them)
 };
 
+// When each window's frames really reached its monitor (Windows: DXGI frame statistics).
+struct PresentTiming {
+    bool valid = false;             // the platform reported statistics for this window
+    uint32_t presentCount = 0;      // number of the present just made
+    uint32_t syncPresentCount = 0;  // the newest present that reached the screen ...
+    uint32_t syncRefreshCount = 0;  // ... at this vertical refresh of the monitor ...
+    int64_t syncMicros = 0;         // ... at this time (microseconds, one clock for all windows)
+};
+
 struct TileDraw {
     int window = 0;
     int x = 0, y = 0, w = 0, h = 0;  // inside the window
@@ -29,8 +38,11 @@ public:
     virtual bool configure(const std::vector<WindowSpec>& windows, std::string& error) = 0;
     // Uploads a frame as stream `stream`'s picture (only when the picture changed).
     virtual void upload(int stream, const RxFrame& frame) = 0;
-    // Draws every window and presents them all.
-    virtual void present(const std::vector<TileDraw>& tiles) = 0;
+    // Draws every window and presents them all. A window with flash[w] set is drawn plain white
+    // instead (flash test: filmed, it shows at a glance how far apart the displays are).
+    virtual void present(const std::vector<TileDraw>& tiles, const std::vector<bool>& flash) = 0;
+    // Per window, after present(): what reached the screen when.
+    virtual std::vector<PresentTiming> timings() = 0;
     // Blocks until the next display refresh. Also handles window messages.
     virtual void waitForRefresh() = 0;
     virtual double refreshHz() const = 0;

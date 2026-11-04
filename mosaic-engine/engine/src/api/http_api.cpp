@@ -238,6 +238,9 @@ struct HttpApi::Impl {
                              {"alignedRatio", rx.value("alignedRatio", 1.0)},
                              {"refreshHz", rx.value("refreshHz", 0.0)},
                              {"presentFps", rx.value("presentFps", 0.0)},
+                             {"timing", rx.value("timing", "")},
+                             {"screenSpreadMs", rx.value("screenSpreadMs", 0.0)},
+                             {"screenSpreadMaxMs", rx.value("screenSpreadMaxMs", 0.0)},
                              {"uploadMs", rx.value("uploadMs", 0.0)},
                              {"presenter", rx.value("presenter", "")},
                              {"error", rx.value("error", "")}};
@@ -256,6 +259,9 @@ struct HttpApi::Impl {
                     d["shownFrameId"] = r.value("shownFrameId", 0);
                     d["late"] = r.value("late", 0);
                     d["fps"] = r.value("fps", 0.0);
+                    d["offsetMs"] = r.value("offsetMs", 0.0);
+                    d["offsetMaxMs"] = r.value("offsetMaxMs", 0.0);
+                    d["missedRefreshes"] = r.value("missedRefreshes", 0);
                 }
             d["ok"] = j["online"].get<bool>() && d.value("reachable", false) && d.contains("stream") &&
                       d.value("playing", "") == d.value("stream", "");
@@ -831,7 +837,7 @@ struct HttpApi::Impl {
             auto l = store.active();
             for (auto& e : l->endpoints)
                 if (hostKey(e.host) == hostKey(host))
-                    return sendJson(res, {{"endpoint", {{"id", e.id}, {"name", e.name}, {"player", e.player}}},
+                    return sendJson(res, {{"endpoint", {{"id", e.id}, {"name", e.name}, {"player", e.player}, {"flashTest", e.flashTest}}},
                                           {"layout", l->id},
                                           {"engineHost", machine},
                                           {"receiverPackage", receiverPackage()},
@@ -873,7 +879,10 @@ struct HttpApi::Impl {
                 int ok = 0;
                 for (auto& d : v["displays"]) ok += d.value("ok", false) ? 1 : 0;
                 json ep = {{"id", e.id}, {"name", e.name}, {"player", e.player}, {"online", v["online"]}, {"displays", e.displays.size()}, {"displaysOk", ok}};
-                if (v.contains("receiver")) ep["syncSpreadFrames"] = v["receiver"]["spreadMax10s"];
+                if (v.contains("receiver")) {
+                    ep["syncSpreadFrames"] = v["receiver"]["spreadMax10s"];
+                    ep["screenSpreadMaxMs"] = v["receiver"]["screenSpreadMaxMs"];
+                }
                 endpoints.push_back(ep);
             }
             sendJson(res, {{"layout", {{"id", l->id}, {"name", l->name}}},

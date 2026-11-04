@@ -206,7 +206,7 @@ void from_json(const json& j, EndpointDisplay& d) {
 }
 
 void to_json(json& j, const Endpoint& e) {
-    j = json{{"id", e.id}, {"name", e.name}, {"host", e.host}, {"player", e.player}, {"displays", e.displays}};
+    j = json{{"id", e.id}, {"name", e.name}, {"host", e.host}, {"player", e.player}, {"flashTest", e.flashTest}, {"displays", e.displays}};
 }
 
 void from_json(const json& j, Endpoint& e) {
@@ -214,6 +214,7 @@ void from_json(const json& j, Endpoint& e) {
     e.name = j.value("name", e.name);
     e.host = j.value("host", e.host);
     e.player = j.value("player", e.player);
+    e.flashTest = j.value("flashTest", e.flashTest);
     if (j.contains("displays")) e.displays = j.at("displays").get<std::vector<EndpointDisplay>>();
 }
 

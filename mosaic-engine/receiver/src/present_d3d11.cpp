@@ -184,7 +184,7 @@ public:
         ctx_->Unmap(t.tex.Get(), 0);
     }
 
-    void present(const std::vector<TileDraw>& tiles) override {
+    void present(const std::vector<TileDraw>& tiles, const std::vector<bool>& flash) override {
         const float black[4] = {0, 0, 0, 1};
         ctx_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx_->IASetInputLayout(nullptr);
@@ -194,6 +194,11 @@ public:
         for (size_t i = 0; i < windows_.size(); ++i) {
             auto& w = windows_[i];
             ctx_->OMSetRenderTargets(1, w.rtv.GetAddressOf(), nullptr);
+            if (i < flash.size() && flash[i]) {
+                const float white[4] = {1, 1, 1, 1};
+                ctx_->ClearRenderTargetView(w.rtv.Get(), white);
+                continue;
+            }
             ctx_->ClearRenderTargetView(w.rtv.Get(), black);
             for (auto& t : tiles) {
                 auto tex = textures_.find(t.stream);
@@ -218,7 +223,24 @@ public:
         }
         // Every window in the same pass: each flips on its own monitor's next refresh.
         for (auto& w : windows_) w.swap->Present(1, 0);
+        // Then ask each swap chain which present reached its monitor, and when.
+        timings_.assign(windows_.size(), {});
+        for (size_t i = 0; i < windows_.size(); ++i) {
+            auto& t = timings_[i];
+            UINT last = 0;
+            windows_[i].swap->GetLastPresentCount(&last);
+            t.presentCount = last;
+            DXGI_FRAME_STATISTICS st = {};
+            if (SUCCEEDED(windows_[i].swap->GetFrameStatistics(&st)) && st.SyncQPCTime.QuadPart) {
+                t.valid = true;
+                t.syncPresentCount = st.PresentCount;
+                t.syncRefreshCount = st.SyncRefreshCount;
+                t.syncMicros = static_cast<int64_t>(static_cast<double>(st.SyncQPCTime.QuadPart) * 1e6 / static_cast<double>(qpcFreq_));
+            }
+        }
     }
+
+    std::vector<PresentTiming> timings() override { return timings_; }
 
     void waitForRefresh() override {
         MSG msg;
@@ -283,6 +305,12 @@ private:
     ComPtr<ID3D11Buffer> picture_;
     ComPtr<ID3D11SamplerState> sampler_;
     std::vector<Win> windows_;
+    std::vector<PresentTiming> timings_;
+    int64_t qpcFreq_ = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return static_cast<int64_t>(f.QuadPart);
+    }();
     std::map<int, Tex> textures_;
     double hz_ = 60.0;
 };

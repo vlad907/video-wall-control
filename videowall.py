@@ -1118,7 +1118,7 @@ def sync_receiver(displays=None):
         save_config()
     if not start_receiver():
         return
-    wanted = {"displays": cfg("receiver_displays") or []}
+    wanted = {"displays": cfg("receiver_displays") or [], "flashTest": bool((endpoint_state["endpoint"] or {}).get("flashTest"))}
     if receiver_state["sent"] != wanted:
         if receiver_call("PUT", "/config", wanted, timeout=3) is not None:
             receiver_state["sent"] = wanted

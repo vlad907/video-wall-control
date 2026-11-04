@@ -33,6 +33,19 @@ and each endpoint chooses its player, so a PC can switch back at any time.
    - per display: the frame it shows, the new pictures per second it shows, and how many refreshes it was late
 
    A stream up to **6 frames** behind the others is waited for. That's 100 ms at 60 fps, enough to ride out uneven arrival.
+
+   **Measured on the glass.** After every present, the receiver asks Windows which present each monitor actually
+   displayed and when (DXGI frame statistics). That gives:
+   - **"On screen, displays apart"**: average and maximum, in milliseconds, between the first and the last
+     display to show each engine frame (last 10 s). Under one refresh (16.7 ms at 60 Hz) is as close as separate
+     monitors get without spanning or framelock.
+   - **per display, "+N ms (max M)"**: how much later than the earliest display it showed each frame.
+   - **"N repeated"**: refreshes where a monitor showed a picture again because the receiver didn't present in
+     time. This is stutter caused by the receiving PC.
+
+   **Flash test** (endpoint panel): every display flashes white on each engine frame divisible by 30, twice a
+   second at 60 fps. Displays in step flash together. Film the wall in slow motion to compare against the numbers,
+   including across receiving PCs, since the flash follows the engine's frame number.
    `/api/control` lists `syncSpreadFrames` per endpoint.
 5. **Switch back** by choosing *NDI Studio Monitor*: the receiver stops and the Studio Monitors return.
 
@@ -48,7 +61,6 @@ What phase 1 doesn't do yet:
   no CPU colour conversion) and converts on the GPU.
 - **A lost stream holds its last frame** on the receiver. The engine-side fallback slate covers inputs to the engine.
 - **No editor screen for spanned displays (Eyefinity) yet.** The receiver already supports tiles inside one window.
-- **No present-time telemetry from DXGI frame statistics yet,** and no flash-test mode.
 - **Cross-PC alignment is phase 2.**
 
 ## Why

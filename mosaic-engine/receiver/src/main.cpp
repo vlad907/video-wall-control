@@ -58,6 +58,7 @@ int selfTest(double seconds) {
     check(d[0].value("framesShown", 0) > seconds * 50, "the on-time stream kept moving");
     check(d[3].value("late", 0) > 0, "the stalled stream was counted late, not waited for");
     check(d[0].value("shownFrameId", 0) > 0 && d[0].value("shownFrameId", 0) == d[1].value("shownFrameId", 0), "displays 1 and 2 end on the same frame");
+    check(s.value("timing", "") == "measured", "on-screen timing is measured");
     check(s.value("spreadMax10s", 99) <= 1, "in-step displays were never more than 1 frame apart (" + std::to_string(s.value("spreadMax10s", 99)) + ")");
     std::cout << (ok ? "SELF-TEST PASSED" : "SELF-TEST FAILED") << "\n";
     return ok ? 0 : 1;

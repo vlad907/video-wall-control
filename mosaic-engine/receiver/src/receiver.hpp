@@ -3,6 +3,7 @@
 #pragma once
 
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -32,6 +33,7 @@ struct ReceiverConfig {
     std::vector<DisplayConfig> displays;
     int lagFrames = 6;       // a stream this far behind the others stops holding them back (100 ms at 60 fps)
     int lostAfterMs = 500;   // no frame for this long = signal lost (stops being waited for)
+    bool flashTest = false;  // every display flashes white on engine frames divisible by 30
 };
 
 void from_json(const nlohmann::json& j, ReceiverConfig& c);
@@ -91,6 +93,22 @@ private:
     std::vector<uint64_t> windowShown_;
     double presentFps_ = 0, uploadMs_ = 0;
     std::vector<double> streamFps_;
+
+    // On-screen timing per window (monitor), from the presenter's statistics: when each new
+    // picture really appeared, so displays can be compared in milliseconds.
+    struct WindowTrack {
+        std::deque<std::pair<uint32_t, uint64_t>> pending;  // present number -> frame id (new pictures only)
+        uint64_t lastFrameId = 0;
+        uint32_t lastSyncPresent = 0, lastSyncRefresh = 0;
+        bool seen = false, valid = false;
+        uint64_t missed = 0;        // refreshes the monitor showed without a new present from us
+        std::deque<double> offsets;  // ms behind the earliest display, per frame (recent)
+    };
+    std::vector<WindowTrack> windows_;
+    std::vector<int> windowStream_;  // per window: the stream of its first tile
+    std::map<uint64_t, std::vector<int64_t>> shownAt_;  // frame id -> when it appeared on each window (us, -1 = not yet)
+    std::deque<double> spreads_;  // ms between the first and last display to show each frame (recent)
+    void trackTiming(const std::vector<PresentTiming>& t);
     std::vector<uint64_t> recentSpread_;  // last ~10 s
     Clock::time_point started_ = Clock::now();
 

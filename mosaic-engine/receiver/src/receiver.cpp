@@ -19,6 +19,7 @@ static WindowSpec rectFrom(const json& j, WindowSpec def) {
 void from_json(const json& j, ReceiverConfig& c) {
     c.lagFrames = std::clamp(j.value("lagFrames", c.lagFrames), 0, 30);
     c.lostAfterMs = std::clamp(j.value("lostAfterMs", c.lostAfterMs), 50, 10000);
+    c.flashTest = j.value("flashTest", c.flashTest);
     c.displays.clear();
     int n = 0;
     for (auto& d : j.value("displays", json::array())) {
@@ -42,7 +43,7 @@ json to_json(const ReceiverConfig& c) {
                             {"window", {{"x", d.window.x}, {"y", d.window.y}, {"w", d.window.w}, {"h", d.window.h}}},
                             {"tile", {{"x", d.tile.x}, {"y", d.tile.y}, {"w", d.tile.w}, {"h", d.tile.h}}},
                             {"synthetic", d.synthetic}});
-    return {{"displays", displays}, {"lagFrames", c.lagFrames}, {"lostAfterMs", c.lostAfterMs}};
+    return {{"displays", displays}, {"lagFrames", c.lagFrames}, {"lostAfterMs", c.lostAfterMs}, {"flashTest", c.flashTest}};
 }
 
 static std::unique_ptr<FrameInput> makeInput(const DisplayConfig& d, std::string& error) {
@@ -152,6 +153,12 @@ void Receiver::apply(const ReceiverConfig& c) {
     }
     std::string error;
     if (!presenter_->configure(windows, error)) std::cerr << "[receiver] " << error << "\n";
+    windows_.assign(windows.size(), {});
+    windowStream_.assign(windows.size(), -1);
+    for (auto& t : tiles_)
+        if (windowStream_[t.window] < 0) windowStream_[t.window] = t.stream;
+    shownAt_.clear();
+    spreads_.clear();
     active_ = c;
     target_ = 0;
     std::cerr << "[receiver] " << c.displays.size() << " display(s), " << streams_.size() << " stream(s), " << windows.size() << " window(s)\n";
@@ -194,7 +201,15 @@ void Receiver::frame() {
         if (inStep) lo = std::min(lo, s.shownId), hi = std::max(hi, s.shownId);
     }
     windowUploadMs_ += std::chrono::duration<double, std::milli>(Clock::now() - uploadStart).count();
-    presenter_->present(tiles_);
+    // Flash test: a window goes white while it shows an engine frame divisible by 30.
+    std::vector<bool> flash(windows_.size(), false);
+    for (size_t w = 0; w < windows_.size() && active_.flashTest; ++w) {
+        int si = windowStream_[w];
+        uint64_t id = si >= 0 ? streams_[si].shownId : 0;
+        flash[w] = id && id % 30 == 0;
+    }
+    presenter_->present(tiles_, flash);
+    trackTiming(presenter_->timings());
 
     // Real rates, once a second: how often we presented, how many new pictures each stream showed.
     ++windowPresents_;
@@ -223,6 +238,13 @@ void Receiver::frame() {
     if (recentSpread_.size() > keep) recentSpread_.erase(recentSpread_.begin(), recentSpread_.end() - static_cast<std::ptrdiff_t>(keep));
 
     if (presents_ % 6 != 0) return;  // status ~10 times a second is plenty
+    auto maxOf = [](const std::deque<double>& v) { return v.empty() ? 0.0 : *std::max_element(v.begin(), v.end()); };
+    auto avgOf = [](const std::deque<double>& v) {
+        double sum = 0;
+        for (double x : v) sum += x;
+        return v.empty() ? 0.0 : sum / static_cast<double>(v.size());
+    };
+    bool timingOk = !windows_.empty() && std::all_of(windows_.begin(), windows_.end(), [](auto& w) { return w.valid; });
     json displays = json::array();
     for (size_t i = 0; i < active_.displays.size(); ++i) {
         const auto& d = active_.displays[i];
@@ -234,6 +256,9 @@ void Receiver::frame() {
                             {"shownFrameId", s.shownId},
                             {"late", s.late},
                             {"framesShown", s.shown},
+                            {"offsetMs", tiles_[i].window < static_cast<int>(windows_.size()) ? avgOf(windows_[tiles_[i].window].offsets) : 0.0},
+                            {"offsetMaxMs", tiles_[i].window < static_cast<int>(windows_.size()) ? maxOf(windows_[tiles_[i].window].offsets) : 0.0},
+                            {"missedRefreshes", tiles_[i].window < static_cast<int>(windows_.size()) ? windows_[tiles_[i].window].missed : 0},
                             {"fps", displayStream_[i] < static_cast<int>(streamFps_.size()) ? streamFps_[displayStream_[i]] : 0.0},
                             {"received", s.input ? s.input->queue().received() : 0},
                             {"width", s.width},
@@ -245,6 +270,10 @@ void Receiver::frame() {
                {"presenter", presenter_->name()},
                {"refreshHz", presenter_->refreshHz()},
                {"presentFps", presentFps_},
+               {"timing", timingOk ? "measured" : "not available"},
+               {"screenSpreadMs", avgOf(spreads_)},
+               {"screenSpreadMaxMs", maxOf(spreads_)},
+               {"flashTest", active_.flashTest},
                {"uploadMs", uploadMs_},
                {"uptimeS", std::chrono::duration<double>(now - started_).count()},
                {"presents", presents_},
@@ -253,6 +282,69 @@ void Receiver::frame() {
                {"spreadMax10s", spreadMax},
                {"alignedRatio", comparedPresents_ ? double(alignedPresents_) / double(comparedPresents_) : 1.0},
                {"displays", displays}};
+}
+
+// Matches each window's "this present reached the screen at T" with the frame that present
+// showed. A frame seen on several windows gives their offsets: how much later than the first
+// display each one showed it, in milliseconds. Also counts refreshes a monitor showed without a
+// new present from us (the loop fell behind: a repeated frame, i.e. stutter).
+void Receiver::trackTiming(const std::vector<PresentTiming>& timings) {
+    const size_t keep = static_cast<size_t>(presenter_->refreshHz() * 10);  // ~10 s
+    uint64_t newest = 0;
+    for (size_t w = 0; w < windows_.size() && w < timings.size(); ++w) {
+        auto& tr = windows_[w];
+        const auto& t = timings[w];
+        int si = windowStream_[w];
+        uint64_t id = si >= 0 ? streams_[si].shownId : 0;
+        newest = std::max(newest, id);
+        if (id && id != tr.lastFrameId) {
+            tr.pending.emplace_back(t.presentCount, id);
+            if (tr.pending.size() > 32) tr.pending.pop_front();
+            tr.lastFrameId = id;
+        }
+        tr.valid = t.valid;
+        if (!t.valid) continue;
+        if (tr.seen) {
+            uint32_t presents = t.syncPresentCount - tr.lastSyncPresent;
+            uint32_t refreshes = t.syncRefreshCount - tr.lastSyncRefresh;
+            if (presents > 0 && refreshes > presents && refreshes - presents < 600) tr.missed += refreshes - presents;
+        }
+        tr.seen = true;
+        tr.lastSyncPresent = t.syncPresentCount;
+        tr.lastSyncRefresh = t.syncRefreshCount;
+        while (!tr.pending.empty() && static_cast<int32_t>(tr.pending.front().first - t.syncPresentCount) <= 0) {
+            if (tr.pending.front().first == t.syncPresentCount) {
+                auto& at = shownAt_[tr.pending.front().second];
+                if (at.empty()) at.assign(windows_.size(), -1);
+                at[w] = t.syncMicros;
+            }
+            tr.pending.pop_front();
+        }
+    }
+    // A frame is judged once every window has shown it, or once it's well in the past.
+    for (auto it = shownAt_.begin(); it != shownAt_.end();) {
+        auto& at = it->second;
+        bool complete = std::all_of(at.begin(), at.end(), [](int64_t v) { return v >= 0; });
+        if (!complete && it->first + 30 > newest) {
+            ++it;
+            continue;
+        }
+        int64_t first = INT64_MAX, last = INT64_MIN;
+        int n = 0;
+        for (int64_t v : at)
+            if (v >= 0) first = std::min(first, v), last = std::max(last, v), ++n;
+        if (n >= 2) {
+            for (size_t w = 0; w < at.size(); ++w)
+                if (at[w] >= 0) {
+                    windows_[w].offsets.push_back((at[w] - first) / 1000.0);
+                    if (windows_[w].offsets.size() > keep) windows_[w].offsets.pop_front();
+                }
+            spreads_.push_back((last - first) / 1000.0);
+            if (spreads_.size() > keep) spreads_.pop_front();
+        }
+        it = shownAt_.erase(it);
+    }
+    while (shownAt_.size() > 240) shownAt_.erase(shownAt_.begin());
 }
 
 }  // namespace mosaic::rx

@@ -149,6 +149,26 @@ export function EndpointPanel({
               : `In step ${(endpoint.receiver.alignedRatio * 100).toFixed(1)}% of refreshes · at most ${endpoint.receiver.spreadMax10s} frame(s) apart (last 10 s) · presenting ${Math.round(endpoint.receiver.presentFps ?? 0)} of ${Math.round(endpoint.receiver.refreshHz)} Hz · upload ${(endpoint.receiver.uploadMs ?? 0).toFixed(1)} ms · ${endpoint.receiver.presenter}`}
           </small>
         )}
+        {endpoint.player === "mosaic" && endpoint.receiver && (
+          <div className="wide-note sync-box">
+            <div className="sync-line">
+              <span>On screen, displays apart</span>
+              <b className={(endpoint.receiver.screenSpreadMaxMs ?? 0) > 17 ? "warn" : ""}>
+                {endpoint.receiver.timing === "measured"
+                  ? `${(endpoint.receiver.screenSpreadMs ?? 0).toFixed(1)} ms avg · ${(endpoint.receiver.screenSpreadMaxMs ?? 0).toFixed(1)} ms max`
+                  : "not measurable on this PC"}
+              </b>
+            </div>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={!!endpoint.flashTest}
+                onChange={(e) => api.putEndpoint(endpoint.id, { flashTest: e.target.checked }).then(onChanged).catch(onError)}
+              />
+              Flash test: all displays flash white together twice a second; film it in slow motion
+            </label>
+          </div>
+        )}
         {endpoint.player === "mosaic" && !endpoint.receiver && endpoint.online && !endpoint.receiverUpdate && (
           <small className="wide-note muted">Starting the Mosaic Receiver on the PC…</small>
         )}
@@ -188,6 +208,10 @@ export function EndpointPanel({
                 <small className="muted grow">
                   {state}
                   {d.fps !== undefined && endpoint.player === "mosaic" ? ` · ${d.fps.toFixed(0)} fps` : ""}
+                  {endpoint.player === "mosaic" && d.offsetMaxMs !== undefined && endpoint.receiver?.timing === "measured"
+                    ? ` · +${(d.offsetMs ?? 0).toFixed(1)} ms (max ${d.offsetMaxMs.toFixed(1)})`
+                    : ""}
+                  {d.missedRefreshes ? ` · ${d.missedRefreshes} repeated` : ""}
                   {d.shownFrameId ? ` · frame ${d.shownFrameId}` : ""}
                   {d.late ? ` · ${d.late} late` : ""}
                 </small>

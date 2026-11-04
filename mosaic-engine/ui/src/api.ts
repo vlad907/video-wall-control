@@ -99,6 +99,7 @@ export interface Endpoint {
   name: string;
   host: string; // the PC's name
   player?: "studio_monitor" | "mosaic"; // what shows the streams on that PC
+  flashTest?: boolean; // Mosaic Receiver: flash all displays white together (film it to see the offset)
   displays: EndpointDisplay[];
 }
 
@@ -122,11 +123,14 @@ export interface EndpointView extends Omit<Endpoint, "displays"> {
   screens: Screen[];
   receiverVersion?: string; // the receiver this PC installed (from the engine)
   receiverUpdate?: string;  // why it couldn't update or switch, if so
-  receiver?: { spreadMax10s: number; alignedRatio: number; refreshHz: number; presenter: string; error: string; presentFps?: number; uploadMs?: number };
+  receiver?: { spreadMax10s: number; alignedRatio: number; refreshHz: number; presenter: string; error: string; presentFps?: number; uploadMs?: number; timing?: string; screenSpreadMs?: number; screenSpreadMaxMs?: number };
   displays: (EndpointDisplay & {
     shownFrameId?: number;
     late?: number;
     fps?: number; // new pictures per second it really shows
+    offsetMs?: number; // on screen this much later than the first display, on average (last 10 s)
+    offsetMaxMs?: number;
+    missedRefreshes?: number; // refreshes that repeated a picture because the receiver fell behind
     index: number;
     label?: string;
     stream?: string;
