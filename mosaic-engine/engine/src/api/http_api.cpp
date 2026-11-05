@@ -73,6 +73,100 @@ double nowSeconds() {
     return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
+// ---- updates ----
+
+// The git checkout this engine was built from: the first folder above the executable that has
+// .git and update.ps1 (the repository root), or empty.
+std::filesystem::path findAppDir(std::filesystem::path dir) {
+    std::error_code ec;
+    dir = std::filesystem::absolute(dir, ec);
+    for (int i = 0; i < 6 && !dir.empty(); ++i, dir = dir.parent_path()) {
+        if (std::filesystem::exists(dir / ".git", ec) && std::filesystem::exists(dir / "update.ps1", ec)) return dir;
+        if (dir == dir.parent_path()) break;
+    }
+    return {};
+}
+
+std::string readFirstLine(const std::filesystem::path& p) {
+    std::ifstream f(p);
+    std::string line;
+    std::getline(f, line);
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+    return line;
+}
+
+// The checked-out commit, short (as `git log` shows it), read from .git without running git.
+std::string gitVersion(const std::filesystem::path& appDir) {
+    if (appDir.empty()) return "";
+    auto git = appDir / ".git";
+    std::string head = readFirstLine(git / "HEAD");
+    std::string hash = head;
+    if (head.rfind("ref: ", 0) == 0) {
+        std::string ref = head.substr(5);
+        hash = readFirstLine(git / ref);
+        if (hash.empty()) {
+            std::ifstream packed(git / "packed-refs");
+            for (std::string line; std::getline(packed, line);)
+                if (line.size() > ref.size() + 41 && line.compare(line.size() - ref.size(), ref.size(), ref) == 0) hash = line.substr(0, 40);
+        }
+    }
+    return hash.size() >= 7 ? hash.substr(0, 7) : "";
+}
+
+// The outcome of the last update of this PC: the end of logs/update.log (update.ps1 -Unattended).
+json lastUpdateResult(const std::filesystem::path& appDir) {
+    auto log = appDir / "logs" / "update.log";
+    std::error_code ec;
+    if (appDir.empty() || !std::filesystem::exists(log, ec)) return nullptr;
+    auto when = std::chrono::duration_cast<std::chrono::seconds>(std::filesystem::last_write_time(log, ec) - std::filesystem::file_time_type::clock::now() +
+                                                                 std::chrono::system_clock::now().time_since_epoch())
+                    .count();
+    std::ifstream f(log);
+    std::string line, result;
+    bool ok = false;
+    for (std::string l; std::getline(f, l);) {
+        while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
+        if (l.find("Up to date:") != std::string::npos) result = l, ok = true;
+        else if (l.find("failed") != std::string::npos || l.find("errors") != std::string::npos) result = l, ok = false;
+    }
+    if (result.empty()) result = "no result in logs\\update.log (still running, or stopped early)";
+    return {{"time", when}, {"ok", ok}, {"result", result}};
+}
+
+#ifdef _WIN32
+// Runs a command without a window; its exit code, or -1.
+int runHidden(std::wstring cmd, DWORD flags = 0, bool wait = true) {
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | flags, nullptr, nullptr, &si, &pi)) return -1;
+    DWORD code = 0;
+    if (wait) {
+        WaitForSingleObject(pi.hProcess, 15000);
+        GetExitCodeProcess(pi.hProcess, &code);
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+}
+#endif
+
+// Starts update.ps1 on this PC, outside the engine: it stops the engine to rebuild it. Through
+// the "MosaicUpdate" scheduled task (install-engine / update registers it), else a detached
+// PowerShell that breaks away from the engine's task.
+bool startServerUpdate(const std::filesystem::path& appDir, std::string& error) {
+    if (appDir.empty()) return error = "can't find the video-wall-control folder (with .git and update.ps1) above the engine", false;
+#ifdef _WIN32
+    if (runHidden(L"schtasks.exe /Run /TN MosaicUpdate") == 0) return true;
+    std::wstring cmd = L"powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" + (appDir / "update.ps1").wstring() + L"\" -Unattended";
+    if (runHidden(cmd, CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB, false) == 0) return true;
+    if (runHidden(cmd, CREATE_NEW_PROCESS_GROUP, false) == 0) return true;
+    return error = "couldn't start update.ps1", false;
+#else
+    return error = "updating the media server from the editor works on Windows; here run git pull and rebuild", false;
+#endif
+}
+
 constexpr double kEndpointOnlineSeconds = 20;
 
 // A media file name we accept: letters, digits, "-", "_", "." and an image or video extension.
@@ -230,6 +324,7 @@ struct HttpApi::Impl {
         j["receiverVersion"] = last.value("receiverVersion", "");
         j["receiverUpdate"] = last.value("receiverUpdate", "");
         j["version"] = last.value("version", "");
+        j["appVersion"] = last.value("appVersion", "");
         j["screens"] = last.value("screens", json::array());
         // With the Mosaic Receiver, how far apart its displays were (frames) and how often in step.
         json rx = last.value("receiver", json::object());
@@ -241,6 +336,8 @@ struct HttpApi::Impl {
                              {"timing", rx.value("timing", "")},
                              {"screenSpreadMs", rx.value("screenSpreadMs", 0.0)},
                              {"screenSpreadMaxMs", rx.value("screenSpreadMaxMs", 0.0)},
+                             {"screenSpreadNowMs", rx.value("screenSpreadNowMs", 0.0)},
+                             {"compensate", rx.value("compensate", true)},
                              {"uploadMs", rx.value("uploadMs", 0.0)},
                              {"presenter", rx.value("presenter", "")},
                              {"error", rx.value("error", "")}};
@@ -262,6 +359,8 @@ struct HttpApi::Impl {
                     d["offsetMs"] = r.value("offsetMs", 0.0);
                     d["offsetMaxMs"] = r.value("offsetMaxMs", 0.0);
                     d["missedRefreshes"] = r.value("missedRefreshes", 0);
+                    d["windowsLateMs"] = r.value("windowsLateMs", 0.0);
+                    d["heldRefreshes"] = r.value("heldRefreshes", 0);
                 }
             d["ok"] = j["online"].get<bool>() && d.value("reachable", false) && d.contains("stream") &&
                       d.value("playing", "") == d.value("stream", "");
@@ -274,6 +373,28 @@ struct HttpApi::Impl {
 
     // ---- the Mosaic Receiver, handed out to receiving PCs (their dashboards update themselves) ----
     std::filesystem::path binDir;
+
+    // ---- "Update everything": the request (data/update.json) receiving PCs pick up at check-in ----
+    std::filesystem::path appDir;
+    std::mutex updateMutex;
+    json updateRequest = json::object();  // {id, requestedAt, target: all | receivers | server, serverError}
+    std::filesystem::path updateFile() const { return engine.mediaDir().parent_path() / "update.json"; }
+    void loadUpdateRequest() {
+        std::ifstream f(updateFile());
+        json j = json::parse(f, nullptr, false);
+        if (j.is_object()) updateRequest = j;
+    }
+    void saveUpdateRequest() {
+        std::error_code ec;
+        std::filesystem::create_directories(updateFile().parent_path(), ec);
+        std::ofstream(updateFile()) << updateRequest.dump(2);
+    }
+    // Added to every check-in reply when receiving PCs should update.
+    json updateForEndpoints() {
+        std::lock_guard lock(updateMutex);
+        if (updateRequest.value("id", 0) <= 0 || updateRequest.value("target", "all") == "server") return nullptr;
+        return {{"id", updateRequest.value("id", 0)}};
+    }
 
     static const std::vector<std::string>& receiverFileNames() {
 #ifdef _WIN32
@@ -841,9 +962,76 @@ struct HttpApi::Impl {
                                           {"layout", l->id},
                                           {"engineHost", machine},
                                           {"receiverPackage", receiverPackage()},
+                                          {"update", updateForEndpoints()},
                                           {"displays", endpointDisplays(*l, e, engine.discoveredNdiSources())}});
             sendJson(res, {{"endpoint", nullptr}, {"layout", l->id}, {"engineHost", machine}, {"displays", json::array()},
-                           {"receiverPackage", receiverPackage()}});
+                           {"receiverPackage", receiverPackage()}, {"update", updateForEndpoints()}});
+        }));
+
+        // ---- updates: the media server (git pull + rebuild, update.ps1) and every receiving PC ----
+        // GET: versions and the last update's outcome. POST {target: all | receivers | server}:
+        // receiving PCs get the request at their next check-in (git pull, restart; the receiver
+        // follows from the engine), and ~15 s later, once they have it, the media server updates
+        // itself: the engine and editor stop for a minute or two while they rebuild.
+        s.Get("/api/system/update", guard([this](const httplib::Request&, httplib::Response& res) {
+            json request;
+            {
+                std::lock_guard lock(updateMutex);
+                request = updateRequest;
+            }
+            json pcs = json::array();
+            auto l = store.active();
+            std::map<std::string, std::string> names;
+            for (auto& e : l->endpoints) names[hostKey(e.host)] = e.name;
+            {
+                std::lock_guard lock(checkinMutex);
+                double now = nowSeconds();
+                for (auto& [key, c] : checkins) {
+                    if (now - c.value("time", 0.0) > 3600) continue;
+                    pcs.push_back({{"host", c.value("host", key)},
+                                   {"name", names.count(key) ? names[key] : c.value("host", key)},
+                                   {"online", now - c.value("time", 0.0) < kEndpointOnlineSeconds},
+                                   {"version", c.value("appVersion", "")},
+                                   {"receiverVersion", c.value("receiverVersion", "")},
+                                   {"update", c.value("update", json::object())}});
+                }
+            }
+            sendJson(res, {{"server", {{"host", machine}, {"version", gitVersion(appDir)}, {"lastUpdate", lastUpdateResult(appDir)}, {"canUpdate", !appDir.empty()}}},
+                           {"receiverVersion", receiverPackage()["version"]},
+                           {"request", request},
+                           {"endpoints", pcs},
+                           {"now", nowSeconds()}});
+        }));
+        s.Post("/api/system/update", guard([this](const httplib::Request& req, httplib::Response& res) {
+            json body = parseBody(req);
+            std::string target = body.value("target", "all");
+            if (target != "all" && target != "receivers" && target != "server") return sendError(res, 400, "target is all, receivers or server");
+            bool server = target != "receivers";
+            if (server && appDir.empty()) return sendError(res, 409, "can't update the media server: the engine isn't running from the video-wall-control folder");
+            json reply;
+            {
+                std::lock_guard lock(updateMutex);
+                updateRequest = {{"id", updateRequest.value("id", 0) + 1}, {"requestedAt", nowSeconds()}, {"target", target}};
+                saveUpdateRequest();
+                reply = updateRequest;
+            }
+            if (server) {
+                int delay = target == "all" ? 15 : 1;
+                reply["serverStartsIn"] = delay;
+                std::thread([this, delay] {
+                    std::this_thread::sleep_for(std::chrono::seconds(delay));
+                    std::string error;
+                    if (!startServerUpdate(appDir, error)) {
+                        std::cerr << "[update] " << error << "\n";
+                        std::lock_guard lock(updateMutex);
+                        updateRequest["serverError"] = error;
+                        saveUpdateRequest();
+                    } else {
+                        std::cerr << "[update] update.ps1 started; the engine stops for the rebuild\n";
+                    }
+                }).detach();
+            }
+            sendJson(res, reply, 202);
         }));
 
         // ---- one-call summary for control systems ----
@@ -1052,6 +1240,8 @@ struct HttpApi::Impl {
 HttpApi::HttpApi(Engine& engine, LayoutStore& store, std::filesystem::path uiDir, std::filesystem::path binDir)
     : impl_(std::make_unique<Impl>(engine, store)) {
     impl_->binDir = std::move(binDir);
+    impl_->appDir = findAppDir(impl_->binDir.empty() ? std::filesystem::current_path() : impl_->binDir);
+    impl_->loadUpdateRequest();
     impl_->server.new_task_queue = [] { return new httplib::ThreadPool(24); };
     impl_->routes();
     if (std::filesystem::is_directory(uiDir)) impl_->server.set_mount_point("/", uiDir.string());

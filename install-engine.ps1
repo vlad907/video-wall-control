@@ -73,6 +73,7 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
     -Principal $taskPrincipal -Settings $settings `
     -Description "Mosaic engine: renders the canvas and sends the NDI outputs (restarted if it stops)" | Out-Null
 Write-Host "Scheduled task '$TaskName' registered (runs at logon of $user)."
+& (Join-Path $EngineDir "register-update-task.ps1")
 
 # --- Firewall: the editor / API port, and NDI (dynamic ports, so a program rule) ---
 $editorRule = "Mosaic Engine Editor ($Port)"

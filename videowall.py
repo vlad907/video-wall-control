@@ -1160,10 +1160,101 @@ def set_player(player):
             restart_all("player switched back to Studio Monitor")
 
 
+# --------------------------------------------------------------------------
+# Self-update: "Update everything" in the mosaic engine's editor
+# --------------------------------------------------------------------------
+
+update_state = {"busy": False}
+
+
+def app_version():
+    """The checked-out commit, short, read from .git (no git process)."""
+    git = BASE_DIR / ".git"
+    try:
+        head = (git / "HEAD").read_text().strip()
+        if head.startswith("ref: "):
+            ref = head[5:]
+            if (git / ref).exists():
+                head = (git / ref).read_text().strip()
+            else:
+                for line in (git / "packed-refs").read_text().splitlines():
+                    if line.endswith(" " + ref):
+                        head = line.split()[0]
+        return head[:7]
+    except OSError:
+        return ""
+
+
+def handle_update_request(request):
+    """The engine asks every receiving PC to update (request id). Each id is acted on once."""
+    if not request or update_state["busy"]:
+        return
+    rid = int(request.get("id") or 0)
+    if rid <= int(cfg("update_id") or 0):
+        return
+    with config_lock:
+        config["update_id"] = rid
+    save_config()
+    update_state["busy"] = True
+    run_in_background(self_update)
+
+
+def self_update():
+    """git pull; when that brought a new version, restart this dashboard on it. The Mosaic
+    Receiver isn't touched here: it comes from the engine once the media server has rebuilt."""
+    before = app_version()
+    set_update_result("updating", "getting the latest version")
+    try:
+        r = subprocess.run(["git", "-C", str(BASE_DIR), "pull", "--ff-only", "--autostash"], capture_output=True, text=True,
+                           timeout=180, creationflags=CREATE_NO_WINDOW if IS_WINDOWS else 0)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        set_update_result("failed", "git pull didn't run (%s)" % exc)
+        return
+    if r.returncode != 0:
+        lines = (r.stderr or r.stdout or "").strip().splitlines()
+        set_update_result("failed", "git pull failed: %s" % (lines[-1] if lines else "exit code %d" % r.returncode))
+        return
+    after = app_version()
+    if after == before:
+        set_update_result("updated", "already up to date (%s)" % after)
+        return
+    set_update_result("updated", "updated %s -> %s" % (before, after))
+    log.info("Updated %s -> %s; restarting the dashboard", before, after)
+    restart_self()
+
+
+def set_update_result(state_name, message):
+    update_state["busy"] = state_name == "updating"
+    with config_lock:
+        config["update_result"] = {"id": int(config.get("update_id") or 0), "state": state_name, "message": message,
+                                   "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    save_config()
+    if state_name == "failed":
+        log.error("Update: %s", message)
+
+
+def restart_self():
+    """Start a new copy of this dashboard (outside this process's scheduled-task job, so it stays
+    when this one exits), then exit. The new copy waits for the port to come free."""
+    args = [sys.executable] + sys.argv
+    kwargs = {"cwd": str(BASE_DIR), "close_fds": True}
+    if IS_WINDOWS:
+        flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        try:
+            subprocess.Popen(args, creationflags=flags | CREATE_BREAKAWAY_FROM_JOB, **kwargs)
+        except OSError:
+            subprocess.Popen(args, creationflags=flags, **kwargs)
+    else:
+        subprocess.Popen(args, start_new_session=True, **kwargs)
+    time.sleep(1)
+    os._exit(0)
+
+
 def endpoint_checkin():
     body = {"host": socket.gethostname(), "version": "videowall/1", "dashboardPort": int(cfg("dashboard_port")),
             "screens": enumerate_displays(), "player": cfg("player") or "studio_monitor",
-            "receiverVersion": cfg("receiver_version") or "", "receiverUpdate": endpoint_state.get("receiver_update") or ""}
+            "receiverVersion": cfg("receiver_version") or "", "receiverUpdate": endpoint_state.get("receiver_update") or "",
+            "appVersion": app_version(), "update": cfg("update_result") or {}}
     if receiver_mode():
         panels_now, rx = receiver_panels()
         body["panels"] = panels_now
@@ -1178,6 +1269,7 @@ def endpoint_checkin():
         return
     endpoint_state["error"] = None
     endpoint_state["last_ok"] = time.strftime("%H:%M:%S")
+    handle_update_request(reply.get("update"))
     was = endpoint_state["endpoint"]
     endpoint_state["endpoint"] = reply.get("endpoint")
     endpoint_state["displays"] = reply.get("displays") or []
@@ -1615,11 +1707,16 @@ def main():
     setup_logging(console="--console" in sys.argv)
     load_config()
     host, port = cfg("dashboard_host"), int(cfg("dashboard_port"))
-    try:
-        server = ThreadingHTTPServer((host, port), Handler)
-    except OSError as exc:
-        log.error("Cannot bind dashboard on %s:%d (%s). Already running?", host, port, exc)
-        sys.exit(1)
+    # After a self-update the previous copy may still hold the port for a moment.
+    for attempt in range(20):
+        try:
+            server = ThreadingHTTPServer((host, port), Handler)
+            break
+        except OSError as exc:
+            if attempt == 19:
+                log.error("Cannot bind dashboard on %s:%d (%s). Already running?", host, port, exc)
+                sys.exit(1)
+            time.sleep(1)
     server.daemon_threads = True
     log.info("Video Wall Control started; dashboard on http://%s:%d", host, port)
     run_in_background(supervisor_loop)

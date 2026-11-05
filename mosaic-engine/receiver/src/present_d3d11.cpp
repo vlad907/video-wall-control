@@ -10,6 +10,8 @@
 #include <dxgi1_3.h>
 #include <wrl/client.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <map>
@@ -157,32 +159,56 @@ public:
         return true;
     }
 
-    void upload(int stream, const RxFrame& f) override {
-        auto& t = textures_[stream];
-        if (!t.tex || t.w != f.width || t.h != f.height || t.uyvy != f.uyvy) {
-            D3D11_TEXTURE2D_DESC d = {};
-            // UYVY: half as wide, one RGBA8 texel per pixel pair; converted in ps_uyvy.
-            d.Width = static_cast<UINT>(f.uyvy ? (f.width + 1) / 2 : f.width);
-            d.Height = static_cast<UINT>(f.height);
-            d.MipLevels = d.ArraySize = 1;
-            d.Format = f.uyvy ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
-            d.SampleDesc.Count = 1;
-            d.Usage = D3D11_USAGE_DYNAMIC;
-            d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-            t = {};
-            if (FAILED(device_->CreateTexture2D(&d, nullptr, &t.tex))) return;
-            device_->CreateShaderResourceView(t.tex.Get(), nullptr, &t.srv);
-            t.w = f.width;
-            t.h = f.height;
-            t.uyvy = f.uyvy;
+    // Each stream has a ring of kPictureHistory textures. The textures are mapped here, on the
+    // render thread, and the pixel copies (the slow part: ~17 MB per 4K picture) run on one
+    // thread per picture, so four 4K streams take about as long as one.
+    void upload(const std::vector<Upload>& frames) override {
+        struct Copy {
+            uint8_t* dst;
+            size_t dstPitch;
+            const RxFrame* f;
+        };
+        std::vector<Copy> copies;
+        std::vector<ID3D11Texture2D*> mapped;
+        for (auto& u : frames) {
+            const RxFrame& f = *u.frame;
+            auto& s = textures_[u.stream];
+            if (s.w != f.width || s.h != f.height || s.uyvy != f.uyvy) s = {};
+            Picture& t = s.ring[(s.gen + 1) % kPictureHistory];
+            if (!t.tex) {
+                D3D11_TEXTURE2D_DESC d = {};
+                // UYVY: half as wide, one RGBA8 texel per pixel pair; converted in ps_uyvy.
+                d.Width = static_cast<UINT>(f.uyvy ? (f.width + 1) / 2 : f.width);
+                d.Height = static_cast<UINT>(f.height);
+                d.MipLevels = d.ArraySize = 1;
+                d.Format = f.uyvy ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
+                d.SampleDesc.Count = 1;
+                d.Usage = D3D11_USAGE_DYNAMIC;
+                d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+                if (FAILED(device_->CreateTexture2D(&d, nullptr, &t.tex))) continue;
+                device_->CreateShaderResourceView(t.tex.Get(), nullptr, &t.srv);
+                s.w = f.width;
+                s.h = f.height;
+                s.uyvy = f.uyvy;
+            }
+            D3D11_MAPPED_SUBRESOURCE m;
+            if (FAILED(ctx_->Map(t.tex.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) continue;
+            copies.push_back({static_cast<uint8_t*>(m.pData), m.RowPitch, &f});
+            mapped.push_back(t.tex.Get());
+            ++s.gen;
+            s.count = std::min(s.count + 1, kPictureHistory);
         }
-        D3D11_MAPPED_SUBRESOURCE m;
-        if (FAILED(ctx_->Map(t.tex.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
-        const size_t row = static_cast<size_t>(f.width) * (f.uyvy ? 2 : 4);
-        for (int y = 0; y < f.height; ++y)
-            std::memcpy(static_cast<uint8_t*>(m.pData) + static_cast<size_t>(y) * m.RowPitch, f.data + static_cast<size_t>(y) * f.stride, row);
-        ctx_->Unmap(t.tex.Get(), 0);
+        auto copy = [](const Copy& c) {
+            const size_t row = static_cast<size_t>(c.f->width) * (c.f->uyvy ? 2 : 4);
+            for (int y = 0; y < c.f->height; ++y)
+                std::memcpy(c.dst + static_cast<size_t>(y) * c.dstPitch, c.f->data + static_cast<size_t>(y) * c.f->stride, row);
+        };
+        std::vector<std::thread> workers;
+        for (size_t i = 1; i < copies.size(); ++i) workers.emplace_back(copy, copies[i]);
+        if (!copies.empty()) copy(copies[0]);
+        for (auto& w : workers) w.join();
+        for (auto* tex : mapped) ctx_->Unmap(tex, 0);
     }
 
     void present(const std::vector<TileDraw>& tiles, const std::vector<bool>& flash) override {
@@ -203,13 +229,17 @@ public:
             ctx_->ClearRenderTargetView(w.rtv.Get(), black);
             for (auto& t : tiles) {
                 auto tex = textures_.find(t.stream);
-                if (t.window != static_cast<int>(i) || tex == textures_.end() || !tex->second.srv) continue;
+                if (t.window != static_cast<int>(i) || tex == textures_.end() || !tex->second.count) continue;
+                const Stream& st = tex->second;
+                int back = std::clamp(t.back, 0, st.count - 1);
+                const Picture& pic = st.ring[static_cast<size_t>((st.gen - back) % kPictureHistory)];
+                if (!pic.srv) continue;
                 D3D11_VIEWPORT vp = {float(t.x), float(t.y), float(t.w), float(t.h), 0, 1};
                 ctx_->RSSetViewports(1, &vp);
-                if (tex->second.uyvy) {
+                if (st.uyvy) {
                     D3D11_MAPPED_SUBRESOURCE m;
                     if (SUCCEEDED(ctx_->Map(picture_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
-                        float size[4] = {float(tex->second.w), float(tex->second.h), 0, 0};
+                        float size[4] = {float(st.w), float(st.h), 0, 0};
                         std::memcpy(m.pData, size, sizeof size);
                         ctx_->Unmap(picture_.Get(), 0);
                     }
@@ -218,7 +248,7 @@ public:
                 } else {
                     ctx_->PSSetShader(ps_.Get(), nullptr, 0);
                 }
-                ctx_->PSSetShaderResources(0, 1, tex->second.srv.GetAddressOf());
+                ctx_->PSSetShaderResources(0, 1, pic.srv.GetAddressOf());
                 ctx_->Draw(3, 0);
             }
         }
@@ -270,10 +300,14 @@ private:
         ComPtr<ID3D11RenderTargetView> rtv;
         HANDLE waitable = nullptr;
     };
-    struct Tex {
+    struct Picture {
         ComPtr<ID3D11Texture2D> tex;
         ComPtr<ID3D11ShaderResourceView> srv;
-        int w = 0, h = 0;  // picture size in pixels
+    };
+    struct Stream {
+        std::array<Picture, kPictureHistory> ring;  // ring[gen % kPictureHistory] is the newest
+        int gen = 0, count = 0;                     // pictures uploaded; how many the ring holds
+        int w = 0, h = 0;                           // picture size in pixels
         bool uyvy = false;
     };
 
@@ -325,7 +359,7 @@ private:
         QueryPerformanceFrequency(&f);
         return static_cast<int64_t>(f.QuadPart);
     }();
-    std::map<int, Tex> textures_;
+    std::map<int, Stream> textures_;
     double hz_ = 60.0;
 };
 

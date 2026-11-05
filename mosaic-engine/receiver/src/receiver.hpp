@@ -34,6 +34,9 @@ struct ReceiverConfig {
     int lagFrames = 6;       // a stream this far behind the others stops holding them back (100 ms at 60 fps)
     int lostAfterMs = 500;   // no frame for this long = signal lost (stops being waited for)
     bool flashTest = false;  // every display flashes white on engine frames divisible by 30
+    // Windows shows some displays a refresh later than others (it composites them: HDR on, an
+    // overlay, a different setting). Measured, and the other displays are held back to match.
+    bool compensate = true;
 };
 
 void from_json(const nlohmann::json& j, ReceiverConfig& c);
@@ -61,11 +64,19 @@ private:
         uint64_t late = 0;             // refreshes it couldn't show the in-step frame
         uint64_t shown = 0;            // new pictures put on screen
         int width = 0, height = 0;
+        // The stream's recent pictures (newest last), for displays held back by compensation.
+        struct Picture {
+            Clock::time_point at;  // when it became the newest
+            uint64_t gen = 0, frameId = 0;
+        };
+        std::deque<Picture> history;
+        uint64_t gen = 0;  // pictures uploaded
     };
 
     void loop();
     void apply(const ReceiverConfig& c);
     void frame();
+    void updateCompensation();
 
     PresenterFactory factory_;
     std::unique_ptr<Presenter> presenter_;
@@ -96,18 +107,30 @@ private:
 
     // On-screen timing per window (monitor), from the presenter's statistics: when each new
     // picture really appeared, so displays can be compared in milliseconds.
+    struct Pending {
+        uint32_t present = 0;  // present number
+        uint64_t frameId = 0;  // the new picture it showed
+        int64_t heldUs = 0;    // how long compensation held it back
+    };
     struct WindowTrack {
-        std::deque<std::pair<uint32_t, uint64_t>> pending;  // present number -> frame id (new pictures only)
-        uint64_t lastFrameId = 0;
+        std::deque<Pending> pending;  // new pictures only
+        uint64_t lastFrameId = 0, frameId = 0;  // frame id on screen (after any hold-back)
         uint32_t lastSyncPresent = 0, lastSyncRefresh = 0;
         bool seen = false, valid = false;
         uint64_t missed = 0;        // refreshes the monitor showed without a new present from us
-        std::deque<double> offsets;  // ms behind the earliest display, per frame (recent)
+        std::deque<double> offsets;  // ms behind the earliest display, per frame (recent), as seen
+        std::deque<double> lag;      // the same without our hold-back: how late Windows shows this display
+        int hold = 0;                // refreshes this display is held back (compensation)
+        int want = 0, wantCount = 0;  // a different hold-back measured, and for how many seconds in a row
     };
     std::vector<WindowTrack> windows_;
     std::vector<int> windowStream_;  // per window: the stream of its first tile
-    std::map<uint64_t, std::vector<int64_t>> shownAt_;  // frame id -> when it appeared on each window (us, -1 = not yet)
+    struct ShownAt {
+        std::vector<int64_t> at, lag;  // per window, us: when it appeared; minus our hold-back (-1 = not yet)
+    };
+    std::map<uint64_t, ShownAt> shownAt_;  // frame id -> when it appeared on each window
     std::deque<double> spreads_;  // ms between the first and last display to show each frame (recent)
+    std::deque<double> recentSpreads_;  // the same, last ~2 s (shows compensation taking effect)
     void trackTiming(const std::vector<PresentTiming>& t);
     std::vector<uint64_t> recentSpread_;  // last ~10 s
     Clock::time_point started_ = Clock::now();

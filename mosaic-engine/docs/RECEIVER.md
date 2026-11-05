@@ -150,8 +150,32 @@ The engine combines these per wall group:
 
 They appear in the endpoint view, the Monitor page and `/api/control`.
 
-A **flash test** mode (every display flashes white on frame ids divisible by 60) makes the offset easy
+A **flash test** mode (every display flashes white on frame ids divisible by 30) makes the offset easy
 to film with a phone, to check the numbers against reality.
+
+### Sync compensation
+
+Windows doesn't always put a frame on every monitor in the same refresh. A display it composites
+(HDR turned on, an overlay or the taskbar over it, some driver settings) shows each frame one refresh
+later than displays the receiver flips directly. At the venue that was the top row of a 2x2 wall:
+16.7 ms behind the bottom row, every frame.
+
+The receiver measures it and corrects it:
+- DXGI frame statistics give, per display, when each frame reached the screen. Taking away the
+  receiver's own hold-back leaves how late Windows shows that display (`windowsLateMs`, median of ~3 s).
+- Displays that Windows shows sooner are held back by the difference, in whole refreshes
+  (`heldRefreshes`, at most 2): they draw the picture that was newest that many refreshes ago. Each
+  stream keeps its last 4 pictures on the GPU for this.
+- A new hold-back must measure the same for 3 seconds before it's applied. A difference halfway
+  between two refreshes (monitors whose refreshes aren't lined up) is left alone.
+- `screenSpreadNowMs` (last ~2 s) shows the result; it should drop to about 0 a few seconds after the
+  receiver starts.
+
+It's on by default (`"compensate": true` in the receiver config). The self-test simulates two late
+displays and checks the other two get held back and all four line up.
+
+Uploads: the four 4K pictures are copied to the GPU on four threads at once (about 17 MB each), so
+60 fps fits in the refresh budget.
 
 ## Phases
 

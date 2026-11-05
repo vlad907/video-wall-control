@@ -123,7 +123,21 @@ export interface EndpointView extends Omit<Endpoint, "displays"> {
   screens: Screen[];
   receiverVersion?: string; // the receiver this PC installed (from the engine)
   receiverUpdate?: string;  // why it couldn't update or switch, if so
-  receiver?: { spreadMax10s: number; alignedRatio: number; refreshHz: number; presenter: string; error: string; presentFps?: number; uploadMs?: number; timing?: string; screenSpreadMs?: number; screenSpreadMaxMs?: number };
+  appVersion?: string; // the dashboard's version (git commit)
+  receiver?: {
+    spreadMax10s: number;
+    alignedRatio: number;
+    refreshHz: number;
+    presenter: string;
+    error: string;
+    presentFps?: number;
+    uploadMs?: number;
+    timing?: string;
+    screenSpreadMs?: number;
+    screenSpreadMaxMs?: number;
+    screenSpreadNowMs?: number; // the same, last ~2 s
+    compensate?: boolean;
+  };
   displays: (EndpointDisplay & {
     shownFrameId?: number;
     late?: number;
@@ -131,6 +145,8 @@ export interface EndpointView extends Omit<Endpoint, "displays"> {
     offsetMs?: number; // on screen this much later than the first display, on average (last 10 s)
     offsetMaxMs?: number;
     missedRefreshes?: number; // refreshes that repeated a picture because the receiver fell behind
+    windowsLateMs?: number; // how much later Windows itself shows this display than the soonest one
+    heldRefreshes?: number; // refreshes the receiver holds this display back to match the others
     index: number;
     label?: string;
     stream?: string;
@@ -140,6 +156,14 @@ export interface EndpointView extends Omit<Endpoint, "displays"> {
     onScreen?: string;
     ok: boolean;
   })[];
+}
+
+export interface UpdateInfo {
+  server: { host: string; version: string; canUpdate: boolean; lastUpdate: { time: number; ok: boolean; result: string } | null };
+  receiverVersion: string;
+  request: { id?: number; requestedAt?: number; target?: "all" | "receivers" | "server"; serverError?: string };
+  endpoints: { host: string; name: string; online: boolean; version: string; receiverVersion: string; update?: { id?: number; state?: "updating" | "updated" | "failed"; message?: string; time?: string } }[];
+  now: number;
 }
 
 export interface EndpointsInfo {
@@ -345,4 +369,6 @@ export const api = {
   saveScene: (name: string) => call<Scene>("POST", "/api/scenes", { name }),
   recallScene: (id: string, transitionMs: number) => call("POST", `/api/scenes/${id}/recall`, { transitionMs }),
   deleteScene: (id: string) => call("DELETE", `/api/scenes/${id}`),
+  updates: () => call<UpdateInfo>("GET", "/api/system/update"),
+  startUpdate: (target: "all" | "receivers") => call("POST", "/api/system/update", { target }),
 };

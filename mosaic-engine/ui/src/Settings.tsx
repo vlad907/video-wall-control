@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { dialog, toast } from "./Dialogs";
 import { api, storeKey, storedKey, type Layout, type LayoutVersion, type MediaFile } from "./api";
+import { UpdatesSection } from "./Updates";
 
 const kb = (n: number) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
@@ -286,6 +287,8 @@ export function SettingsPanel({ layout, onChanged, onError }: { layout: Layout; 
           </button>
         )}
       </section>
+
+      <UpdatesSection onError={onError} />
     </>
   );
 }

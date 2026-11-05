@@ -60,6 +60,30 @@ int selfTest(double seconds) {
     check(d[0].value("shownFrameId", 0) > 0 && d[0].value("shownFrameId", 0) == d[1].value("shownFrameId", 0), "displays 1 and 2 end on the same frame");
     check(s.value("timing", "") == "measured", "on-screen timing is measured");
     check(s.value("spreadMax10s", 99) <= 1, "in-step displays were never more than 1 frame apart (" + std::to_string(s.value("spreadMax10s", 99)) + ")");
+
+    // Sync compensation: like the venue's wall, Windows shows the top two displays one refresh
+    // late. The bottom two must be held back one refresh, and then all four show frames together.
+    {
+        json cfg2 = {{"displays", json::array()}};
+        for (int i = 1; i <= 4; ++i)
+            cfg2["displays"].push_back({{"index", i}, {"stream", "synthetic"}, {"synthetic", {{"width", 64}, {"height", 36}, {"fps", 30}}},
+                                        {"window", {{"x", (i - 1) * 1920}, {"y", 0}, {"w", 1920}, {"h", 1080}}}});
+        ReceiverConfig c2;
+        from_json(cfg2, c2);
+        Receiver rx2([](std::string&) { return createHeadlessPresenter(60.0, {1, 1, 0, 0}); });
+        rx2.setConfig(c2);
+        std::this_thread::sleep_for(std::chrono::duration<double>(std::max(seconds, 7.0)));
+        json s2 = rx2.status();
+        auto& d2 = s2["displays"];
+        std::cout << "compensation: held " << d2[0].value("heldRefreshes", -1) << " " << d2[1].value("heldRefreshes", -1) << " "
+                  << d2[2].value("heldRefreshes", -1) << " " << d2[3].value("heldRefreshes", -1) << ", apart now "
+                  << s2.value("screenSpreadNowMs", -1.0) << " ms\n";
+        check(d2[0].value("windowsLateMs", 0.0) > 12 && d2[2].value("windowsLateMs", 99.0) < 4, "measured which displays Windows shows a refresh late");
+        check(d2[0].value("heldRefreshes", -1) == 0 && d2[1].value("heldRefreshes", -1) == 0 && d2[2].value("heldRefreshes", -1) == 1 &&
+                  d2[3].value("heldRefreshes", -1) == 1,
+              "held the other displays back one refresh");
+        check(s2.value("screenSpreadNowMs", 99.0) < 8, "with compensation all displays show each frame together (under half a refresh apart)");
+    }
     std::cout << (ok ? "SELF-TEST PASSED" : "SELF-TEST FAILED") << "\n";
     return ok ? 0 : 1;
 }

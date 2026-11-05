@@ -62,6 +62,14 @@ engine and the editor if they're built on that PC, and restarts whatever is inst
 outputs pause for the few seconds the engine is being rebuilt. If a build fails, the previous engine is
 started again, and the window shows what went wrong.
 
+**From the editor:** Settings → **Updates** shows each PC's version and has **Update everything**. The
+receiving PCs pull the latest version and restart their dashboard (the screens stay up). About 15 s
+later the media server runs `update.bat`'s script in the background (the `MosaicUpdate` task): the wall
+freezes and the editor is unreachable for a minute or two while the engine rebuilds. The receiving PCs
+then download the new Mosaic Receiver by themselves. **PCs only** skips the media server. Run
+`update.bat` by hand once on every PC first: it sets up the background task, and older dashboards don't
+answer the button. The result of the media server's last update is in `logs\update.log`.
+
 ## Using the dashboard
 
 Open `http://localhost:8080` on the Mini PC, or `http://<mini-pc-ip>:8080` from any

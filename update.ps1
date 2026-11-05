@@ -1,8 +1,15 @@
 # Updates this PC to the latest version: git pull, rebuild the mosaic engine and editor if they
 # are built here, and restart whatever was installed (dashboard and/or engine).
 # Works on the media server and on receiving PCs. Double-click update.bat.
+# -Unattended: started by the editor's "Update everything" (MosaicUpdate task); writes
+# logs\update.log, which the editor reads back.
+param([switch]$Unattended)
 $ErrorActionPreference = "Stop"
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($Unattended) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $AppDir "logs") | Out-Null
+    Start-Transcript -Path (Join-Path $AppDir "logs\update.log") -Force | Out-Null
+}
 $EngineDir = Join-Path $AppDir "mosaic-engine"
 $Tasks = @("VideoWallControl", "MosaicEngine") | Where-Object { Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue }
 
@@ -12,10 +19,12 @@ $failed = $false
 
 Step "Getting the latest version"
 Push-Location $AppDir
-git pull --ff-only
+# --autostash: config.json is in the repository and changes locally; keep those changes.
+git pull --ff-only --autostash
 if ($LASTEXITCODE -ne 0) {
     Pop-Location
     Write-Host "git pull failed (local changes, or no network). Nothing was changed or restarted." -ForegroundColor Red
+    if ($Unattended) { Stop-Transcript | Out-Null }
     exit 1
 }
 Pop-Location
@@ -57,7 +66,21 @@ if ($Tasks) {
     Write-Host "  cd mosaic-engine; build\Release\mosaic_engine.exe"
 }
 
+# The editor's "Update everything" button runs this script through the MosaicUpdate task.
+if ((Get-ScheduledTask -TaskName "MosaicEngine" -ErrorAction SilentlyContinue) -and -not (Get-ScheduledTask -TaskName "MosaicUpdate" -ErrorAction SilentlyContinue)) {
+    try {
+        & (Join-Path $EngineDir "register-update-task.ps1")
+    } catch {
+        Write-Host "Couldn't register the MosaicUpdate task ($_). Run update.bat as administrator once." -ForegroundColor Yellow
+    }
+}
+
 Write-Host ""
 $version = git -C $AppDir log -1 --format="%h %s"
-if ($failed) { Write-Host "Update finished with errors. Now at: $version" -ForegroundColor Yellow; exit 1 }
+if ($failed) {
+    Write-Host "Update finished with errors. Now at: $version" -ForegroundColor Yellow
+    if ($Unattended) { Stop-Transcript | Out-Null }
+    exit 1
+}
 Write-Host "Up to date: $version" -ForegroundColor Green
+if ($Unattended) { Stop-Transcript | Out-Null }

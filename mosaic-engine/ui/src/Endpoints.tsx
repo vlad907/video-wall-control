@@ -153,12 +153,29 @@ export function EndpointPanel({
           <div className="wide-note sync-box">
             <div className="sync-line">
               <span>On screen, displays apart</span>
-              <b className={(endpoint.receiver.screenSpreadMaxMs ?? 0) > 17 ? "warn" : ""}>
+              <b className={(endpoint.receiver.screenSpreadNowMs ?? endpoint.receiver.screenSpreadMs ?? 0) > 4 ? "warn" : ""}>
                 {endpoint.receiver.timing === "measured"
-                  ? `${(endpoint.receiver.screenSpreadMs ?? 0).toFixed(1)} ms avg · ${(endpoint.receiver.screenSpreadMaxMs ?? 0).toFixed(1)} ms max`
+                  ? `${(endpoint.receiver.screenSpreadNowMs ?? endpoint.receiver.screenSpreadMs ?? 0).toFixed(1)} ms now · ${(endpoint.receiver.screenSpreadMaxMs ?? 0).toFixed(1)} ms max (10 s)`
                   : "not measurable on this PC"}
               </b>
             </div>
+            {(() => {
+              // Displays Windows shows a refresh later (composited) and the hold-back that matches them.
+              const late = endpoint.displays.filter((d) => (d.windowsLateMs ?? 0) > 8).map((d) => d.index);
+              const held = endpoint.displays.filter((d) => (d.heldRefreshes ?? 0) > 0).map((d) => d.index);
+              if (!late.length) return null;
+              return (
+                <small className="muted">
+                  Windows shows display{late.length > 1 ? "s" : ""} {late.join(", ")} a refresh late (it composites {late.length > 1 ? "them" : "it"}: HDR on, an
+                  overlay, the taskbar…).{" "}
+                  {held.length
+                    ? `The receiver holds display${held.length > 1 ? "s" : ""} ${held.join(", ")} back to match, so all show each frame together.`
+                    : endpoint.receiver?.compensate === false
+                      ? "Compensation is off."
+                      : "Matching it in a few seconds…"}
+                </small>
+              );
+            })()}
             <label className="toggle">
               <input
                 type="checkbox"
@@ -211,6 +228,7 @@ export function EndpointPanel({
                   {endpoint.player === "mosaic" && d.offsetMaxMs !== undefined && endpoint.receiver?.timing === "measured"
                     ? ` · +${(d.offsetMs ?? 0).toFixed(1)} ms (max ${d.offsetMaxMs.toFixed(1)})`
                     : ""}
+                  {d.heldRefreshes ? ` · held back ${d.heldRefreshes} refresh${d.heldRefreshes > 1 ? "es" : ""}` : ""}
                   {d.missedRefreshes ? ` · ${d.missedRefreshes} repeated` : ""}
                   {d.shownFrameId ? ` · frame ${d.shownFrameId}` : ""}
                   {d.late ? ` · ${d.late} late` : ""}

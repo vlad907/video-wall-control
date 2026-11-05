@@ -190,6 +190,13 @@ a different room setup, not for changing content. Body optional: `{"transitionMs
 `{"ok": true}` while the engine is running. Poll it every few seconds to show an
 "engine online" indicator.
 
+### `GET /api/system/update` · `POST /api/system/update`
+
+Versions (git commits) of the media server and each receiving PC, and the last update's outcome.
+`POST {"target": "all"}` updates every receiving PC (at its next check-in) and then the media server,
+which stops for a minute or two while it rebuilds; `"receivers"` skips the media server. This is what
+Settings → Updates in the editor uses; a control system normally doesn't need it.
+
 ## Making presets (setup, not day-to-day control)
 
 Presets are normally made in the editor:
