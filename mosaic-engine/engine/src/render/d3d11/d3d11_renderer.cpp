@@ -73,6 +73,53 @@ ComPtr<ID3DBlob> compile(const std::string& src, const char* entry, const char* 
     return code;
 }
 
+// HDR video (P010, BT.2020 PQ or HLG) to the SDR canvas. The video processor in most drivers
+// doesn't tone-map: everything brighter than SDR white clips per channel, which blows out
+// highlights and shifts colours (neon greens, yellow skin). So HDR frames are converted here:
+// YCbCr -> R'G'B' -> linear nits -> BT.709 -> a soft roll-off above a knee -> gamma 2.2.
+const char* kHdrShader = R"(
+Texture2D<float> lumaTex : register(t0);
+Texture2D<float2> chromaTex : register(t1);
+SamplerState samp : register(s0);
+cbuffer Params : register(b0) { uint transfer; uint3 pad; };
+struct V { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
+V vs_full(uint id : SV_VertexID) {
+    V o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.pos = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+float3 pqToNits(float3 e) {
+    const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;
+    float3 p = pow(saturate(e), 1.0 / m2);
+    return 10000.0 * pow(max(p - c1, 0) / (c2 - c3 * p), 1.0 / m1);
+}
+float3 hlgToNits(float3 e) {
+    const float a = 0.17883277, b = 0.28466892, c = 0.55991073;
+    e = saturate(e);
+    float3 s = lerp((exp((e - c) / a) + b) / 12.0, e * e / 3.0, step(e, 0.5));  // scene light 0..1
+    float y = dot(s, float3(0.2627, 0.6780, 0.0593));
+    return 1000.0 * s * pow(max(y, 1e-6), 0.2);  // OOTF for a 1000-nit display
+}
+float4 ps_hdr(V i) : SV_Target {
+    // P010 keeps 10 bits in the top of 16; studio range.
+    float y = (lumaTex.Sample(samp, i.uv) * 65535.0 / 64.0 - 64.0) / 876.0;
+    float2 c = (chromaTex.Sample(samp, i.uv) * 65535.0 / 64.0 - 512.0) / 896.0;
+    float3 e = float3(y + 1.4746 * c.y, y - 0.16455 * c.x - 0.57135 * c.y, y + 1.8814 * c.x);
+    float3 nits = transfer == 2 ? hlgToNits(e) : pqToNits(e);
+    float3 lin = mul(float3x3(1.6605, -0.5876, -0.0728, -0.1246, 1.1329, -0.0083, -0.0182, -0.1006, 1.1187), nits) / 203.0;
+    // Out of the BT.709 gamut: pull toward grey instead of clipping a channel.
+    float l = dot(lin, float3(0.2126, 0.7152, 0.0722));
+    float lo = min(lin.r, min(lin.g, lin.b));
+    if (lo < 0) lin = l + (lin - l) * (l / max(l - lo, 1e-6));
+    // Tone map on the brightest channel (keeps hue): linear up to the knee, then eases into white.
+    const float knee = 0.6;
+    float m = max(lin.r, max(lin.g, lin.b));
+    if (m > knee) lin *= (knee + (1 - knee) * (1 - exp(-(m - knee) / (1 - knee)))) / m;
+    return float4(pow(saturate(lin), 1.0 / 2.2), 1);
+}
+)";
+
 // Total 3D-engine utilisation from the "GPU Engine" performance counters.
 class GpuUtilization {
 public:
@@ -246,6 +293,7 @@ public:
         auto it = textures_.find(dst);
         if (it == textures_.end() || !it->second.rtv || !nativeNV12Texture) return false;
         Texture& out = it->second;
+        if (colorSpace != 0 && toneMapHdr(out, static_cast<ID3D11Texture2D*>(nativeNV12Texture), arraySlice, colorSpace)) return true;
         if (!videoDev_ && (FAILED(device_.As(&videoDev_)) || FAILED(ctx_.As(&videoCtx_)))) return false;
         auto* src = static_cast<ID3D11Texture2D*>(nativeNV12Texture);
         D3D11_TEXTURE2D_DESC sd{};
@@ -465,6 +513,98 @@ private:
     int vpColorSpace_ = -1;
     std::map<std::pair<void*, unsigned>, ComPtr<ID3D11VideoProcessorInputView>> videoInViews_;
     std::map<TexId, ComPtr<ID3D11VideoProcessorOutputView>> videoOutViews_;
+    // HDR tone mapping (toneMapHdr).
+    ComPtr<ID3D11VertexShader> vsHdr_;
+    ComPtr<ID3D11PixelShader> psHdr_;
+    ComPtr<ID3D11Buffer> hdrParams_;
+    ComPtr<ID3D11Texture2D> hdrTex_;
+    ComPtr<ID3D11ShaderResourceView> hdrLuma_, hdrChroma_;
+    UINT hdrSize_[2] = {0, 0};
+    bool hdrUnsupported_ = false;
+
+    // HDR: copy the decoder's P010 surface into a texture shaders can read, then tone-map it into
+    // `out` (kHdrShader). False if this GPU can't (no P010 shader access): the video processor
+    // converts instead.
+    bool toneMapHdr(Texture& out, ID3D11Texture2D* src, unsigned arraySlice, int colorSpace) {
+        if (hdrUnsupported_) return false;
+        D3D11_TEXTURE2D_DESC sd{};
+        src->GetDesc(&sd);
+        if (sd.Format != DXGI_FORMAT_P010) return false;
+        if (!psHdr_) {
+            UINT support = 0;
+            if (FAILED(device_->CheckFormatSupport(DXGI_FORMAT_P010, &support)) || !(support & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE))
+                return hdrUnsupported_ = true, false;
+            try {
+                std::string hs = kHdrShader;
+                auto vs = compile(hs, "vs_full", "vs_5_0");
+                auto ps = compile(hs, "ps_hdr", "ps_5_0");
+                check(device_->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &vsHdr_), "CreateVertexShader");
+                check(device_->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &psHdr_), "CreatePixelShader");
+                D3D11_BUFFER_DESC cb{};
+                cb.ByteWidth = 16;
+                cb.Usage = D3D11_USAGE_DYNAMIC;
+                cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+                cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+                check(device_->CreateBuffer(&cb, nullptr, &hdrParams_), "CreateBuffer");
+            } catch (const std::exception&) {
+                vsHdr_.Reset();
+                psHdr_.Reset();
+                return hdrUnsupported_ = true, false;
+            }
+        }
+        if (!hdrTex_ || hdrSize_[0] != sd.Width || hdrSize_[1] != sd.Height) {
+            hdrTex_.Reset();
+            hdrLuma_.Reset();
+            hdrChroma_.Reset();
+            D3D11_TEXTURE2D_DESC d{};
+            d.Width = sd.Width;
+            d.Height = sd.Height;
+            d.MipLevels = d.ArraySize = 1;
+            d.Format = DXGI_FORMAT_P010;
+            d.SampleDesc.Count = 1;
+            d.Usage = D3D11_USAGE_DEFAULT;
+            d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SHADER_RESOURCE_VIEW_DESC v{};
+            v.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            v.Texture2D.MipLevels = 1;
+            if (FAILED(device_->CreateTexture2D(&d, nullptr, &hdrTex_))) return hdrUnsupported_ = true, false;
+            v.Format = DXGI_FORMAT_R16_UNORM;  // plane 0: Y
+            if (FAILED(device_->CreateShaderResourceView(hdrTex_.Get(), &v, &hdrLuma_))) return hdrUnsupported_ = true, false;
+            v.Format = DXGI_FORMAT_R16G16_UNORM;  // plane 1: CbCr at half size
+            if (FAILED(device_->CreateShaderResourceView(hdrTex_.Get(), &v, &hdrChroma_))) return hdrUnsupported_ = true, false;
+            hdrSize_[0] = sd.Width;
+            hdrSize_[1] = sd.Height;
+        }
+        ctx_->CopySubresourceRegion(hdrTex_.Get(), 0, 0, 0, 0, src, D3D11CalcSubresource(0, arraySlice, sd.MipLevels), nullptr);
+
+        D3D11_MAPPED_SUBRESOURCE m{};
+        if (FAILED(ctx_->Map(hdrParams_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return false;
+        const uint32_t params[4] = {static_cast<uint32_t>(colorSpace), 0, 0, 0};
+        std::memcpy(m.pData, params, sizeof params);
+        ctx_->Unmap(hdrParams_.Get(), 0);
+
+        ID3D11RenderTargetView* rtv = out.rtv.Get();
+        ctx_->OMSetRenderTargets(1, &rtv, nullptr);
+        ctx_->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+        D3D11_VIEWPORT vp{0.f, 0.f, float(out.w), float(out.h), 0.f, 1.f};
+        ctx_->RSSetViewports(1, &vp);
+        ctx_->RSSetState(nullptr);
+        ctx_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx_->IASetInputLayout(nullptr);
+        ctx_->VSSetShader(vsHdr_.Get(), nullptr, 0);
+        ctx_->PSSetShader(psHdr_.Get(), nullptr, 0);
+        ID3D11ShaderResourceView* srvs[2] = {hdrLuma_.Get(), hdrChroma_.Get()};
+        ctx_->PSSetShaderResources(0, 2, srvs);
+        ID3D11Buffer* cb = hdrParams_.Get();
+        ctx_->PSSetConstantBuffers(0, 1, &cb);
+        ID3D11SamplerState* smp = sampler_.Get();
+        ctx_->PSSetSamplers(0, 1, &smp);
+        ctx_->Draw(3, 0);
+        ID3D11ShaderResourceView* none[2] = {nullptr, nullptr};
+        ctx_->PSSetShaderResources(0, 2, none);
+        ctx_->OMSetRenderTargets(0, nullptr, nullptr);
+        return true;
+    }
 
     struct Readback {
         int w = 0, h = 0;

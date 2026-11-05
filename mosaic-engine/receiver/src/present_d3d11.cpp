@@ -10,6 +10,7 @@
 #include <dxgi1_3.h>
 #include <wrl/client.h>
 
+#include <chrono>
 #include <cstring>
 #include <map>
 #include <thread>
@@ -248,6 +249,7 @@ public:
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        keepOnTop();
         if (windows_.empty()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
             return;
@@ -286,6 +288,17 @@ private:
         return 60.0;
     }
 
+    // The taskbar is a topmost window too: once it's clicked or Windows raises it (a notification,
+    // remote desktop), it sits over the wall. Put the wall windows back on top once a second;
+    // this also keeps the windows eligible for independent flip (nothing drawn over them).
+    void keepOnTop() {
+        auto now = std::chrono::steady_clock::now();
+        if (now - raisedAt_ < std::chrono::seconds(1)) return;
+        raisedAt_ = now;
+        for (auto& w : windows_)
+            SetWindowPos(w.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    }
+
     void destroyWindows() {
         if (ctx_) ctx_->ClearState();
         for (auto& w : windows_) {
@@ -297,6 +310,7 @@ private:
         windows_.clear();
     }
 
+    std::chrono::steady_clock::time_point raisedAt_{};
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> ctx_;
     ComPtr<IDXGIFactory2> factory_;
