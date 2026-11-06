@@ -3,6 +3,7 @@
 // the same refresh. Windows: Direct3D 11 flip-model swap chains. Elsewhere / tests: headless.
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -58,6 +59,10 @@ public:
     virtual void waitForRefresh() = 0;
     virtual double refreshHz() const = 0;
 };
+
+// Local wall-clock time with milliseconds ("2026-11-05 23:08:42.979"), for log lines that are
+// matched against other logs on the PC (Windows events, the dashboard).
+std::string localTime(std::chrono::system_clock::time_point t = std::chrono::system_clock::now());
 
 // Headless: keeps refresh timing (60 Hz) but draws nothing. Used by --self-test and on macOS.
 // `extraLatency`: per window, refreshes later it "reaches the screen" (simulates a display that

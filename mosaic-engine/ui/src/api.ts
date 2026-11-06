@@ -4,6 +4,26 @@ export type Rect = { x: number; y: number; w: number; h: number };
 export type ScaleMode = "stretch" | "fit" | "fill";
 export type SourceType = "test_pattern" | "ndi" | "solid" | "image" | "video";
 
+// A receiving PC's GPU (NVIDIA only) and what Windows logged about its display stack.
+export interface Diagnostics {
+  gpu?: {
+    error?: string;
+    util?: number; // % now
+    utilMax60?: number; // % highest in the last minute
+    utilAvg60?: number;
+    memUsedMB?: number;
+    memTotalMB?: number;
+    tempC?: number;
+    tempMax60?: number;
+    clockMHz?: number;
+    pstate?: number;
+    throttle60?: string[]; // why the GPU was slowed down in the last minute (power cap, thermal…)
+  } | null;
+  driverEvents?: { at: string; source: string; id: number; level: string; message: string }[]; // last hour, newest first
+  driverEventsError?: string | null;
+  screenChanges?: { at: string; change: string }[]; // last hour
+}
+
 // A moment the receiver's screens kept the same picture, and what held it up:
 // network / wait / upload / present / screen / loop (see docs/RECEIVER.md).
 export interface Freeze {
@@ -133,6 +153,7 @@ export interface EndpointView extends Omit<Endpoint, "displays"> {
   receiverVersion?: string; // the receiver this PC installed (from the engine)
   receiverUpdate?: string;  // why it couldn't update or switch, if so
   appVersion?: string; // the dashboard's version (git commit)
+  diagnostics?: Diagnostics; // the PC's GPU and display-driver health, from its dashboard
   receiver?: {
     spreadMax10s: number;
     alignedRatio: number;

@@ -56,6 +56,17 @@ and each endpoint chooses its player, so a PC can switch back at any time.
    A loop freeze is a present 2.5 refreshes or more after the previous one. `/status` lists them as
    `freezes`, `freezesLastMinute` and `freezesTotal`.
 
+   **PC health, to explain the freezes.** The dashboard on each receiving PC also reports:
+   - **GPU** (NVIDIA, through the driver's `nvml.dll`), sampled every second: load, memory, temperature,
+     clock, and whether it was slowed down (power cap, thermal…)
+   - **display-driver events** from the Windows event log (last 24 h): the NVIDIA driver (`nvlddmkm`),
+     the graphics kernel (`DxgKrnl`: a GPU hang and recovery), `Display`, and programs crashing or hanging
+   - **screen changes**: a monitor dropping out or coming back, or a new resolution. The receiver also logs
+     each time Windows reports a display change.
+
+   The endpoint panel shows a summary. The dashboard's `GET /api/diagnostics` (port 8080) has the full
+   history: GPU samples for the last 10 minutes, the events, and the end of the receiver's log.
+
    **Flash test** (endpoint panel): every display flashes white on each engine frame divisible by 30, twice a
    second at 60 fps. Displays in step flash together. Film the wall in slow motion to compare against the numbers,
    including across receiving PCs, since the flash follows the engine's frame number.

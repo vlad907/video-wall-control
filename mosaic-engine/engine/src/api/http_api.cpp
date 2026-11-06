@@ -326,6 +326,7 @@ struct HttpApi::Impl {
         j["version"] = last.value("version", "");
         j["appVersion"] = last.value("appVersion", "");
         j["screens"] = last.value("screens", json::array());
+        j["diagnostics"] = last.value("diagnostics", json::object());  // GPU load, display-driver events, screen changes
         // With the Mosaic Receiver, how far apart its displays were (frames) and how often in step.
         json rx = last.value("receiver", json::object());
         if (!rx.empty())

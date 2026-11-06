@@ -14,6 +14,7 @@
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <iostream>
 #include <map>
 #include <thread>
 
@@ -60,6 +61,11 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
             return MA_NOACTIVATE;
         case WM_DPICHANGED:
             return 0;  // stay exactly on the monitor rectangle we were given (physical pixels)
+        case WM_DISPLAYCHANGE:
+            // A monitor dropped out or came back, or a mode changed: the swap chains stall meanwhile.
+            // Logged (once per window) to match against freezes.
+            std::cerr << "[receiver] " << localTime() << " Windows reports a display change (" << LOWORD(l) << "x" << HIWORD(l) << ")\n";
+            break;
     }
     return DefWindowProcW(h, msg, w, l);
 }

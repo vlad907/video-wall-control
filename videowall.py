@@ -1251,8 +1251,10 @@ def restart_self():
 
 
 def endpoint_checkin():
+    screens = enumerate_displays()
+    note_screens(screens)
     body = {"host": socket.gethostname(), "version": "videowall/1", "dashboardPort": int(cfg("dashboard_port")),
-            "screens": enumerate_displays(), "player": cfg("player") or "studio_monitor",
+            "screens": screens, "player": cfg("player") or "studio_monitor", "diagnostics": diagnostics_summary(),
             "receiverVersion": cfg("receiver_version") or "", "receiverUpdate": endpoint_state.get("receiver_update") or "",
             "appVersion": app_version(), "update": cfg("update_result") or {}}
     if receiver_mode():
@@ -1437,6 +1439,178 @@ def run_in_background(fn, *args):
 # Display enumeration (Windows)
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# Diagnostics: GPU load, Windows display-driver events, screen changes
+# --------------------------------------------------------------------------
+# For tracing freezes on the wall from the editor: what the GPU was doing each second, what the
+# display driver reported to Windows, and when the screens changed. GET /api/diagnostics has it
+# all (with the receiver's own log); the check-in carries a summary.
+
+diag = {"gpu": deque(maxlen=600), "gpu_error": None, "events": [], "events_error": None,
+        "screen_changes": deque(maxlen=50), "screens": None}
+
+# NVML clock-throttle reason bits that mean the GPU was slowed down (idle and app clocks aren't).
+THROTTLE_REASONS = {0x4: "power cap", 0x8: "hardware slowdown", 0x20: "thermal (driver)",
+                    0x40: "thermal (hardware)", 0x80: "power brake", 0x100: "display clock"}
+
+
+def open_nvml():
+    """NVIDIA's management library (ships with the driver), or None."""
+    import ctypes
+    paths = [os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvml.dll"),
+             os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "NVIDIA Corporation", "NVSMI", "nvml.dll")]
+    for path in paths:
+        if os.path.exists(path):
+            nvml = ctypes.CDLL(path)
+            if nvml.nvmlInit_v2() == 0:
+                return nvml
+    return None
+
+
+def gpu_loop():
+    """Samples the (first) NVIDIA GPU once a second: load, memory, temperature, clocks, throttling."""
+    import ctypes
+    try:
+        nvml = open_nvml()
+    except OSError as exc:
+        nvml, diag["gpu_error"] = None, "cannot load nvml.dll (%s)" % exc
+    if nvml is None:
+        diag["gpu_error"] = diag["gpu_error"] or "no NVIDIA GPU (nvml.dll) found"
+        return
+    handle = ctypes.c_void_p()
+    if nvml.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(handle)) != 0:
+        diag["gpu_error"] = "NVML found no GPU"
+        return
+    while True:
+        try:
+            sample_gpu(nvml, handle)
+        except Exception as exc:  # a driver update can pull NVML away: report it, keep trying
+            diag["gpu_error"] = "GPU sampling failed (%s)" % exc
+        time.sleep(1)
+
+
+def sample_gpu(nvml, handle):
+    import ctypes
+
+    class Utilization(ctypes.Structure):
+        _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
+
+    class Memory(ctypes.Structure):
+        _fields_ = [("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong), ("used", ctypes.c_ulonglong)]
+
+    util, mem = Utilization(), Memory()
+    temp, clock, pstate, reasons = ctypes.c_uint(), ctypes.c_uint(), ctypes.c_int(), ctypes.c_ulonglong()
+    if nvml.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util)) != 0:
+        return
+    nvml.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem))
+    nvml.nvmlDeviceGetTemperature(handle, 0, ctypes.byref(temp))
+    nvml.nvmlDeviceGetClockInfo(handle, 0, ctypes.byref(clock))  # graphics clock
+    nvml.nvmlDeviceGetPerformanceState(handle, ctypes.byref(pstate))
+    nvml.nvmlDeviceGetCurrentClocksThrottleReasons(handle, ctypes.byref(reasons))
+    diag["gpu"].append({"t": time.time(), "util": util.gpu, "memUtil": util.memory,
+                        "memUsedMB": mem.used // 2**20, "memTotalMB": mem.total // 2**20,
+                        "tempC": temp.value, "clockMHz": clock.value, "pstate": pstate.value,
+                        "throttle": [n for bit, n in THROTTLE_REASONS.items() if reasons.value & bit]})
+
+
+def gpu_summary():
+    samples = [g for g in list(diag["gpu"]) if g["t"] > time.time() - 60]
+    if not samples:
+        return {"error": diag["gpu_error"]} if diag["gpu_error"] else None
+    now = samples[-1]
+    return {"util": now["util"], "utilMax60": max(g["util"] for g in samples),
+            "utilAvg60": round(sum(g["util"] for g in samples) / len(samples)),
+            "memUsedMB": now["memUsedMB"], "memTotalMB": now["memTotalMB"], "tempC": now["tempC"],
+            "tempMax60": max(g["tempC"] for g in samples), "clockMHz": now["clockMHz"], "pstate": now["pstate"],
+            "throttle60": sorted({r for g in samples for r in g["throttle"]})}
+
+
+# Windows logs that tell about the display stack: the NVIDIA driver (resets, errors), the
+# graphics kernel (TDR: a GPU hang and recovery), "Display" (driver stopped responding), and
+# programs crashing (dwm.exe among them).
+DRIVER_EVENT_QUERIES = [
+    ("System", "nvlddmkm", "Display", "Microsoft-Windows-DxgKrnl"),
+    ("Application", "Application Error", "Application Hang"),
+]
+
+
+def read_driver_events(hours=24):
+    import xml.etree.ElementTree as ET
+    from datetime import datetime
+    ns = {"e": "http://schemas.microsoft.com/win/2004/08/events/event"}
+    events = []
+    for log_name, *providers in DRIVER_EVENT_QUERIES:
+        who = " or ".join("@Name='%s'" % p for p in providers)
+        query = "*[System[Provider[%s] and TimeCreated[timediff(@SystemTime) <= %d]]]" % (who, hours * 3600 * 1000)
+        r = subprocess.run(["wevtutil", "qe", log_name, "/q:" + query, "/f:RenderedXml", "/rd:true", "/c:40"],
+                           capture_output=True, text=True, timeout=20, creationflags=CREATE_NO_WINDOW)
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or r.stdout or "wevtutil failed").strip())
+        for ev in ET.fromstring("<Events>%s</Events>" % r.stdout).findall("e:Event", ns):
+            system = ev.find("e:System", ns)
+            when = system.find("e:TimeCreated", ns).get("SystemTime", "")
+            # 2026-11-05T23:08:42.1234567Z: Python wants at most 6 fraction digits
+            when = re.sub(r"(\.\d{6})\d*", r"\1", when).replace("Z", "+00:00")
+            try:
+                local = datetime.fromisoformat(when).astimezone()
+            except ValueError:
+                continue
+            message = ev.findtext("e:RenderingInfo/e:Message", "", ns) or ""
+            events.append({"t": local.timestamp(), "at": local.strftime("%Y-%m-%d %H:%M:%S"), "log": log_name,
+                           "source": system.find("e:Provider", ns).get("Name", ""),
+                           "id": int(system.findtext("e:EventID", "0", ns) or 0),
+                           "level": {"1": "critical", "2": "error", "3": "warning"}.get(system.findtext("e:Level", "", ns), "info"),
+                           "message": " ".join(message.split())[:300]})
+    return sorted(events, key=lambda e: e["t"], reverse=True)
+
+
+def driver_events_loop():
+    while True:
+        try:
+            diag["events"] = read_driver_events()
+            diag["events_error"] = None
+        except Exception as exc:  # wevtutil missing, access denied, odd XML: report, keep trying
+            diag["events_error"] = str(exc)[:200]
+        time.sleep(60)
+
+
+def note_screens(screens):
+    """Records when the screens change (a monitor dropping out or coming back, a new resolution)."""
+    shape = sorted((d.get("device"), d.get("x"), d.get("y"), d.get("width"), d.get("height")) for d in screens)
+    if diag["screens"] is not None and shape != diag["screens"]:
+        before = {s[0] for s in diag["screens"]}
+        after = {s[0] for s in shape}
+        what = ", ".join(["%s gone" % d for d in sorted(before - after)] + ["%s back" % d for d in sorted(after - before)]) or "positions or resolutions changed"
+        diag["screen_changes"].append({"t": time.time(), "at": time.strftime("%Y-%m-%d %H:%M:%S"), "change": what})
+        log.warning("Screens changed: %s", what)
+    diag["screens"] = shape
+
+
+def receiver_log_tail(lines=300):
+    path = LOG_DIR / "mosaic-receiver.log"
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 256 * 1024))
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return []
+    return text.splitlines()[-lines:]
+
+
+def diagnostics_summary():
+    hour = time.time() - 3600
+    return {"gpu": gpu_summary(),
+            "driverEvents": [e for e in diag["events"] if e["t"] > hour][:10],
+            "driverEventsError": diag["events_error"],
+            "screenChanges": [c for c in diag["screen_changes"] if c["t"] > hour][-10:]}
+
+
+def diagnostics_payload():
+    return dict(diagnostics_summary(), gpuSamples=list(diag["gpu"]), driverEvents24h=diag["events"],
+                screenChanges=list(diag["screen_changes"]), receiverLog=receiver_log_tail())
+
+
 def enumerate_displays():
     if not IS_WINDOWS:
         return []
@@ -1597,6 +1771,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"port": port, "raw": raw})
             elif path == "/api/displays":
                 self.send_json({"displays": enumerate_displays()})
+            elif path == "/api/diagnostics":
+                self.send_json(diagnostics_payload())
             elif path == "/api/log":
                 self.send_json({"log": list(recent_log)})
             elif path == "/api/mosaic":
@@ -1721,6 +1897,9 @@ def main():
     log.info("Video Wall Control started; dashboard on http://%s:%d", host, port)
     run_in_background(supervisor_loop)
     run_in_background(endpoint_loop)
+    if IS_WINDOWS:
+        run_in_background(gpu_loop)
+        run_in_background(driver_events_loop)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

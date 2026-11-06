@@ -201,6 +201,44 @@ export function EndpointPanel({
                 ))}
               </>
             )}
+            {endpoint.diagnostics?.gpu && (
+              <div className="sync-line">
+                <span>GPU</span>
+                {endpoint.diagnostics.gpu.error ? (
+                  <b className="muted">{endpoint.diagnostics.gpu.error}</b>
+                ) : (
+                  <b className={(endpoint.diagnostics.gpu.utilMax60 ?? 0) >= 95 || endpoint.diagnostics.gpu.throttle60?.length ? "warn" : ""}>
+                    {endpoint.diagnostics.gpu.util}% now · {endpoint.diagnostics.gpu.utilMax60}% max (1 min) ·{" "}
+                    {((endpoint.diagnostics.gpu.memUsedMB ?? 0) / 1024).toFixed(1)}/{((endpoint.diagnostics.gpu.memTotalMB ?? 0) / 1024).toFixed(1)} GB ·{" "}
+                    {endpoint.diagnostics.gpu.tempC} °C
+                    {endpoint.diagnostics.gpu.throttle60?.length ? ` · slowed: ${endpoint.diagnostics.gpu.throttle60.join(", ")}` : ""}
+                  </b>
+                )}
+              </div>
+            )}
+            {endpoint.diagnostics && (
+              <>
+                <div className="sync-line">
+                  <span>Display driver (last hour)</span>
+                  <b className={endpoint.diagnostics.driverEvents?.length || endpoint.diagnostics.screenChanges?.length ? "warn" : ""}>
+                    {endpoint.diagnostics.driverEventsError
+                      ? "can't read the Windows event log"
+                      : `${endpoint.diagnostics.driverEvents?.length ?? 0} event(s) · ${endpoint.diagnostics.screenChanges?.length ?? 0} screen change(s)`}
+                  </b>
+                </div>
+                {[
+                  ...(endpoint.diagnostics.driverEvents ?? []).map((e) => ({ at: e.at, text: `${e.source} ${e.id}: ${e.message}` })),
+                  ...(endpoint.diagnostics.screenChanges ?? []).map((c) => ({ at: c.at, text: `screens changed: ${c.change}` })),
+                ]
+                  .sort((a, b) => b.at.localeCompare(a.at))
+                  .slice(0, 5)
+                  .map((e, i) => (
+                    <small key={i} className="muted">
+                      {e.at.slice(11, 19)} · {e.text}
+                    </small>
+                  ))}
+              </>
+            )}
             <label className="toggle">
               <input
                 type="checkbox"

@@ -21,8 +21,7 @@ static double median(std::deque<double> v) {
     return *mid;
 }
 
-// Local wall-clock time with milliseconds, to match freezes against other logs on the PC.
-static std::string localTime(std::chrono::system_clock::time_point t) {
+std::string localTime(std::chrono::system_clock::time_point t) {
     std::time_t secs = std::chrono::system_clock::to_time_t(t);
     std::tm tm{};
 #ifdef _WIN32
