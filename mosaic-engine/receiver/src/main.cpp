@@ -60,6 +60,10 @@ int selfTest(double seconds) {
     check(d[0].value("shownFrameId", 0) > 0 && d[0].value("shownFrameId", 0) == d[1].value("shownFrameId", 0), "displays 1 and 2 end on the same frame");
     check(s.value("timing", "") == "measured", "on-screen timing is measured");
     check(s.value("spreadMax10s", 99) <= 1, "in-step displays were never more than 1 frame apart (" + std::to_string(s.value("spreadMax10s", 99)) + ")");
+    bool stallLogged = false;
+    for (auto& f : s.value("freezes", json::array()))
+        if (f.value("cause", "") == "network" && f.value("ms", 0.0) > 400 && f.value("ms", 0.0) < 700) stallLogged = true;
+    check(stallLogged, "the half-second stall was logged as a network freeze");
 
     // Sync compensation: like the venue's wall, Windows shows the top two displays one refresh
     // late. The bottom two must be held back one refresh, and then all four show frames together.

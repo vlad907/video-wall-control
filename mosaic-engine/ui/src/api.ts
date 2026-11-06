@@ -4,6 +4,15 @@ export type Rect = { x: number; y: number; w: number; h: number };
 export type ScaleMode = "stretch" | "fit" | "fill";
 export type SourceType = "test_pattern" | "ndi" | "solid" | "image" | "video";
 
+// A moment the receiver's screens kept the same picture, and what held it up:
+// network / wait / upload / present / screen / loop (see docs/RECEIVER.md).
+export interface Freeze {
+  at: string; // local time on the receiving PC
+  ms: number;
+  cause: string;
+  detail: string;
+}
+
 export interface VideoStatus {
   width: number;
   height: number;
@@ -137,6 +146,9 @@ export interface EndpointView extends Omit<Endpoint, "displays"> {
     screenSpreadMaxMs?: number;
     screenSpreadNowMs?: number; // the same, last ~2 s
     compensate?: boolean;
+    freezesLastMinute?: number; // times the screens kept the same picture for a while
+    freezesTotal?: number;
+    freezes?: Freeze[]; // the most recent, newest first
   };
   displays: (EndpointDisplay & {
     shownFrameId?: number;

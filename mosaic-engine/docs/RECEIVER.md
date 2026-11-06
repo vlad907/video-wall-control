@@ -43,6 +43,19 @@ and each endpoint chooses its player, so a PC can switch back at any time.
    - **"N repeated"**: refreshes where a monitor showed a picture again because the receiver didn't present in
      time. This is stutter caused by the receiving PC.
 
+   **Freezes**: moments the screens kept the same picture for a while. The endpoint panel shows how many
+   happened in the last minute and the latest five; `logs\mosaic-receiver.log` on the PC has every one, with
+   its local time (to match against whatever else the PC was doing) and what held it up:
+   - **network**: a stream sent nothing for over 100 ms (the receiver kept showing its last frame)
+   - **wait**: Windows or the GPU didn't take a new frame in time
+   - **upload**: copying the pictures to the GPU was slow
+   - **present**: drawing was slow (GPU or driver busy)
+   - **screen**: the receiver presented on time, but the monitors still skipped 3+ refreshes
+   - **loop**: none of those steps was slow; the receiver's thread didn't get to run (CPU busy)
+
+   A loop freeze is a present 2.5 refreshes or more after the previous one. `/status` lists them as
+   `freezes`, `freezesLastMinute` and `freezesTotal`.
+
    **Flash test** (endpoint panel): every display flashes white on each engine frame divisible by 30, twice a
    second at 60 fps. Displays in step flash together. Film the wall in slow motion to compare against the numbers,
    including across receiving PCs, since the flash follows the engine's frame number.

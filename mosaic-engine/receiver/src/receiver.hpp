@@ -135,6 +135,29 @@ private:
     std::vector<uint64_t> recentSpread_;  // last ~10 s
     Clock::time_point started_ = Clock::now();
 
+    // Freezes: the screens kept the same picture for a while. Each is logged with what held it
+    // up, so it can be matched against what else the PC was doing at that time.
+    //   network  a stream sent nothing for a while (the loop kept presenting its last frame)
+    //   wait     Windows / the GPU didn't take a new frame (waiting for the swap chains)
+    //   upload   copying the pictures to the GPU took too long
+    //   present  drawing / presenting took too long (GPU or driver busy)
+    //   screen   presented on time, but the monitors skipped refreshes anyway
+    //   loop     none of the steps was slow: the receiver's thread didn't get to run (CPU busy)
+    struct Hiccup {
+        std::string at;  // local time it started
+        double ms = 0;   // how long
+        std::string cause, detail;
+    };
+    std::deque<Hiccup> hiccups_;               // the most recent ones
+    std::deque<Clock::time_point> hiccupTimes_;  // last minute, for the count
+    uint64_t hiccupTotal_ = 0;
+    Clock::time_point lastPresent_{}, lastLoopHiccup_{};
+    double waitMs_ = 0, presentMs_ = 0;           // this refresh's steps (upload: lastUploadMs_)
+    double lastUploadMs_ = 0;
+    std::vector<Clock::time_point> streamGap_;  // per stream: last arrival before it went quiet (zero = receiving)
+    uint32_t screenSkipped_ = 0;                // most refreshes a monitor skipped since the last present
+    void hiccup(const std::string& cause, double ms, const std::string& detail);
+
     std::atomic<bool> stop_{false};
     std::thread thread_;
 };

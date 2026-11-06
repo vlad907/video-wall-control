@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <ctime>
 #include <iostream>
 
 #include "aligner.hpp"
@@ -17,6 +19,22 @@ static double median(std::deque<double> v) {
     auto mid = v.begin() + static_cast<std::ptrdiff_t>(v.size() / 2);
     std::nth_element(v.begin(), mid, v.end());
     return *mid;
+}
+
+// Local wall-clock time with milliseconds, to match freezes against other logs on the PC.
+static std::string localTime(std::chrono::system_clock::time_point t) {
+    std::time_t secs = std::chrono::system_clock::to_time_t(t);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &secs);
+#else
+    localtime_r(&secs, &tm);
+#endif
+    char day[32], out[48];
+    std::strftime(day, sizeof day, "%Y-%m-%d %H:%M:%S", &tm);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t.time_since_epoch()).count() % 1000;
+    std::snprintf(out, sizeof out, "%s.%03d", day, static_cast<int>(ms));
+    return out;
 }
 
 static WindowSpec rectFrom(const json& j, WindowSpec def) {
@@ -114,7 +132,9 @@ void Receiver::loop() {
                 apply(c);
             }
         }
+        auto waitStart = Clock::now();
         presenter_->waitForRefresh();
+        waitMs_ = std::chrono::duration<double, std::milli>(Clock::now() - waitStart).count();
         frame();
     }
     streams_.clear();
@@ -167,6 +187,8 @@ void Receiver::apply(const ReceiverConfig& c) {
     for (auto& t : tiles_)
         if (windowStream_[t.window] < 0) windowStream_[t.window] = t.stream;
     shownAt_.clear();
+    streamGap_.assign(streams_.size(), {});
+    lastPresent_ = {};  // rebuilding the windows isn't a freeze
     spreads_.clear();
     recentSpreads_.clear();
     active_ = c;
@@ -186,6 +208,16 @@ void Receiver::frame() {
         if (views[i].newest) s.everSynced = true;
         views[i].synced = s.everSynced;
         views[i].stale = q.lastArrival() == Clock::time_point{} || now - q.lastArrival() > lost;
+        // Network freeze: nothing from the stream for over 100 ms (3 frames at 30 fps), logged once it sends again.
+        auto last = q.lastArrival();
+        if (!s.everSynced || last == Clock::time_point{} || i >= streamGap_.size()) continue;
+        if (streamGap_[i] == Clock::time_point{}) {
+            if (now - last > std::chrono::milliseconds(100)) streamGap_[i] = last;
+        } else if (last > streamGap_[i]) {
+            double ms = std::chrono::duration<double, std::milli>(last - streamGap_[i]).count();
+            hiccup("network", ms, "no frames from " + s.name + " for " + std::to_string(std::lround(ms)) + " ms");
+            streamGap_[i] = {};
+        }
     }
     Choice c = chooseFrames(views, target_, static_cast<uint64_t>(active_.lagFrames));
     target_ = c.target;
@@ -217,7 +249,8 @@ void Receiver::frame() {
         if (inStep) lo = std::min(lo, s.shownId), hi = std::max(hi, s.shownId);
     }
     presenter_->upload(uploads);
-    windowUploadMs_ += std::chrono::duration<double, std::milli>(Clock::now() - uploadStart).count();
+    lastUploadMs_ = std::chrono::duration<double, std::milli>(Clock::now() - uploadStart).count();
+    windowUploadMs_ += lastUploadMs_;
 
     // Compensation: a display held back `hold` refreshes shows the picture that was newest that
     // long ago (half a refresh of slack absorbs loop jitter).
@@ -238,8 +271,33 @@ void Receiver::frame() {
     // Flash test: a window goes white while it shows an engine frame divisible by 30.
     std::vector<bool> flash(windows_.size(), false);
     for (size_t w = 0; w < windows_.size() && active_.flashTest; ++w) flash[w] = windows_[w].frameId && windows_[w].frameId % 30 == 0;
+    auto presentStart = Clock::now();
     presenter_->present(draw, flash);
+    auto presentedAt = Clock::now();
+    presentMs_ = std::chrono::duration<double, std::milli>(presentedAt - presentStart).count();
+    screenSkipped_ = 0;
     trackTiming(presenter_->timings());
+
+    // Loop freeze: this present came 2.5 refreshes or more after the last one. The slowest step
+    // (if it took over a refresh) is what held it up.
+    const double periodMs = 1000.0 / presenter_->refreshHz();
+    if (lastPresent_ != Clock::time_point{}) {
+        double gap = std::chrono::duration<double, std::milli>(presentedAt - lastPresent_).count();
+        if (gap >= 2.5 * periodMs) {
+            std::pair<double, const char*> steps[] = {{waitMs_, "wait"}, {lastUploadMs_, "upload"}, {presentMs_, "present"}};
+            auto slowest = *std::max_element(std::begin(steps), std::end(steps));
+            char detail[160];
+            std::snprintf(detail, sizeof detail, "no present for %.0f ms (wait %.0f ms, upload %.0f ms, present %.0f ms)", gap, waitMs_, lastUploadMs_,
+                          presentMs_);
+            hiccup(slowest.first > periodMs ? slowest.second : "loop", gap, detail);
+            lastLoopHiccup_ = presentedAt;
+        } else if (screenSkipped_ >= 3 && presentedAt - lastLoopHiccup_ > std::chrono::milliseconds(500)) {
+            // The monitors' statistics trail by a few presents, so skips right after a loop freeze are that freeze.
+            hiccup("screen", screenSkipped_ * periodMs,
+                   "monitors skipped " + std::to_string(screenSkipped_) + " refreshes though the receiver presented on time");
+        }
+    }
+    lastPresent_ = presentedAt;
 
     // Real rates, once a second: how often we presented, how many new pictures each stream showed.
     ++windowPresents_;
@@ -297,6 +355,10 @@ void Receiver::frame() {
                             {"width", s.width},
                             {"height", s.height}});
     }
+    while (!hiccupTimes_.empty() && now - hiccupTimes_.front() > std::chrono::minutes(1)) hiccupTimes_.pop_front();
+    json hiccups = json::array();
+    for (auto it = hiccups_.rbegin(); it != hiccups_.rend(); ++it)
+        hiccups.push_back({{"at", it->at}, {"ms", std::round(it->ms)}, {"cause", it->cause}, {"detail", it->detail}});
     uint64_t spreadMax = recentSpread_.empty() ? 0 : *std::max_element(recentSpread_.begin(), recentSpread_.end());
     std::lock_guard lock(statusMutex_);
     status_ = {{"ok", true},
@@ -316,6 +378,9 @@ void Receiver::frame() {
                {"spread", recentSpread_.empty() ? 0 : recentSpread_.back()},
                {"spreadMax10s", spreadMax},
                {"alignedRatio", comparedPresents_ ? double(alignedPresents_) / double(comparedPresents_) : 1.0},
+               {"freezesLastMinute", hiccupTimes_.size()},
+               {"freezesTotal", hiccupTotal_},
+               {"freezes", hiccups},
                {"displays", displays}};
 }
 
@@ -341,7 +406,10 @@ void Receiver::trackTiming(const std::vector<PresentTiming>& timings) {
         if (tr.seen) {
             uint32_t presents = t.syncPresentCount - tr.lastSyncPresent;
             uint32_t refreshes = t.syncRefreshCount - tr.lastSyncRefresh;
-            if (presents > 0 && refreshes > presents && refreshes - presents < 600) tr.missed += refreshes - presents;
+            if (presents > 0 && refreshes > presents && refreshes - presents < 600) {
+                tr.missed += refreshes - presents;
+                screenSkipped_ = std::max(screenSkipped_, refreshes - presents);
+            }
         }
         tr.seen = true;
         tr.lastSyncPresent = t.syncPresentCount;
@@ -390,6 +458,17 @@ void Receiver::trackTiming(const std::vector<PresentTiming>& timings) {
         it = shownAt_.erase(it);
     }
     while (shownAt_.size() > 240) shownAt_.erase(shownAt_.begin());
+}
+
+// Records a freeze (newest last) and logs it with the local time.
+void Receiver::hiccup(const std::string& cause, double ms, const std::string& detail) {
+    auto start = std::chrono::system_clock::now() - std::chrono::duration_cast<std::chrono::system_clock::duration>(std::chrono::duration<double, std::milli>(ms));
+    Hiccup h{localTime(start), ms, cause, detail};
+    std::cerr << "[receiver] " << h.at << " freeze " << std::lround(ms) << " ms (" << cause << "): " << detail << "\n";
+    hiccups_.push_back(std::move(h));
+    if (hiccups_.size() > 20) hiccups_.pop_front();
+    hiccupTimes_.push_back(Clock::now());
+    ++hiccupTotal_;
 }
 
 // Once a second: how much later Windows shows each display than the soonest one (median of the

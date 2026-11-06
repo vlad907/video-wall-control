@@ -13,6 +13,16 @@ function ago(s: number | null) {
 }
 
 // Sidebar list: endpoints with their health, and PCs that checked in but aren't set up yet.
+// What held a freeze up, in plain words (the receiver's log has the details).
+const freezeCause: Record<string, string> = {
+  network: "no frames arriving from the media server",
+  wait: "Windows / the GPU didn't take a new frame",
+  upload: "copying pictures to the GPU was slow",
+  present: "drawing was slow (GPU or driver busy)",
+  screen: "the monitors skipped refreshes",
+  loop: "the receiver didn't get CPU time",
+};
+
 export function EndpointList({
   info,
   selectedId,
@@ -176,6 +186,21 @@ export function EndpointPanel({
                 </small>
               );
             })()}
+            {endpoint.receiver.freezesTotal !== undefined && (
+              <>
+                <div className="sync-line">
+                  <span>Freezes (screens held a picture)</span>
+                  <b className={(endpoint.receiver.freezesLastMinute ?? 0) > 0 ? "warn" : ""}>
+                    {endpoint.receiver.freezesLastMinute ?? 0} in the last minute · {endpoint.receiver.freezesTotal} since start
+                  </b>
+                </div>
+                {(endpoint.receiver.freezes ?? []).slice(0, 5).map((f, i) => (
+                  <small key={i} className="muted">
+                    {f.at.slice(11, 19)} · {Math.round(f.ms)} ms · {freezeCause[f.cause] ?? f.cause}
+                  </small>
+                ))}
+              </>
+            )}
             <label className="toggle">
               <input
                 type="checkbox"

@@ -339,6 +339,9 @@ struct HttpApi::Impl {
                              {"screenSpreadNowMs", rx.value("screenSpreadNowMs", 0.0)},
                              {"compensate", rx.value("compensate", true)},
                              {"uploadMs", rx.value("uploadMs", 0.0)},
+                             {"freezesLastMinute", rx.value("freezesLastMinute", 0)},
+                             {"freezesTotal", rx.value("freezesTotal", 0)},
+                             {"freezes", rx.value("freezes", json::array())},
                              {"presenter", rx.value("presenter", "")},
                              {"error", rx.value("error", "")}};
         json rxDisplays = rx.value("displays", json::array());
