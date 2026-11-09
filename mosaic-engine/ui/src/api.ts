@@ -167,6 +167,10 @@ export interface EndpointView extends Omit<Endpoint, "displays"> {
     screenSpreadMaxMs?: number;
     screenSpreadNowMs?: number; // the same, last ~2 s
     compensate?: boolean;
+    bufferMs?: number; // the buffer it runs with
+    bufferReady?: boolean; // found the engine's clock: frames are shown on schedule
+    heldMs?: number; // time from a frame arriving to it going on screen
+    gapsAbsorbed?: number; // network stalls the buffer hid
     freezesLastMinute?: number; // times the screens kept the same picture for a while
     freezesTotal?: number;
     freezes?: Freeze[]; // the most recent, newest first
@@ -216,6 +220,7 @@ export interface Layout {
   id: string;
   name: string;
   frameRate: number;
+  receiverBufferMs?: number; // Mosaic Receivers show frames this long after they're made (hides network stalls)
   canvas: { width: number; height: number; background: [number, number, number, number] };
   sources: Source[];
   outputs: Output[];

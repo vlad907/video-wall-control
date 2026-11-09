@@ -114,6 +114,16 @@ export function LayoutBar({
           ))}
         </select>
       </label>
+      <label className="tb-field" title="Receiving PCs show each frame this long after it's made, so network stalls shorter than this don't show. Off for live cameras; about 300 ms for playback (delay the audio to match).">
+        <span>Buffer</span>
+        <select value={layout.receiverBufferMs ?? 0} onChange={(e) => run(api.putLayout({ receiverBufferMs: +e.target.value }))}>
+          {[0, 100, 200, 300, 400, 500].map((ms) => (
+            <option key={ms} value={ms}>
+              {ms ? `${ms} ms` : "Off"}
+            </option>
+          ))}
+        </select>
+      </label>
       {status}
     </header>
   );

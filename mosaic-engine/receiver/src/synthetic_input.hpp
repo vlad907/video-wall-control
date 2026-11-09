@@ -22,6 +22,7 @@ struct SyntheticOptions {
     int dropEvery = 0;       // skip every Nth frame id (0 = never)
     double stallAtS = -1;    // stop sending at this time (s since start) ...
     double stallForS = 0;    // ... for this long
+    bool stallLate = false;  // the stall's frames come late, all at once at its end (like NDI over a congested network), instead of never
     uint32_t colour = 0xFF3060C0;  // BGRA
 };
 
@@ -49,13 +50,20 @@ private:
         const auto period = duration<double>(1.0 / o_.fps);
         const auto start = epoch();
         uint64_t n = static_cast<uint64_t>(duration<double>(Clock::now() - start) / period) + 1;
+        std::vector<RxFrame> held;  // a late stall's frames
         while (!stop_) {
             auto due = start + duration_cast<Clock::duration>(period * static_cast<double>(n)) +
                        duration_cast<Clock::duration>(duration<double, std::milli>(o_.delayMs + jitter(rng)));
             while (!stop_ && Clock::now() < due) std::this_thread::sleep_for(microseconds(500));
             double t = duration<double>(Clock::now() - start).count();
             bool stalled = o_.stallAtS >= 0 && t >= o_.stallAtS && t < o_.stallAtS + o_.stallForS;
-            if (!stop_ && !stalled && !(o_.dropEvery > 0 && n % static_cast<uint64_t>(o_.dropEvery) == 0)) queue_.push(make(n));
+            bool dropped = o_.dropEvery > 0 && n % static_cast<uint64_t>(o_.dropEvery) == 0;
+            if (stalled && o_.stallLate && !dropped) held.push_back(make(n));
+            if (!stop_ && !stalled) {
+                for (auto& f : held) f.arrived = Clock::now(), queue_.push(std::move(f));
+                held.clear();
+                if (!dropped) queue_.push(make(n));
+            }
             ++n;
         }
     }

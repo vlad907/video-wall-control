@@ -248,7 +248,8 @@ void from_json(const json& j, CanvasConfig& c) {
 void to_json(json& j, const Layout& l) {
     j = json{{"id", l.id},         {"name", l.name},       {"frameRate", l.frameRate},
              {"canvas", l.canvas}, {"sources", l.sources}, {"outputs", l.outputs}, {"walls", l.walls},
-             {"scenes", l.scenes}, {"endpoints", l.endpoints}, {"fallbackImage", l.fallbackImage}};
+             {"scenes", l.scenes}, {"endpoints", l.endpoints}, {"fallbackImage", l.fallbackImage},
+             {"receiverBufferMs", l.receiverBufferMs}};
 }
 
 void from_json(const json& j, Layout& l) {
@@ -268,6 +269,7 @@ void from_json(const json& j, Layout& l) {
     if (j.contains("scenes")) l.scenes = j.at("scenes").get<std::vector<Scene>>();
     if (j.contains("endpoints")) l.endpoints = j.at("endpoints").get<std::vector<Endpoint>>();
     l.fallbackImage = j.value("fallbackImage", l.fallbackImage);
+    l.receiverBufferMs = j.value("receiverBufferMs", l.receiverBufferMs);
 }
 
 static int clampDim(int v) { return std::clamp(v, 1, kMaxDimension); }
@@ -278,6 +280,7 @@ std::vector<std::string> normalize(Layout& l) {
     if (l.id.empty()) l.id = "layout";
     if (l.name.empty()) l.name = l.id;
     l.frameRate = std::clamp(l.frameRate, 1.0, 240.0);
+    l.receiverBufferMs = std::clamp(l.receiverBufferMs, 0, 1000);
     l.canvas.width = clampDim(l.canvas.width);
     l.canvas.height = clampDim(l.canvas.height);
 

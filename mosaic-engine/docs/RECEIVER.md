@@ -198,6 +198,27 @@ The receiver measures it and corrects it:
 It's on by default (`"compensate": true` in the receiver config). The self-test simulates two late
 displays and checks the other two get held back and all four line up.
 
+### Buffer (hiding network stalls)
+
+On a busy network a stream sometimes stops for 100–300 ms and then catches up (NDI resends; the
+frames arrive late, not never). Without a buffer the receiver waits up to `lagFrames` for it (the
+whole PC pauses) and then lets that display fall behind.
+
+With **Buffer** set (editor toolbar, per layout: Off, 100–500 ms), every display shows each frame
+a fixed time after the engine made it:
+- The engine stamps every output of a frame with the same NDI timecode (its clock).
+- The receiver keeps the smallest "arrived minus timecode" of the last ~10 s: a frame that came
+  straight through. That's the engine's clock as seen on this PC, plus the fastest transit.
+- The frame due now is the newest whose timecode + that offset + the buffer has passed. Every
+  stream that has it shows it, so displays stay on the same frame while one stream stalls, as
+  long as the stall is shorter than the buffer. A longer one shows on that display only.
+- Network gaps shorter than the buffer are counted as hidden (`gapsAbsorbed`), not freezes.
+
+The cost is the buffer's length of extra delay. That's fine for playback (sports, videos), when the
+venue's audio is delayed to match on the mixer, but not for live cameras of people in the room:
+there, keep it Off and fix the network instead. The endpoint panel shows the buffer, how long
+frames are actually held (`heldMs`) and the stalls it hid.
+
 Uploads: the four 4K pictures are copied to the GPU on four threads at once (about 17 MB each), so
 60 fps fits in the refresh budget.
 

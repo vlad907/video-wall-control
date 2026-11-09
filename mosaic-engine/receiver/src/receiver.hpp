@@ -37,6 +37,10 @@ struct ReceiverConfig {
     // Windows shows some displays a refresh later than others (it composites them: HDR on, an
     // overlay, a different setting). Measured, and the other displays are held back to match.
     bool compensate = true;
+    // Buffer: every display shows each frame this long after the engine made it (plus the
+    // fastest network transit), so a stream that stalls for less than this never shows it.
+    // 0 = show frames as soon as every stream has them (lowest delay).
+    int bufferMs = 0;
 };
 
 void from_json(const nlohmann::json& j, ReceiverConfig& c);
@@ -157,6 +161,16 @@ private:
     std::vector<Clock::time_point> streamGap_;  // per stream: last arrival before it went quiet (zero = receiving)
     uint32_t screenSkipped_ = 0;                // most refreshes a monitor skipped since the last present
     void hiccup(const std::string& cause, double ms, const std::string& detail);
+    uint64_t gapsAbsorbed_ = 0;  // network gaps shorter than the buffer (not seen on screen)
+
+    // The engine's clock as seen here: the smallest arrival-minus-timecode over the last ~10 s
+    // (a frame that came straight through). Frames are shown at timecode + this + the buffer.
+    std::deque<std::pair<Clock::time_point, int64_t>> transits_;
+    int64_t engineOffsetUs_ = 0;
+    bool engineClockKnown_ = false;
+    void trackEngineClock(Clock::time_point now);
+    double windowHeldMs_ = 0, heldMs_ = 0;  // time from arrival to on screen, per new picture
+    uint64_t windowHeldCount_ = 0;
 
     std::atomic<bool> stop_{false};
     std::thread thread_;

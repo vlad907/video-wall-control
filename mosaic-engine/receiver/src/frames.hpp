@@ -1,13 +1,16 @@
 // Received frames and the small per-stream queue the receiver aligns from.
 #pragma once
 
+#include <algorithm>
 #include <chrono>
+#include <climits>
 #include <cstdint>
 #include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace mosaic::rx {
 
@@ -32,6 +35,11 @@ public:
 
     void push(RxFrame f) {
         std::lock_guard lock(mutex_);
+        if (f.timecode) {
+            // How long after the engine's clock it arrived (plus the unknown offset between the clocks).
+            int64_t arrivedUs = std::chrono::duration_cast<std::chrono::microseconds>(f.arrived.time_since_epoch()).count();
+            minTransitUs_ = std::min(minTransitUs_, arrivedUs - f.timecode / 10);
+        }
         frames_.push_back(std::move(f));
         while (frames_.size() > capacity_) frames_.pop_front();
         lastArrival_ = Clock::now();
@@ -42,6 +50,34 @@ public:
     uint64_t newestId() const {
         std::lock_guard lock(mutex_);
         return frames_.empty() ? 0 : frames_.back().frameId;
+    }
+
+    // Frames kept before the oldest goes (the buffer needs room for its delay's worth).
+    void setCapacity(size_t n) {
+        std::lock_guard lock(mutex_);
+        capacity_ = std::max<size_t>(n, 2);
+    }
+
+    // The smallest arrival-minus-timecode (us) since the last call, INT64_MAX if none: the
+    // receiver's estimate of the engine's clock, a frame that came straight through.
+    int64_t takeMinTransitUs() {
+        std::lock_guard lock(mutex_);
+        return std::exchange(minTransitUs_, INT64_MAX);
+    }
+
+    // The id of the newest frame with a timecode <= `timecode` (0 if none).
+    uint64_t newestIdAtOrBefore(int64_t timecode) const {
+        std::lock_guard lock(mutex_);
+        uint64_t id = 0;
+        for (auto& f : frames_)
+            if (f.timecode <= timecode) id = f.frameId;
+        return id;
+    }
+
+    // Frames held (the buffer's depth).
+    size_t size() const {
+        std::lock_guard lock(mutex_);
+        return frames_.size();
     }
 
     // The newest frame whose id is <= `id` (with id 0: the newest frame). Frames older than the
@@ -82,6 +118,7 @@ private:
     size_t capacity_;
     Clock::time_point lastArrival_{};
     uint64_t received_ = 0;
+    int64_t minTransitUs_ = INT64_MAX;
 };
 
 // A source of frames for one stream: NDI, or a synthetic generator for tests.

@@ -46,6 +46,7 @@ void from_json(const json& j, ReceiverConfig& c) {
     c.lostAfterMs = std::clamp(j.value("lostAfterMs", c.lostAfterMs), 50, 10000);
     c.flashTest = j.value("flashTest", c.flashTest);
     c.compensate = j.value("compensate", c.compensate);
+    c.bufferMs = std::clamp(j.value("bufferMs", c.bufferMs), 0, 1000);
     c.displays.clear();
     int n = 0;
     for (auto& d : j.value("displays", json::array())) {
@@ -69,7 +70,7 @@ json to_json(const ReceiverConfig& c) {
                             {"window", {{"x", d.window.x}, {"y", d.window.y}, {"w", d.window.w}, {"h", d.window.h}}},
                             {"tile", {{"x", d.tile.x}, {"y", d.tile.y}, {"w", d.tile.w}, {"h", d.tile.h}}},
                             {"synthetic", d.synthetic}});
-    return {{"displays", displays}, {"lagFrames", c.lagFrames}, {"lostAfterMs", c.lostAfterMs}, {"flashTest", c.flashTest}, {"compensate", c.compensate}};
+    return {{"displays", displays}, {"lagFrames", c.lagFrames}, {"lostAfterMs", c.lostAfterMs}, {"flashTest", c.flashTest}, {"compensate", c.compensate}, {"bufferMs", c.bufferMs}};
 }
 
 static std::unique_ptr<FrameInput> makeInput(const DisplayConfig& d, std::string& error) {
@@ -84,6 +85,7 @@ static std::unique_ptr<FrameInput> makeInput(const DisplayConfig& d, std::string
         s.dropEvery = o.value("dropEvery", s.dropEvery);
         s.stallAtS = o.value("stallAtS", s.stallAtS);
         s.stallForS = o.value("stallForS", s.stallForS);
+        s.stallLate = o.value("stallLate", s.stallLate);
         s.colour = o.value("colour", s.colour);
         return std::make_unique<SyntheticInput>(s);
     }
@@ -160,7 +162,12 @@ void Receiver::apply(const ReceiverConfig& c) {
         displayStream_.push_back(static_cast<int>(have - next.begin()));
     }
     streams_ = std::move(next);
-    for (auto& s : streams_) s.shownHold = nullptr;  // textures are per stream index: upload again
+    // Room for the buffer's worth of frames at up to 60 fps, plus the usual few.
+    const size_t capacity = 8 + static_cast<size_t>(std::ceil(c.bufferMs * 60.0 / 1000.0));
+    for (auto& s : streams_) {
+        s.shownHold = nullptr;  // textures are per stream index: upload again
+        if (s.input) s.input->queue().setCapacity(capacity);
+    }
 
     // One window per distinct monitor rectangle; displays sharing one become tiles of it.
     std::vector<WindowSpec> windows;
@@ -214,11 +221,31 @@ void Receiver::frame() {
             if (now - last > std::chrono::milliseconds(100)) streamGap_[i] = last;
         } else if (last > streamGap_[i]) {
             double ms = std::chrono::duration<double, std::milli>(last - streamGap_[i]).count();
-            hiccup("network", ms, "no frames from " + s.name + " for " + std::to_string(std::lround(ms)) + " ms");
+            if (ms < active_.bufferMs) ++gapsAbsorbed_;  // the buffer had enough frames in hand: not seen on screen
+            else hiccup("network", ms, "no frames from " + s.name + " for " + std::to_string(std::lround(ms)) + " ms");
             streamGap_[i] = {};
         }
     }
-    Choice c = chooseFrames(views, target_, static_cast<uint64_t>(active_.lagFrames));
+    trackEngineClock(now);
+    Choice c;
+    if (active_.bufferMs > 0 && engineClockKnown_) {
+        // Buffered: the frame due now is the newest the engine made at least `bufferMs` (plus the
+        // fastest transit) ago. Every stream that has it shows it; one that doesn't (stalled for
+        // longer than the buffer) shows its newest and counts as late.
+        int64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+        int64_t dueTimecode = (nowUs - engineOffsetUs_ - active_.bufferMs * 1000LL) * 10;
+        uint64_t due = 0;
+        for (size_t i = 0; i < streams_.size(); ++i)
+            if (streams_[i].input && views[i].synced && !views[i].stale) due = std::max(due, streams_[i].input->queue().newestIdAtOrBefore(dueTimecode));
+        c.show.assign(streams_.size(), 0);
+        c.lagging.assign(streams_.size(), false);
+        c.target = std::max(due, target_);
+        const uint64_t pick = c.target ? c.target : 1;  // nothing due yet: nothing new (engine frame ids are larger)
+        for (size_t i = 0; i < streams_.size(); ++i)
+            if (views[i].synced && !views[i].stale) c.show[i] = pick;
+    } else {
+        c = chooseFrames(views, target_, static_cast<uint64_t>(active_.lagFrames));
+    }
     target_ = c.target;
 
     uint64_t lo = UINT64_MAX, hi = 0;
@@ -239,6 +266,8 @@ void Receiver::frame() {
             ++s.shown;
             s.history.push_back({now, ++s.gen, f->frameId});
             if (s.history.size() > static_cast<size_t>(kPictureHistory)) s.history.pop_front();
+            windowHeldMs_ += std::chrono::duration<double, std::milli>(now - f->arrived).count();
+            ++windowHeldCount_;
             fresh.push_back(std::move(*f));
             uploads.push_back({static_cast<int>(i), &fresh.back()});
         }
@@ -309,6 +338,9 @@ void Receiver::frame() {
             streamFps_[i] = (streams_[i].shown - windowShown_[i]) / span;
             windowShown_[i] = streams_[i].shown;
         }
+        heldMs_ = windowHeldCount_ ? windowHeldMs_ / static_cast<double>(windowHeldCount_) : 0;
+        windowHeldMs_ = 0;
+        windowHeldCount_ = 0;
         windowStart_ = now;
         windowPresents_ = 0;
         windowUploadMs_ = 0;
@@ -377,6 +409,10 @@ void Receiver::frame() {
                {"spread", recentSpread_.empty() ? 0 : recentSpread_.back()},
                {"spreadMax10s", spreadMax},
                {"alignedRatio", comparedPresents_ ? double(alignedPresents_) / double(comparedPresents_) : 1.0},
+               {"bufferMs", active_.bufferMs},
+               {"bufferReady", active_.bufferMs > 0 && engineClockKnown_},
+               {"heldMs", heldMs_},
+               {"gapsAbsorbed", gapsAbsorbed_},
                {"freezesLastMinute", hiccupTimes_.size()},
                {"freezesTotal", hiccupTotal_},
                {"freezes", hiccups},
@@ -457,6 +493,23 @@ void Receiver::trackTiming(const std::vector<PresentTiming>& timings) {
         it = shownAt_.erase(it);
     }
     while (shownAt_.size() > 240) shownAt_.erase(shownAt_.begin());
+}
+
+// Collects each stream's fastest frame (arrival minus engine timecode) and keeps the smallest of
+// the last ~10 s as the engine's clock. A jump of over a second (the engine restarted, so its
+// timecodes started again) starts the estimate over.
+void Receiver::trackEngineClock(Clock::time_point now) {
+    int64_t fastest = INT64_MAX;
+    for (auto& s : streams_)
+        if (s.input) fastest = std::min(fastest, s.input->queue().takeMinTransitUs());
+    if (fastest != INT64_MAX) {
+        if (engineClockKnown_ && std::llabs(fastest - engineOffsetUs_) > 1000000) transits_.clear();
+        transits_.push_back({now, fastest});
+    }
+    while (!transits_.empty() && now - transits_.front().first > std::chrono::seconds(10)) transits_.pop_front();
+    engineClockKnown_ = !transits_.empty();
+    if (engineClockKnown_)
+        engineOffsetUs_ = std::min_element(transits_.begin(), transits_.end(), [](auto& a, auto& b) { return a.second < b.second; })->second;
 }
 
 // Records a freeze (newest last) and logs it with the local time.

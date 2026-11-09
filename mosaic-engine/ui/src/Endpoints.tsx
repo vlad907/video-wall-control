@@ -186,6 +186,16 @@ export function EndpointPanel({
                 </small>
               );
             })()}
+            {!!endpoint.receiver.bufferMs && (
+              <div className="sync-line">
+                <span>Buffer</span>
+                <b className={endpoint.receiver.bufferReady ? "" : "warn"}>
+                  {endpoint.receiver.bufferReady
+                    ? `${endpoint.receiver.bufferMs} ms · frames held ${Math.round(endpoint.receiver.heldMs ?? 0)} ms · ${endpoint.receiver.gapsAbsorbed ?? 0} network stall(s) hidden`
+                    : `${endpoint.receiver.bufferMs} ms · waiting for the media server's clock…`}
+                </b>
+              </div>
+            )}
             {endpoint.receiver.freezesTotal !== undefined && (
               <>
                 <div className="sync-line">

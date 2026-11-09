@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "receiver.hpp"
+#include "synthetic_input.hpp"
 
 using nlohmann::json;
 using namespace mosaic::rx;
@@ -87,6 +88,38 @@ int selfTest(double seconds) {
                   d2[3].value("heldRefreshes", -1) == 1,
               "held the other displays back one refresh");
         check(s2.value("screenSpreadNowMs", 99.0) < 8, "with compensation all displays show each frame together (under half a refresh apart)");
+    }
+    // Buffer: like the venue's congested network, one stream stalls for 150 ms and then its
+    // frames arrive all at once. With a 250 ms buffer nobody sees it: every display stays on
+    // the same frame and nothing counts as a freeze.
+    {
+        json cfg3 = {{"bufferMs", 250}, {"displays", json::array()}};
+        // Synthetic streams keep one clock from the first one made: the stall is timed on it.
+        double soon = std::chrono::duration<double>(Clock::now() - SyntheticInput::epoch()).count();
+        for (int i = 1; i <= 4; ++i) {
+            json synth = {{"width", 64}, {"height", 36}, {"fps", 30}, {"delayMs", 2}, {"jitterMs", 4}};
+            if (i == 4) synth.update({{"stallAtS", soon + 3.0}, {"stallForS", 0.15}, {"stallLate", true}});
+            cfg3["displays"].push_back({{"index", i}, {"stream", "synthetic"}, {"synthetic", synth},
+                                        {"window", {{"x", (i - 1) * 1920}, {"y", 0}, {"w", 1920}, {"h", 1080}}}});
+        }
+        ReceiverConfig c3;
+        from_json(cfg3, c3);
+        Receiver rx3([](std::string&) { return createHeadlessPresenter(60.0); });
+        rx3.setConfig(c3);
+        // Settle first (the clock estimate and the buffer fill), then count from before the stall.
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+        json before = rx3.status();
+        std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+        json s3 = rx3.status();
+        auto late = [](const json& s, int d) { return s["displays"][d].value("late", 0); };
+        int lateDuring = late(s3, 3) - late(before, 3);
+        std::cout << "buffer: held " << s3.value("heldMs", 0.0) << " ms, gaps absorbed " << s3.value("gapsAbsorbed", 0) << ", display 4 late "
+                  << lateDuring << ", freezes " << s3.value("freezesTotal", 0) << "\n";
+        check(s3.value("bufferReady", false), "the buffer found the engine's clock");
+        check(s3.value("heldMs", 0.0) > 180 && s3.value("heldMs", 0.0) < 300, "frames were held about the buffer's length");
+        check(s3.value("gapsAbsorbed", 0) >= 1, "the 150 ms stall was absorbed by the buffer");
+        check(lateDuring == 0, "the stalled display never fell behind (" + std::to_string(lateDuring) + " late)");
+        check(s3.value("freezesTotal", 99) == 0, "no freezes");
     }
     std::cout << (ok ? "SELF-TEST PASSED" : "SELF-TEST FAILED") << "\n";
     return ok ? 0 : 1;

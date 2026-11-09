@@ -120,6 +120,9 @@ struct Layout {
     std::vector<Scene> scenes;
     std::vector<Endpoint> endpoints;
     std::string fallbackImage;  // default for NDI streams with no signal (a group's own one wins)
+    // Mosaic Receivers show each frame this long after it was made, so network stalls shorter
+    // than this never reach the screens. 0 = lowest delay (live feeds); ~300 for playback.
+    int receiverBufferMs = 0;
 
     const SourceConfig* findSource(const std::string& sid) const;
     const OutputConfig* findOutput(const std::string& oid) const;

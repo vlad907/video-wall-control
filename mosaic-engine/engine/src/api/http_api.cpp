@@ -340,6 +340,10 @@ struct HttpApi::Impl {
                              {"screenSpreadNowMs", rx.value("screenSpreadNowMs", 0.0)},
                              {"compensate", rx.value("compensate", true)},
                              {"uploadMs", rx.value("uploadMs", 0.0)},
+                             {"bufferMs", rx.value("bufferMs", 0)},
+                             {"bufferReady", rx.value("bufferReady", false)},
+                             {"heldMs", rx.value("heldMs", 0.0)},
+                             {"gapsAbsorbed", rx.value("gapsAbsorbed", 0)},
                              {"freezesLastMinute", rx.value("freezesLastMinute", 0)},
                              {"freezesTotal", rx.value("freezesTotal", 0)},
                              {"freezes", rx.value("freezes", json::array())},
@@ -962,7 +966,7 @@ struct HttpApi::Impl {
             auto l = store.active();
             for (auto& e : l->endpoints)
                 if (hostKey(e.host) == hostKey(host))
-                    return sendJson(res, {{"endpoint", {{"id", e.id}, {"name", e.name}, {"player", e.player}, {"flashTest", e.flashTest}}},
+                    return sendJson(res, {{"endpoint", {{"id", e.id}, {"name", e.name}, {"player", e.player}, {"flashTest", e.flashTest}, {"bufferMs", l->receiverBufferMs}}},
                                           {"layout", l->id},
                                           {"engineHost", machine},
                                           {"receiverPackage", receiverPackage()},
