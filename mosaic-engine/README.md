@@ -233,6 +233,27 @@ and a test pattern with `animated: false` is drawn once. When a single opaque so
 fills the canvas (the usual setup, with one NDI input), the outputs sample it directly, with
 no canvas pass. UYVY outputs are mapped and packed in one pass, without a full-size BGRA copy.
 
+## Audio outputs
+
+**Settings → Audio** plays NDI sources' sound on the media server's sound devices: a USB
+interface, the graphics card's HDMI audio, the onboard output, or one channel pair of a
+multi-channel interface. Each output has its own source, device, volume and mute, so the bar can
+play game 1 while the patio plays game 2.
+
+- **Delay, matched to the wall.** By default an output is delayed as much as the picture: the
+  receivers' **Buffer** (toolbar) plus the media server's and the receivers' own delay (about half
+  a frame + 55 ms). The TVs add their own processing on top, which can't be measured from here: clap
+  in front of the wall and set each output's **trim** until sound and picture line up. Turn
+  *Match the wall* off to set the whole delay by hand.
+- **How it stays in time.** Each source is received audio-only (very little bandwidth), kept for
+  10 s, and played the delay after its fastest arrival. Network stalls shorter than the delay
+  aren't heard. Drift between the source's clock and the sound card's is corrected by nudging the
+  playback rate (at most 0.2 %, inaudible), never by skipping.
+- The meters show what each output plays; a problem (device unplugged, no audio from the source,
+  wrong channel pair) shows under it. `GET /api/audio` has the same, plus the PC's sound devices.
+- `mosaic_engine --audio-self-test` checks the timing against a simulated network (stalls, jitter,
+  44.1 kHz devices, clock drift); it runs in CI.
+
 ## The test pattern
 
 Every 1920×1080 tile of the pattern has:
@@ -350,7 +371,7 @@ See [docs/SYNC.md](docs/SYNC.md). In short:
 
 - 24 outputs have not yet been measured with real NDI sending or on the Windows machine. See [docs/NEXT.md](docs/NEXT.md).
 - Small integrated GPUs (for example the Radeon 610M) can't render the animated test pattern over a 4K canvas at 60 fps. Use an NDI input, or set the pattern's `animated` to false.
-- No audio.
+- Audio: NDI sources' sound only (not video files' audio tracks); Windows only. See "Audio outputs".
 - No video-file source.
 - No edge blending or warping.
 - One canvas per layout.

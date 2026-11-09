@@ -4,6 +4,41 @@ export type Rect = { x: number; y: number; w: number; h: number };
 export type ScaleMode = "stretch" | "fit" | "fill";
 export type SourceType = "test_pattern" | "ndi" | "solid" | "image" | "video";
 
+// A sound output of the media server: an NDI source's audio on one of its sound devices.
+export interface AudioOutput {
+  id: string;
+  name: string;
+  device: string; // Windows sound device id ("" = default)
+  deviceName?: string;
+  source: string; // NDI source name
+  channelPair: number; // 0 = channels 1-2, 1 = 3-4…
+  volumeDb: number;
+  mute: boolean;
+  matchWall: boolean; // delay = the wall's delay + delayMs (a trim)
+  delayMs: number;
+  enabled: boolean;
+}
+
+export interface AudioInfo {
+  wallDelayMs: number;
+  devices: { id: string; name: string; channels: number; rate: number; default: boolean }[];
+  devicesError: string;
+  ndiSources: string[];
+  outputs: {
+    id: string;
+    device: string;
+    channels: number;
+    error: string;
+    sourceConnected: boolean;
+    sourceError: string;
+    levelDb: number[]; // left, right peak since the last read (dBFS; -100 = silence)
+    delayMs: number;
+    offByMs: number;
+    jumps: number; // times it had to skip (a glitch)
+    silentMs: number;
+  }[];
+}
+
 // A receiving PC's GPU (NVIDIA only) and what Windows logged about its display stack.
 export interface Diagnostics {
   gpu?: {
@@ -221,6 +256,7 @@ export interface Layout {
   name: string;
   frameRate: number;
   receiverBufferMs?: number; // Mosaic Receivers show frames this long after they're made (hides network stalls)
+  audioOutputs?: AudioOutput[]; // the media server's sound outputs
   canvas: { width: number; height: number; background: [number, number, number, number] };
   sources: Source[];
   outputs: Output[];
@@ -408,5 +444,6 @@ export const api = {
   recallScene: (id: string, transitionMs: number) => call("POST", `/api/scenes/${id}/recall`, { transitionMs }),
   deleteScene: (id: string) => call("DELETE", `/api/scenes/${id}`),
   updates: () => call<UpdateInfo>("GET", "/api/system/update"),
+  audio: () => call<AudioInfo>("GET", "/api/audio"),
   startUpdate: (target: "all" | "receivers") => call("POST", "/api/system/update", { target }),
 };

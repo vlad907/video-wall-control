@@ -205,6 +205,26 @@ void from_json(const json& j, EndpointDisplay& d) {
     d.output = j.value("output", d.output);
 }
 
+void to_json(json& j, const AudioOutputConfig& a) {
+    j = json{{"id", a.id},           {"name", a.name},         {"device", a.device},       {"deviceName", a.deviceName},
+             {"source", a.source},   {"channelPair", a.channelPair}, {"volumeDb", a.volumeDb}, {"mute", a.mute},
+             {"matchWall", a.matchWall}, {"delayMs", a.delayMs}, {"enabled", a.enabled}};
+}
+
+void from_json(const json& j, AudioOutputConfig& a) {
+    a.id = j.value("id", a.id);
+    a.name = j.value("name", a.name);
+    a.device = j.value("device", a.device);
+    a.deviceName = j.value("deviceName", a.deviceName);
+    a.source = j.value("source", a.source);
+    a.channelPair = j.value("channelPair", a.channelPair);
+    a.volumeDb = j.value("volumeDb", a.volumeDb);
+    a.mute = j.value("mute", a.mute);
+    a.matchWall = j.value("matchWall", a.matchWall);
+    a.delayMs = j.value("delayMs", a.delayMs);
+    a.enabled = j.value("enabled", a.enabled);
+}
+
 void to_json(json& j, const Endpoint& e) {
     j = json{{"id", e.id}, {"name", e.name}, {"host", e.host}, {"player", e.player}, {"flashTest", e.flashTest}, {"displays", e.displays}};
 }
@@ -249,7 +269,7 @@ void to_json(json& j, const Layout& l) {
     j = json{{"id", l.id},         {"name", l.name},       {"frameRate", l.frameRate},
              {"canvas", l.canvas}, {"sources", l.sources}, {"outputs", l.outputs}, {"walls", l.walls},
              {"scenes", l.scenes}, {"endpoints", l.endpoints}, {"fallbackImage", l.fallbackImage},
-             {"receiverBufferMs", l.receiverBufferMs}};
+             {"receiverBufferMs", l.receiverBufferMs}, {"audioOutputs", l.audioOutputs}};
 }
 
 void from_json(const json& j, Layout& l) {
@@ -270,6 +290,7 @@ void from_json(const json& j, Layout& l) {
     if (j.contains("endpoints")) l.endpoints = j.at("endpoints").get<std::vector<Endpoint>>();
     l.fallbackImage = j.value("fallbackImage", l.fallbackImage);
     l.receiverBufferMs = j.value("receiverBufferMs", l.receiverBufferMs);
+    if (j.contains("audioOutputs")) l.audioOutputs = j.at("audioOutputs").get<std::vector<AudioOutputConfig>>();
 }
 
 static int clampDim(int v) { return std::clamp(v, 1, kMaxDimension); }
@@ -369,6 +390,19 @@ std::vector<std::string> normalize(Layout& l) {
         ids.insert(e.id);
         if (e.name.empty()) e.name = e.host.empty() ? e.id : e.host;
         if (e.player != "mosaic") e.player = "studio_monitor";
+    }
+
+    ids.clear();
+    n = 0;
+    for (auto& a : l.audioOutputs) {
+        ++n;
+        a.id = sanitizeId(a.id.empty() ? a.name : a.id);
+        if (a.id.empty() || ids.count(a.id)) a.id = "audio-" + std::to_string(n);
+        ids.insert(a.id);
+        if (a.name.empty()) a.name = "Audio " + std::to_string(n);
+        a.channelPair = std::clamp(a.channelPair, 0, 31);
+        a.volumeDb = std::clamp(a.volumeDb, -60.0, 12.0);
+        a.delayMs = std::clamp(a.delayMs, a.matchWall ? -1000.0 : 0.0, 5000.0);
     }
 
     ids.clear();

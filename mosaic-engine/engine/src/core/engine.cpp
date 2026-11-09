@@ -71,7 +71,8 @@ Uniforms makeUniforms(float dx, float dy, float dw, float dh) {
 }
 }  // namespace
 
-Engine::Engine(Renderer& renderer, LayoutStore& store, NdiSystem* ndi) : renderer_(renderer), store_(store), ndi_(ndi) {
+Engine::Engine(Renderer& renderer, LayoutStore& store, NdiSystem* ndi)
+    : renderer_(renderer), store_(store), ndi_(ndi), audio_(std::make_unique<AudioOutputs>(ndi)) {
     renderer_.onReadback = [this](ReadbackId rb, int slot, const ReadbackView& view, uint64_t) {
         std::shared_ptr<OutputChannel> ch;
         std::shared_ptr<PreviewState> pv;
@@ -640,6 +641,11 @@ void Engine::destroySource(SourceState& s) {
 }
 
 void Engine::reconcile(const Layout& layout) {
+    // Sound outputs line up with the wall by default: a frame reaches the screens about half a
+    // frame (waiting for the next render) + ~55 ms (rendering, NDI to the receivers, their
+    // refresh and scan-out) + their buffer after it arrives here. The TVs' own processing isn't
+    // known: each output's trim adds it.
+    audio_->configure(layout.audioOutputs, layout.receiverBufferMs + 500.0 / layout.frameRate + 55.0);
     bool canvasChanged = layout.canvas.width != canvasW_ || layout.canvas.height != canvasH_;
     bool outputsResized = false;
     {

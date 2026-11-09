@@ -2,6 +2,7 @@
 //
 //   mosaic_engine [--port 8090] [--host 0.0.0.0] [--data ./data] [--layouts ./layouts]
 //                 [--ui ./ui/dist] [--run-seconds N] [--snapshot-dir DIR] [--layout ID] [--software-gpu]
+//   mosaic_engine --audio-self-test     # the audio delay logic against a simulated network
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
@@ -17,6 +18,10 @@
 #include "io/video_io.hpp"
 #include "render/renderer.hpp"
 
+namespace mosaic {
+int audioSelfTest();  // audio/audio_selftest.cpp
+}
+
 namespace fs = std::filesystem;
 using namespace mosaic;
 
@@ -31,6 +36,7 @@ struct Options {
     double runSeconds = 0;
     std::string layout;
     bool softwareGpu = false;
+    bool audioSelfTest = false;
 };
 
 Options parse(int argc, char** argv) {
@@ -52,6 +58,7 @@ Options parse(int argc, char** argv) {
         else if (a == "--snapshot-dir") o.snapshotDir = next();
         else if (a == "--layout") o.layout = next();
         else if (a == "--software-gpu") o.softwareGpu = true;
+        else if (a == "--audio-self-test") o.audioSelfTest = true;
         else if (a == "--help" || a == "-h") {
             std::cout << "usage: mosaic_engine [--port N] [--host ADDR] [--data DIR] [--layouts DIR] [--ui DIR]\n"
                          "                     [--layout ID] [--run-seconds N] [--snapshot-dir DIR] [--software-gpu]\n";
@@ -75,6 +82,7 @@ int main(int argc, char** argv) {
         std::cerr << e.what() << "\n";
         return 2;
     }
+    if (opt.audioSelfTest) return audioSelfTest();
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 

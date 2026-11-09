@@ -21,6 +21,7 @@
 #include <unistd.h>
 #endif
 
+#include "audio/audio_device.hpp"
 #include "core/engine.hpp"
 #include "core/layout_store.hpp"
 #include "util/paths.hpp"
@@ -1227,6 +1228,19 @@ struct HttpApi::Impl {
 
         // ---- metrics ----
         s.Get("/api/metrics", guard([this](const httplib::Request&, httplib::Response& res) { sendJson(res, engine.metrics()); }));
+        // Sound outputs: the PC's sound devices, and each output's level, delay and problems.
+        // The outputs themselves are the layout's `audioOutputs` (PUT /api/layout).
+        s.Get("/api/audio", guard([this](const httplib::Request&, httplib::Response& res) {
+            std::string error;
+            json devices = json::array();
+            for (auto& d : listAudioDevices(error))
+                devices.push_back({{"id", d.id}, {"name", d.name}, {"channels", d.channels}, {"rate", d.rate}, {"default", d.isDefault}});
+            json out = engine.audioStatus();
+            out["devices"] = devices;
+            out["devicesError"] = error;
+            out["ndiSources"] = engine.discoveredNdiSources();
+            sendJson(res, out);
+        }));
 
         // Server-sent events: metrics + layout version every 500 ms.
         s.Get("/api/events", [this](const httplib::Request&, httplib::Response& res) {

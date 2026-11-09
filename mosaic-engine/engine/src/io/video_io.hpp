@@ -59,6 +59,16 @@ public:
     virtual uint64_t framesReceived() const = 0;
 };
 
+class AudioRing;
+
+// Audio from an NDI source (an audio-only connection: very little bandwidth), into a ring.
+class NdiAudioInput {
+public:
+    virtual ~NdiAudioInput() = default;
+    virtual bool connected() const = 0;  // audio arrived in the last second
+    virtual int channels() const = 0;    // of the source (0 = none yet)
+};
+
 class NdiSystem {
 public:
     virtual ~NdiSystem() = default;
@@ -66,6 +76,7 @@ public:
     virtual std::vector<std::string> discoveredSources() = 0;
     virtual std::unique_ptr<VideoSink> createSender(const std::string& streamName) = 0;
     virtual std::unique_ptr<NdiReceiver> createReceiver(const std::string& sourceName) = 0;
+    virtual std::unique_ptr<NdiAudioInput> createAudioReceiver(const std::string& sourceName, std::shared_ptr<AudioRing> ring) = 0;
 };
 
 // Returns nullptr (with a reason) when built without the SDK or the runtime is missing.

@@ -313,3 +313,15 @@ button.danger.solid:hover { background: #ff6b6b; }
 .sync-line { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--muted); }
 .sync-line b { color: var(--text); font-variant-numeric: tabular-nums; }
 .sync-line b.warn { color: var(--warn); }
+
+/* Settings → Audio */
+.audio-output { display: flex; flex-direction: column; gap: 8px; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.audio-row { display: flex; align-items: flex-end; gap: 8px; min-width: 0; }
+.audio-row .field.wide { flex: 1; }
+.audio-row > small { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audio-row .field input[type="number"] { width: 80px; }
+.audio-meter { display: flex; flex-direction: column; gap: 2px; width: 90px; flex: none; align-self: center; }
+.audio-meter span { display: block; height: 5px; background: var(--surface-3); border-radius: 2px; overflow: hidden; }
+.audio-meter i { display: block; height: 100%; background: var(--accent); transition: width .15s linear; }
+.audio-meter i.warm { background: var(--warn); }
+.audio-meter i.hot { background: var(--danger, #e5484d); }

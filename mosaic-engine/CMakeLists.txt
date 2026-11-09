@@ -81,6 +81,9 @@ set(ENGINE_SOURCES
   engine/src/util/image.cpp
   engine/src/util/realtime.cpp
   engine/src/io/video_file.cpp
+  engine/src/audio/audio_ring.cpp
+  engine/src/audio/audio_outputs.cpp
+  engine/src/audio/audio_selftest.cpp
 )
 if(MOSAIC_HAVE_NDI)
   list(APPEND ENGINE_SOURCES engine/src/io/ndi_sdk.cpp)
@@ -90,8 +93,9 @@ endif()
 
 if(APPLE)
   list(APPEND ENGINE_SOURCES engine/src/render/metal/metal_renderer.mm engine/src/io/video_avf.mm)
+  list(APPEND ENGINE_SOURCES engine/src/audio/audio_none.cpp)
 elseif(WIN32)
-  list(APPEND ENGINE_SOURCES engine/src/render/d3d11/d3d11_renderer.cpp engine/src/io/video_mf.cpp)
+  list(APPEND ENGINE_SOURCES engine/src/render/d3d11/d3d11_renderer.cpp engine/src/io/video_mf.cpp engine/src/audio/audio_wasapi.cpp)
 else()
   message(FATAL_ERROR "Only Windows (Direct3D 11) and macOS (Metal) backends are implemented.")
 endif()
@@ -122,7 +126,7 @@ if(APPLE)
                         "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo")
 elseif(WIN32)
   target_compile_definitions(mosaic_engine PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
-  target_link_libraries(mosaic_engine PRIVATE d3d11 dxgi d3dcompiler pdh ws2_32 avrt winmm mfplat mfreadwrite mfuuid propsys)
+  target_link_libraries(mosaic_engine PRIVATE d3d11 dxgi d3dcompiler pdh ws2_32 avrt winmm mfplat mfreadwrite mfuuid propsys ole32)
   if(MSVC)
     target_compile_options(mosaic_engine PRIVATE /W3 /utf-8 /permissive-)
   endif()

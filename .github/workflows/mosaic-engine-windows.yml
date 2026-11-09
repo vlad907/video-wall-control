@@ -60,6 +60,9 @@ jobs:
       - name: Receiver self-test (frame alignment, synthetic streams)
         run: build/Release/mosaic_receiver.exe --self-test 6
 
+      - name: Audio self-test (delay, stalls, drift; simulated network)
+        run: build/Release/mosaic_engine.exe --audio-self-test
+
       # The real Direct3D 11 presenter on WARP: windows + flip-model swap chains + present loop.
       # Informational: CI machines may not have a desktop session to put windows on.
       - name: Receiver on Direct3D 11 (WARP), smoke test

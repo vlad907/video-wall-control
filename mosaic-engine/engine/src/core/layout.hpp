@@ -95,6 +95,22 @@ struct EndpointDisplay {
     std::string output;  // output id
 };
 
+// A sound output of the media server: one NDI source's audio, played on one of the PC's sound
+// devices (a channel pair of it), delayed to match the wall.
+struct AudioOutputConfig {
+    std::string id;
+    std::string name;            // "Bar speakers"
+    std::string device;          // Windows sound device id ("" = the default device)
+    std::string deviceName;      // its name when chosen (shown if it's unplugged)
+    std::string source;          // NDI source name whose audio it plays
+    int channelPair = 0;         // 0 = channels 1-2, 1 = 3-4, ...
+    double volumeDb = 0;         // -60..+12
+    bool mute = false;
+    bool matchWall = true;       // delay = the wall's delay, plus delayMs (a trim, may be negative)
+    double delayMs = 0;          // with matchWall off: the whole delay
+    bool enabled = true;
+};
+
 struct Endpoint {
     std::string id;
     std::string name;
@@ -119,6 +135,7 @@ struct Layout {
     std::vector<WallConfig> walls;
     std::vector<Scene> scenes;
     std::vector<Endpoint> endpoints;
+    std::vector<AudioOutputConfig> audioOutputs;
     std::string fallbackImage;  // default for NDI streams with no signal (a group's own one wins)
     // Mosaic Receivers show each frame this long after it was made, so network stalls shorter
     // than this never reach the screens. 0 = lowest delay (live feeds); ~300 for playback.
@@ -157,6 +174,8 @@ void to_json(nlohmann::json& j, const GroupPreset& p);
 void from_json(const nlohmann::json& j, GroupPreset& p);
 void to_json(nlohmann::json& j, const EndpointDisplay& d);
 void from_json(const nlohmann::json& j, EndpointDisplay& d);
+void to_json(nlohmann::json& j, const AudioOutputConfig& a);
+void from_json(const nlohmann::json& j, AudioOutputConfig& a);
 void to_json(nlohmann::json& j, const Endpoint& e);
 void from_json(const nlohmann::json& j, Endpoint& e);
 void to_json(nlohmann::json& j, const Scene& s);

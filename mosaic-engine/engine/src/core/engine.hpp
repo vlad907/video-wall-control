@@ -18,6 +18,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "audio/audio_outputs.hpp"
 #include "core/layout_store.hpp"
 #include "core/metrics.hpp"
 #include "core/output_channel.hpp"
@@ -43,6 +44,8 @@ public:
     nlohmann::json sourceStatus();
     std::vector<std::string> discoveredNdiSources();
     bool ndiAvailable() const { return ndi_ != nullptr; }
+    // The sound outputs: what each plays, its level and delay, and any problem.
+    nlohmann::json audioStatus() const { return audio_->status(); }
 
     // Freezes the current canvas so the next layout change crossfades from it over `ms`,
     // within `region` (canvas pixels; w/h 0 = the whole canvas, e.g. one wall group's area).
@@ -110,6 +113,7 @@ private:
     Renderer& renderer_;
     LayoutStore& store_;
     NdiSystem* ndi_;
+    std::unique_ptr<AudioOutputs> audio_;
 
     std::thread thread_;
     std::atomic<bool> running_{false};

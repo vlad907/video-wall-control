@@ -21,6 +21,7 @@
 #include <string>
 #include <thread>
 
+#include "audio/audio_ring.hpp"
 #include "core/metrics.hpp"
 #include "io/video_io.hpp"
 
@@ -166,6 +167,54 @@ private:
     RateMeter rate_;
 };
 
+// Audio only: the source's audio, as float, into the ring with its arrival time.
+class NdiAudio final : public NdiAudioInput {
+public:
+    NdiAudio(const std::string& sourceName, std::shared_ptr<AudioRing> ring) : name_(sourceName), ring_(std::move(ring)) {
+        NDIlib_source_t src;
+        src.p_ndi_name = name_.c_str();
+        NDIlib_recv_create_v3_t desc;
+        desc.source_to_connect_to = src;
+        desc.bandwidth = NDIlib_recv_bandwidth_audio_only;
+        desc.p_ndi_recv_name = "Mosaic Engine audio";
+        recv_ = NDIlib_recv_create_v3(&desc);
+        if (recv_) thread_ = std::thread([this] { run(); });
+    }
+    ~NdiAudio() override {
+        stop_ = true;
+        if (thread_.joinable()) thread_.join();
+        if (recv_) NDIlib_recv_destroy(recv_);
+    }
+    bool ok() const { return recv_ != nullptr; }
+    bool connected() const override { return Clock::now() - last_.load() < std::chrono::seconds(1); }
+    int channels() const override { return channels_; }
+
+private:
+    void run() {
+        while (!stop_) {
+            NDIlib_audio_frame_v3_t a;
+            if (NDIlib_recv_capture_v3(recv_, nullptr, &a, nullptr, 100) != NDIlib_frame_type_audio) continue;
+            double arrived = steadySeconds();
+            last_ = Clock::now();
+            channels_ = a.no_channels;
+            if (a.FourCC == NDIlib_FourCC_audio_type_FLTP && a.no_channels > 0 && a.no_samples > 0) {
+                const auto* left = reinterpret_cast<const float*>(a.p_data);
+                const auto* right = a.no_channels > 1 ? reinterpret_cast<const float*>(a.p_data + a.channel_stride_in_bytes) : left;
+                ring_->push(left, right, a.no_samples, a.sample_rate, arrived);
+            }
+            NDIlib_recv_free_audio_v3(recv_, &a);
+        }
+    }
+
+    std::string name_;
+    std::shared_ptr<AudioRing> ring_;
+    NDIlib_recv_instance_t recv_ = nullptr;
+    std::thread thread_;
+    std::atomic<bool> stop_{false};
+    std::atomic<Clock::time_point> last_{Clock::time_point{}};
+    std::atomic<int> channels_{0};
+};
+
 class NdiSystemImpl final : public NdiSystem {
 public:
     NdiSystemImpl() {
@@ -203,6 +252,12 @@ public:
 
     std::unique_ptr<NdiReceiver> createReceiver(const std::string& sourceName) override {
         auto rx = std::make_unique<NdiInput>(sourceName);
+        if (!rx->ok()) return nullptr;
+        return rx;
+    }
+
+    std::unique_ptr<NdiAudioInput> createAudioReceiver(const std::string& sourceName, std::shared_ptr<AudioRing> ring) override {
+        auto rx = std::make_unique<NdiAudio>(sourceName, std::move(ring));
         if (!rx->ok()) return nullptr;
         return rx;
     }

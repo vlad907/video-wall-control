@@ -190,6 +190,13 @@ a different room setup, not for changing content. Body optional: `{"transitionMs
 `{"ok": true}` while the engine is running. Poll it every few seconds to show an
 "engine online" indicator.
 
+### `GET /api/audio`
+
+The media server's sound outputs (set up in Settings → Audio; stored as the layout's
+`audioOutputs`): `wallDelayMs`, the PC's sound `devices`, discovered `ndiSources`, and per output
+its `levelDb` (left/right peak since the last read), `delayMs`, and `error` / `sourceError`. To change
+an output's volume from a control system, `PUT /api/layout` with the whole `audioOutputs` list.
+
 ### `GET /api/system/update` · `POST /api/system/update`
 
 Versions (git commits) of the media server and each receiving PC, and the last update's outcome.
