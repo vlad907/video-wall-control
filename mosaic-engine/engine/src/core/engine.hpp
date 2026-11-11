@@ -165,6 +165,7 @@ private:
         std::string monitor, error;
         int modeW = 0, modeH = 0, modeHz = 0;  // the mode asked for when it opened (0 = as it was)
         std::string modeError;                 // why the monitor couldn't be put in that mode
+        bool claimed = false;                  // holds the monitor against other canvases
         // Delay: the last frames drawn, oldest shown. ring.size() = frames held + 1.
         std::vector<TexId> ring;
         int ringW = 0, ringH = 0, head = 0, filled = 0;

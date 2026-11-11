@@ -809,7 +809,19 @@ void Engine::freeRing(DisplayOut& d) {
     d.ringW = d.ringH = d.head = d.filled = 0;
 }
 
+// Monitors in use by display outputs, across all canvases: one window per monitor (two would take
+// turns on top of each other, the screen flashing between them).
+namespace {
+std::mutex monitorsMutex;
+std::map<std::string, std::string> monitorOwners;  // monitor -> "canvas / output"
+}  // namespace
+
 void Engine::closeDisplay(DisplayOut& d) {
+    if (d.claimed) {
+        std::lock_guard l(monitorsMutex);
+        monitorOwners.erase(d.monitor);
+        d.claimed = false;
+    }
     freeRing(d);
     if (d.id) renderer_.destroyDisplay(d.id);
     d.id = 0;
@@ -838,6 +850,12 @@ void Engine::syncDisplays(const Layout& layout, bool retryFailed) {
         d.modeHz = o.modeHz;
         for (auto& [oid, other] : displays_)
             if (other.monitor == o.display) d.error = o.display + " already shows the output " + oid;
+        if (d.error.empty()) {
+            std::lock_guard l(monitorsMutex);
+            auto [it, fresh] = monitorOwners.emplace(o.display, "the canvas \"" + layout.name + "\" (" + o.name + ")");
+            if (fresh) d.claimed = true;
+            else d.error = o.display + " is already used by " + it->second + ": a monitor shows one output";
+        }
         // The mode first: the window and its swap chain take the monitor's size when they open.
         if (d.error.empty() && o.modeWidth > 0 && !renderer_.setDisplayMode(o.display, o.modeWidth, o.modeHeight, o.modeHz, d.modeError))
             std::cerr << "[engine] display output '" << o.id << "': " << d.modeError << "\n";
@@ -845,9 +863,16 @@ void Engine::syncDisplays(const Layout& layout, bool retryFailed) {
         if (!d.id && !retryFailed) std::cerr << "[engine] display output '" << o.id << "': " << d.error << "\n";
         displays_[o.id] = d;
     }
-    json status = json::object();
-    for (auto& [oid, d] : displays_) status[oid] = displayStatusOf(d.monitor, d.error, d.modeError, d.id != 0);
     std::lock_guard l(displayStatusMutex_);
+    json status = json::object();
+    for (auto& [oid, d] : displays_) {
+        // Keeps what reached the monitor (refreshed every 30 frames) while it's the same window.
+        json j = displayStatus_.contains(oid) && d.id && displayStatus_[oid].value("open", false) && displayStatus_[oid].value("monitor", "") == d.monitor
+                     ? displayStatus_[oid] : json::object();
+        j.update(displayStatusOf(d.monitor, d.error, d.modeError, d.id != 0));
+        if (d.modeError.empty()) j.erase("modeError");
+        status[oid] = j;
+    }
     displayStatus_ = status;
 }
 
@@ -1017,6 +1042,10 @@ void Engine::reconcile(const Layout& layout) {
         renderer_.waitIdle();
         for (auto& ch : retired) ch->destroyGpuResources();
         retired.clear();
+        // Frames in flight counted on the streams just closed: they can't arrive now, and that's
+        // the change asked for, not a delivery failure. Not counted either way.
+        std::lock_guard l(syncMutex_);
+        sync_.clear();
     }
     for (auto& o : layout.outputs) {
         if (!o.display.empty()) continue;  // a display output: no stream (see syncDisplays)

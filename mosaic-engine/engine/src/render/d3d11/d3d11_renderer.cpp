@@ -472,8 +472,11 @@ public:
         if (it == displays_.end()) return 0;
         Display& d = it->second;
         pumpDisplayMessages();
-        // Can it take a frame (its last one is on screen)? If not, skip this one rather than wait.
-        if (WaitForSingleObjectEx(d.waitable, 0, FALSE) != WAIT_OBJECT_0) {
+        // Can it take a frame (its last one is on screen)? The canvas is paced by this monitor's
+        // vertical blank, and the previous frame's flip completes a moment after it: wait for that
+        // (up to a quarter of a refresh) rather than skip every other frame. Still busy: skip this one.
+        DWORD graceMs = static_cast<DWORD>(std::clamp(250.0 / std::max(d.hz, 1.0), 1.0, 4.0));
+        if (WaitForSingleObjectEx(d.waitable, graceMs, FALSE) != WAIT_OBJECT_0) {
             ++d.busy;
             return 0;
         }
