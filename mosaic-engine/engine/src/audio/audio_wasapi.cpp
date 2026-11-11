@@ -5,11 +5,16 @@
 #include "audio/audio_device.hpp"
 
 #include <windows.h>
+// WIN32_LEAN_AND_MEAN leaves out the COM/property types the device-name key needs.
+#include <objbase.h>
 
 #include <audioclient.h>
 #include <avrt.h>
-#include <functiondiscoverykeys_devpkey.h>
 #include <mmdeviceapi.h>
+// Define (not just declare) PKEY_Device_FriendlyName in this file, so it links without propsys tricks.
+#include <initguid.h>
+#include <propkeydef.h>
+#include <functiondiscoverykeys_devpkey.h>
 #include <wrl/client.h>
 
 #include <algorithm>
