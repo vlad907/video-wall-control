@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, NEUTRAL_COLOR, type ColorAdjust, type GpuInfo, type Layout, type Output, type Rect } from "./api";
+import { api, NEUTRAL_COLOR, type ColorAdjust, type DisplayMode, type GpuInfo, type Layout, type Output, type Rect } from "./api";
 
 // One colour-correction slider: commits when released (each change re-renders the output).
 function ColorSlider({ label, value, min, max, step, onCommit }: { label: string; value: number; min: number; max: number; step: number; onCommit: (v: number) => void }) {
@@ -154,33 +154,37 @@ export function Inspector({
           </select>
         </label>
         {output.display ? (
-          <small className="muted">Drawn at the monitor's resolution, on every refresh of it. The output resolution below only matters for NDI.</small>
+          <small className="muted wide-note">Drawn at the monitor's resolution, on every refresh of it.</small>
         ) : (
           <TextField label="NDI stream name" value={output.ndiName} onCommit={(ndiName) => onPatch({ ndiName })} />
         )}
       </div>
 
-      <div className="group">
-        <h3>Output resolution</h3>
-        <select
-          value={preset ? resKey : "custom"}
-          onChange={(e) => {
-            const p = RESOLUTIONS.find(([, w, h]) => `${w}x${h}` === e.target.value);
-            if (p) onPatch({ width: p[1], height: p[2] });
-          }}
-        >
-          {RESOLUTIONS.map(([label, w, h]) => (
-            <option key={label} value={`${w}x${h}`}>
-              {label}
-            </option>
-          ))}
-          <option value="custom">Custom</option>
-        </select>
-        <div className="row">
-          <NumberField label="Width" value={output.width} min={16} onCommit={(width) => onPatch({ width })} />
-          <NumberField label="Height" value={output.height} min={16} onCommit={(height) => onPatch({ height })} />
+      {output.display ? (
+        <DisplaySettings output={output} monitor={monitors.find((m) => m.name === output.display)} onPatch={onPatch} />
+      ) : (
+        <div className="group">
+          <h3>Output resolution</h3>
+          <select
+            value={preset ? resKey : "custom"}
+            onChange={(e) => {
+              const p = RESOLUTIONS.find(([, w, h]) => `${w}x${h}` === e.target.value);
+              if (p) onPatch({ width: p[1], height: p[2] });
+            }}
+          >
+            {RESOLUTIONS.map(([label, w, h]) => (
+              <option key={label} value={`${w}x${h}`}>
+                {label}
+              </option>
+            ))}
+            <option value="custom">Custom</option>
+          </select>
+          <div className="row">
+            <NumberField label="Width" value={output.width} min={16} onCommit={(width) => onPatch({ width })} />
+            <NumberField label="Height" value={output.height} min={16} onCommit={(height) => onPatch({ height })} />
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="group">
         <h3>Source region (crop)</h3>
@@ -273,6 +277,46 @@ export function Inspector({
       <button className="danger" onClick={onDelete}>
         Remove output
       </button>
+    </div>
+  );
+}
+
+// A display output's monitor: the mode Windows puts it in, and how long the picture is held back.
+function DisplaySettings({ output, monitor, onPatch }: { output: Output; monitor?: GpuInfo["outputs"][number]; onPatch: (p: Partial<Output>) => void }) {
+  const mode = output.displayMode;
+  const key = (m: DisplayMode) => `${m.width}x${m.height}@${m.refreshHz}`;
+  const modes = monitor?.modes ?? [];
+  const value = mode ? key(mode) : "";
+  return (
+    <div className="group">
+      <h3>Monitor</h3>
+      <label className="field wide" title="Windows' display mode for this monitor. Only the modes the monitor (or the box it's plugged into) offers are listed; NVIDIA Control Panel → Change resolution → Customize adds others.">
+        <span>Resolution</span>
+        <select
+          value={value}
+          onChange={(e) => {
+            const m = modes.find((x) => key(x) === e.target.value);
+            onPatch({ displayMode: m ?? null });
+          }}
+        >
+          <option value="">As Windows has it{monitor ? ` (${monitor.width}×${monitor.height} ${monitor.refreshHz} Hz)` : ""}</option>
+          {modes.map((m) => (
+            <option key={key(m)} value={key(m)}>
+              {m.width}×{m.height} · {m.refreshHz} Hz
+            </option>
+          ))}
+          {mode && !modes.some((m) => key(m) === value) && (
+            <option value={value}>
+              {mode.width}×{mode.height} · {mode.refreshHz} Hz (not offered now)
+            </option>
+          )}
+        </select>
+      </label>
+      <NumberField label="Delay (ms)" value={output.delayMs ?? 0} min={0} onCommit={(v) => onPatch({ delayMs: Math.min(1000, Math.max(0, Math.round(v))) })} />
+      <small className="muted wide-note">
+        Holds this monitor's picture back to line up with walls fed over NDI, which show it later (their receivers' buffer plus the network).
+        Raise it until both show the same frame; up to 1000 ms.
+      </small>
     </div>
   );
 }

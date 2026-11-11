@@ -139,6 +139,8 @@ export interface Output {
   group?: string; // id of the wall group that generated it
   color?: ColorAdjust; // colour correction (absent = neutral)
   display?: string; // a monitor on the canvas's GPU ("\\\\.\\DISPLAY3"): sent there full screen instead of as NDI
+  displayMode?: DisplayMode | null; // display outputs: the mode the monitor is put in (absent = as Windows has it)
+  delayMs?: number; // display outputs: picture held back this long (0..1000), to line up with NDI walls
   enabled: boolean;
 }
 
@@ -335,8 +337,14 @@ export interface GpuInfo {
   index: number;
   name: string;
   memoryMB: number;
-  outputs: { name: string; x: number; y: number; width: number; height: number; refreshHz: number; primary: boolean }[];
+  outputs: { name: string; x: number; y: number; width: number; height: number; refreshHz: number; primary: boolean; modes?: DisplayMode[] }[];
   canvases: string[];
+}
+
+export interface DisplayMode {
+  width: number;
+  height: number;
+  refreshHz: number;
 }
 
 // The canvas this editor window works on ("" = the primary). Sent with every request
@@ -368,6 +376,8 @@ export interface OutputMetrics {
   display?: string;
   open?: boolean;
   error?: string;
+  modeError?: string; // the monitor couldn't be put in the mode asked for
+  heldFrames?: number; // frames held back for the output's delay
   presents?: number;
   busy?: number;
   repeats?: number;

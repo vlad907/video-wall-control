@@ -163,9 +163,16 @@ private:
     struct DisplayOut {
         DisplayId id = 0;  // 0 = couldn't open (error says why; tried again every few seconds)
         std::string monitor, error;
+        int modeW = 0, modeH = 0, modeHz = 0;  // the mode asked for when it opened (0 = as it was)
+        std::string modeError;                 // why the monitor couldn't be put in that mode
+        // Delay: the last frames drawn, oldest shown. ring.size() = frames held + 1.
+        std::vector<TexId> ring;
+        int ringW = 0, ringH = 0, head = 0, filled = 0;
     };
     std::map<std::string, DisplayOut> displays_;  // render thread only
     void syncDisplays(const Layout& layout, bool retryFailed);
+    void closeDisplay(DisplayOut& d);
+    void freeRing(DisplayOut& d);
     std::mutex displayStatusMutex_;
     nlohmann::json displayStatus_ = nlohmann::json::object();  // by output id, for metrics()
     Clock::time_point displayStatsAt_{};

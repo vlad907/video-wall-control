@@ -61,6 +61,29 @@ std::string narrow(const wchar_t* w) {
     return s;
 }
 
+std::wstring widen(const std::string& s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? n - 1 : 0, L'\0');
+    if (n > 1) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    return w;
+}
+
+// The modes Windows offers for a monitor (32-bit colour), largest and fastest first, no repeats.
+std::vector<GpuOutputInfo::Mode> monitorModes(const wchar_t* device) {
+    std::vector<GpuOutputInfo::Mode> modes;
+    DEVMODEW dm{};
+    dm.dmSize = sizeof dm;
+    for (DWORD i = 0; EnumDisplaySettingsW(device, i, &dm); ++i) {
+        if (dm.dmBitsPerPel != 32 || dm.dmDisplayFrequency <= 1) continue;
+        GpuOutputInfo::Mode m{static_cast<int>(dm.dmPelsWidth), static_cast<int>(dm.dmPelsHeight), static_cast<int>(dm.dmDisplayFrequency)};
+        if (std::none_of(modes.begin(), modes.end(), [&](auto& x) { return x.w == m.w && x.h == m.h && x.hz == m.hz; })) modes.push_back(m);
+    }
+    std::sort(modes.begin(), modes.end(), [](auto& a, auto& b) {
+        return a.w * a.h != b.w * b.h ? a.w * a.h > b.w * b.h : a.w != b.w ? a.w > b.w : a.hz > b.hz;
+    });
+    return modes;
+}
+
 ComPtr<ID3DBlob> compile(const std::string& src, const char* entry, const char* target) {
     ComPtr<ID3DBlob> code, errors;
     HRESULT hr = D3DCompile(src.data(), src.size(), "mosaic.hlsl", nullptr, nullptr, entry, target,
@@ -498,6 +521,31 @@ public:
         s.repeats = d.repeats;
         s.error = d.error;
         return s;
+    }
+
+    bool setDisplayMode(const std::string& monitor, int w, int h, int hz, std::string& error) override {
+        std::wstring dev = widen(monitor);
+        DEVMODEW cur{};
+        cur.dmSize = sizeof cur;
+        if (!EnumDisplaySettingsW(dev.c_str(), ENUM_CURRENT_SETTINGS, &cur)) return error = "no monitor " + monitor, false;
+        if (int(cur.dmPelsWidth) == w && int(cur.dmPelsHeight) == h && int(cur.dmDisplayFrequency) == hz) return true;
+        DEVMODEW dm{};
+        dm.dmSize = sizeof dm;
+        dm.dmPelsWidth = static_cast<DWORD>(w);
+        dm.dmPelsHeight = static_cast<DWORD>(h);
+        dm.dmDisplayFrequency = static_cast<DWORD>(hz);
+        dm.dmBitsPerPel = 32;
+        dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY | DM_BITSPERPEL;
+        // Saved in Windows' display settings, so the monitor comes back in this mode after a restart too.
+        LONG r = ChangeDisplaySettingsExW(dev.c_str(), &dm, nullptr, CDS_UPDATEREGISTRY, nullptr);
+        if (r != DISP_CHANGE_SUCCESSFUL) {
+            const char* why = r == DISP_CHANGE_BADMODE ? "the monitor doesn't offer that mode"
+                              : r == DISP_CHANGE_RESTART ? "Windows needs a restart for it"
+                              : r == DISP_CHANGE_NOTUPDATED ? "Windows couldn't save it" : "Windows refused it";
+            error = "can't set " + monitor + " to " + std::to_string(w) + "x" + std::to_string(h) + " " + std::to_string(hz) + " Hz: " + why;
+            return false;
+        }
+        return true;
     }
 
     bool waitDisplayVBlank(DisplayId id) override {
@@ -1021,6 +1069,7 @@ std::vector<GpuInfo> listGpus() {
             DEVMODEW dm{};
             dm.dmSize = sizeof dm;
             if (EnumDisplaySettingsW(od.DeviceName, ENUM_CURRENT_SETTINGS, &dm)) m.refreshHz = dm.dmDisplayFrequency;
+            m.modes = monitorModes(od.DeviceName);
             g.outputs.push_back(m);
         }
         out.push_back(g);

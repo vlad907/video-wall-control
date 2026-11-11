@@ -150,6 +150,8 @@ void to_json(json& j, const OutputConfig& o) {
              {"source", o.source},   {"pixelFormat", toString(o.pixelFormat)}, {"enabled", o.enabled}};
     if (!o.group.empty()) j["group"] = o.group;
     if (!o.display.empty()) j["display"] = o.display;
+    if (o.modeWidth > 0) j["displayMode"] = {{"width", o.modeWidth}, {"height", o.modeHeight}, {"refreshHz", o.modeHz}};
+    if (o.delayMs > 0) j["delayMs"] = o.delayMs;
     if (!o.color.neutral())
         j["color"] = {{"brightness", o.color.brightness}, {"contrast", o.color.contrast}, {"saturation", o.color.saturation}, {"gamma", o.color.gamma},
                       {"red", o.color.red},             {"green", o.color.green},       {"blue", o.color.blue}};
@@ -177,6 +179,17 @@ void patchOutput(OutputConfig& o, const json& p) {
     if (p.contains("pixelFormat")) o.pixelFormat = pixelFormatFrom(p.at("pixelFormat").get<std::string>());
     o.group = p.value("group", o.group);
     o.display = p.value("display", o.display);
+    if (p.contains("displayMode")) {
+        const auto& m = p.at("displayMode");
+        if (m.is_object() && m.value("width", 0) > 0 && m.value("height", 0) > 0) {
+            o.modeWidth = std::clamp(m.value("width", 0), 16, 16384);
+            o.modeHeight = std::clamp(m.value("height", 0), 16, 16384);
+            o.modeHz = std::clamp(m.value("refreshHz", 60), 1, 1000);
+        } else {
+            o.modeWidth = o.modeHeight = o.modeHz = 0;  // null: as Windows has it
+        }
+    }
+    if (p.contains("delayMs")) o.delayMs = std::clamp(p.at("delayMs").get<int>(), 0, 1000);
     if (p.contains("color") && p.at("color").is_object()) {
         const auto& c = p.at("color");  // partial updates allowed
         o.color.brightness = std::clamp(c.value("brightness", o.color.brightness), -0.5f, 0.5f);

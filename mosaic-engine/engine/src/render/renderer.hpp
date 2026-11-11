@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace mosaic {
 
@@ -121,6 +122,13 @@ public:
     // Blocks until the display's monitor's next vertical blank (paces a canvas that drives
     // monitors). False if it can't (then the caller keeps its own timing).
     virtual bool waitDisplayVBlank(DisplayId) { return false; }
+    // Switches the monitor to w x h at hz (one of GpuOutputInfo::modes) before a display opens on
+    // it. True if it's in that mode afterwards.
+    virtual bool setDisplayMode(const std::string& monitor, int w, int h, int hz, std::string& error) {
+        (void)monitor, (void)w, (void)h, (void)hz;
+        error = "changing a monitor's mode needs Windows";
+        return false;
+    }
     // Converts a decoded NV12 / P010 frame (the decoder's texture and array slice, on nativeDevice())
     // into `dst`, a RenderTarget texture, on the GPU's video processor. colorSpace: 0 = BT.709,
     // 1 = BT.2020 PQ (HDR10), 2 = BT.2020 HLG; HDR is mapped to SDR. False if the backend can't.
@@ -147,6 +155,10 @@ struct GpuOutputInfo {
     int x = 0, y = 0, w = 0, h = 0;  // desktop rectangle, physical pixels
     double refreshHz = 0;
     bool primary = false;
+    struct Mode {
+        int w = 0, h = 0, hz = 0;
+    };
+    std::vector<Mode> modes;  // what the monitor can be set to, largest first
 };
 
 // A GPU this PC has (hardware only), in the order createRenderer() numbers them.

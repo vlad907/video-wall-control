@@ -1300,8 +1300,12 @@ struct HttpApi::Impl {
             json list = json::array();
             for (auto& g : canvases.gpus()) {
                 json outs = json::array();
-                for (auto& o : g.outputs)
-                    outs.push_back({{"name", o.name}, {"x", o.x}, {"y", o.y}, {"width", o.w}, {"height", o.h}, {"refreshHz", o.refreshHz}, {"primary", o.primary}});
+                for (auto& o : g.outputs) {
+                    json modes = json::array();
+                    for (auto& m : o.modes) modes.push_back({{"width", m.w}, {"height", m.h}, {"refreshHz", m.hz}});
+                    outs.push_back({{"name", o.name}, {"x", o.x}, {"y", o.y}, {"width", o.w}, {"height", o.h}, {"refreshHz", o.refreshHz}, {"primary", o.primary},
+                                    {"modes", modes}});
+                }
                 json canvasesOn = json::array();
                 for (auto& [id, run] : canvases.all())
                     if (run && run->gpu == g.index) canvasesOn.push_back(id);

@@ -53,8 +53,12 @@ motion if unsure.
 3. `GET /api/metrics?canvas=canvas-N` → that output: `open: true`,
    `fps` ≈ the refresh rate (or half for a 30 fps canvas), `busy` and `repeats` not climbing fast,
    no `error`.
-4. Windows' display settings: each wall's monitors must be **extended** (not duplicated), at the
-   resolution you want; the output is drawn at whatever mode the monitor is in.
+4. Windows' display settings: each wall's monitors must be **extended** (not duplicated). The output is
+   drawn at whatever mode the monitor is in; to change it, pick one under the output's **Monitor →
+   Resolution** (the modes the monitor offers; the engine sets it in Windows and reopens the output).
+5. **Delay** (same section): a display output shows a frame almost at once, a wall fed over NDI a few
+   hundred ms later. Raise the delay on the display output until both show the same frame
+   (`/api/metrics` → `heldFrames`).
 
 ## 5. Capture card
 

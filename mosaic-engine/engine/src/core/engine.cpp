@@ -57,6 +57,12 @@ std::set<std::string> neededSources(const Layout& l) {
     return needed;
 }
 
+static nlohmann::json displayStatusOf(const std::string& monitor, const std::string& error, const std::string& modeError, bool open) {
+    nlohmann::json j = {{"monitor", monitor}, {"error", error}, {"open", open}};
+    if (!modeError.empty()) j["modeError"] = modeError;
+    return j;
+}
+
 Uniforms makeUniforms(float dx, float dy, float dw, float dh) {
     Uniforms u{};
     u.dstRect[0] = dx;
@@ -171,8 +177,7 @@ void Engine::loop() {
     }
     // Display windows belong to this thread: closed here (Windows won't let another thread).
     try {
-        for (auto& [oid, d] : displays_)
-            if (d.id) renderer_.destroyDisplay(d.id);
+        for (auto& [oid, d] : displays_) closeDisplay(d);
     } catch (...) {
     }
     displays_.clear();
@@ -387,29 +392,60 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
     for (auto& [oid, d] : displays_) {
         const OutputConfig* o = layout.findOutput(oid);
         if (!o || !o->enabled || !d.id) continue;
-        TexId target = renderer_.displayTarget(d.id);
-        if (!target) continue;  // the monitor hasn't shown the last frame yet: skipped (counted)
         DisplayStats st = renderer_.displayStats(d.id);
         TexId src = 0;
         Uniforms u = mapping(*o, st.width, st.height, src);
-        renderer_.beginPass(target, layout.canvas.background.data());
+        outputDraws_[oid] = {src, u};
+        // Delay: frames held back = delay x frame rate, at most 120 and ~2 GB of GPU memory.
+        int64_t frameBytes = std::max<int64_t>(1, int64_t(st.width) * st.height * 4);
+        int held = std::clamp(static_cast<int>(std::lround(o->delayMs * targetFps_ / 1000.0)), 0,
+                              static_cast<int>(std::min<int64_t>(120, (int64_t(2) << 30) / frameBytes)));
+        if (held == 0) {
+            if (!d.ring.empty()) freeRing(d);
+            TexId target = renderer_.displayTarget(d.id);
+            if (!target) continue;  // the monitor hasn't shown the last frame yet: skipped (counted)
+            renderer_.beginPass(target, layout.canvas.background.data());
+            renderer_.drawTextured(src, u);
+            renderer_.endPass();
+            renderer_.presentDisplay(d.id);
+            continue;
+        }
+        if (int(d.ring.size()) != held + 1 || d.ringW != st.width || d.ringH != st.height) {
+            freeRing(d);
+            for (int i = 0; i <= held; ++i) d.ring.push_back(renderer_.createTexture(st.width, st.height, TexUsage::RenderTarget));
+            d.ringW = st.width;
+            d.ringH = st.height;
+        }
+        // Every frame goes into the ring, shown or not, so the delay stays the same.
+        renderer_.beginPass(d.ring[d.head], layout.canvas.background.data());
         renderer_.drawTextured(src, u);
         renderer_.endPass();
+        int size = static_cast<int>(d.ring.size());
+        d.filled = std::min(d.filled + 1, size);
+        int oldest = d.filled == size ? (d.head + 1) % size : 0;  // until it's full: the first frame held
+        d.head = (d.head + 1) % size;
+        TexId target = renderer_.displayTarget(d.id);
+        if (!target) continue;
+        Uniforms copy = makeUniforms(0, 0, float(st.width), float(st.height));
+        copy.crop[2] = copy.sizes[0] = float(st.width);
+        copy.crop[3] = copy.sizes[1] = float(st.height);
+        renderer_.beginPass(target, nullptr);
+        renderer_.drawTextured(d.ring[oldest], copy);
+        renderer_.endPass();
         renderer_.presentDisplay(d.id);
-        outputDraws_[oid] = {src, u};
     }
     if (frameId % 30 == 0 && !displays_.empty()) {
         // What reached each monitor, for metrics() (the renderer's displays are render-thread only).
         json status = json::object();
         double secs = std::chrono::duration<double>(tick - displayStatsAt_).count();
         for (auto& [oid, d] : displays_) {
-            json j = {{"monitor", d.monitor}, {"error", d.error}, {"open", d.id != 0}};
+            json j = displayStatusOf(d.monitor, d.error, d.modeError, d.id != 0);
             if (d.id) {
                 DisplayStats st = renderer_.displayStats(d.id);
                 double fps = secs > 0 && displayPresents_.count(oid) ? (st.presents - displayPresents_[oid]) / secs : 0;
                 displayPresents_[oid] = st.presents;
                 j.update({{"width", st.width}, {"height", st.height}, {"refreshHz", st.refreshHz}, {"fps", fps}, {"presents", st.presents},
-                          {"busy", st.busy}, {"repeats", st.repeats}});
+                          {"busy", st.busy}, {"repeats", st.repeats}, {"heldFrames", d.ring.empty() ? 0 : int(d.ring.size()) - 1}});
                 if (!st.error.empty()) j["error"] = st.error;
             }
             status[oid] = j;
@@ -767,29 +803,50 @@ void Engine::destroySource(SourceState& s) {
 
 // Display outputs: a window opened on the monitor an output names, closed when the output goes,
 // is turned off or names another monitor. One that couldn't open is tried again when asked.
+void Engine::freeRing(DisplayOut& d) {
+    for (TexId t : d.ring) renderer_.destroyTexture(t);
+    d.ring.clear();
+    d.ringW = d.ringH = d.head = d.filled = 0;
+}
+
+void Engine::closeDisplay(DisplayOut& d) {
+    freeRing(d);
+    if (d.id) renderer_.destroyDisplay(d.id);
+    d.id = 0;
+}
+
+// Display outputs: a window opened on the monitor an output names, closed when the output goes,
+// is turned off, names another monitor or another mode. One that couldn't open is tried again when asked.
 void Engine::syncDisplays(const Layout& layout, bool retryFailed) {
     for (auto it = displays_.begin(); it != displays_.end();) {
         const OutputConfig* o = layout.findOutput(it->first);
-        bool keep = o && o->enabled && o->display == it->second.monitor && (it->second.id || !retryFailed);
+        bool keep = o && o->enabled && o->display == it->second.monitor && o->modeWidth == it->second.modeW && o->modeHeight == it->second.modeH &&
+                    o->modeHz == it->second.modeHz && (it->second.id || !retryFailed);
         if (keep) {
             ++it;
             continue;
         }
-        if (it->second.id) renderer_.destroyDisplay(it->second.id);
+        closeDisplay(it->second);
         it = displays_.erase(it);
     }
     for (auto& o : layout.outputs) {
         if (o.display.empty() || !o.enabled || displays_.count(o.id)) continue;
         DisplayOut d;
         d.monitor = o.display;
+        d.modeW = o.modeWidth;
+        d.modeH = o.modeHeight;
+        d.modeHz = o.modeHz;
         for (auto& [oid, other] : displays_)
             if (other.monitor == o.display) d.error = o.display + " already shows the output " + oid;
+        // The mode first: the window and its swap chain take the monitor's size when they open.
+        if (d.error.empty() && o.modeWidth > 0 && !renderer_.setDisplayMode(o.display, o.modeWidth, o.modeHeight, o.modeHz, d.modeError))
+            std::cerr << "[engine] display output '" << o.id << "': " << d.modeError << "\n";
         if (d.error.empty()) d.id = renderer_.createDisplay(o.display, d.error);
         if (!d.id && !retryFailed) std::cerr << "[engine] display output '" << o.id << "': " << d.error << "\n";
         displays_[o.id] = d;
     }
     json status = json::object();
-    for (auto& [oid, d] : displays_) status[oid] = {{"monitor", d.monitor}, {"error", d.error}, {"open", d.id != 0}};
+    for (auto& [oid, d] : displays_) status[oid] = displayStatusOf(d.monitor, d.error, d.modeError, d.id != 0);
     std::lock_guard l(displayStatusMutex_);
     displayStatus_ = status;
 }

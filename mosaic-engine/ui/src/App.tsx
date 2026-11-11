@@ -510,7 +510,7 @@ export function App() {
             </div>
             {(metrics?.outputs ?? []).map((o) => {
               const isDisplay = o.sink === "display";
-              const bad = o.enabled && (isDisplay ? !o.open || !!o.error : o.fps < (metrics?.engine.targetFps ?? 60) * 0.97 || o.droppedNoBuffer + o.droppedQueue > 0);
+              const bad = o.enabled && (isDisplay ? !o.open || !!o.error || !!o.modeError : o.fps < (metrics?.engine.targetFps ?? 60) * 0.97 || o.droppedNoBuffer + o.droppedQueue > 0);
               return (
                 <div key={o.id} className="list-item" onClick={() => selectOutput(o.id)}>
                   <span className={`dot ${!o.enabled ? "off" : bad ? "warn" : "on"}`} />
@@ -518,9 +518,9 @@ export function App() {
                     <div>{o.name}</div>
                     <small>
                       {isDisplay
-                        ? o.error
-                          ? `monitor ${o.display ?? ""}: ${o.error}`
-                          : `${(o.fps ?? 0).toFixed(1)} fps on ${o.display ?? "a monitor"}`
+                        ? o.error || o.modeError
+                          ? `monitor ${o.display ?? ""}: ${o.error || o.modeError}`
+                          : `${(o.fps ?? 0).toFixed(1)} fps on ${o.display ?? "a monitor"}${o.heldFrames ? ` · ${o.heldFrames} frames held` : ""}`
                         : `${o.fps.toFixed(1)} fps · ${o.connections >= 0 ? `${o.connections} receiver(s)` : o.sink}`}
                     </small>
                   </div>

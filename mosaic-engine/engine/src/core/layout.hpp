@@ -75,6 +75,10 @@ struct OutputConfig {
     // HDMI to a video wall or its controller) instead of out as an NDI stream. Drawn at the
     // monitor's resolution, timed to its refresh.
     std::string display;
+    // Display outputs: the mode to put the monitor in (0 x 0 = leave it as Windows has it), and how
+    // long to hold the picture back (to line up with walls fed over NDI, which show it later).
+    int modeWidth = 0, modeHeight = 0, modeHz = 0;
+    int delayMs = 0;  // 0..1000
     ColorAdjust color;
     bool enabled = true;
 };

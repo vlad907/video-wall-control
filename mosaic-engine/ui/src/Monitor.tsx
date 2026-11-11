@@ -96,7 +96,7 @@ export function MonitorView({ metrics }: { metrics: Metrics | null }) {
                   <td>{o.display}</td>
                   <td>display</td>
                   <td>–</td>
-                  <td className={o.error ? "warn" : ""}>{o.error ? o.error : fmt(o.fps ?? NaN)}</td>
+                  <td className={o.error || o.modeError ? "warn" : ""}>{o.error || o.modeError || fmt(o.fps ?? NaN)}</td>
                   <td>{o.presents ?? 0}</td>
                   <td className={o.busy ? "warn" : ""}>{o.busy ?? 0}</td>
                   <td>–</td>
