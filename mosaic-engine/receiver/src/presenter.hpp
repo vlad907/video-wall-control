@@ -1,6 +1,7 @@
 // Puts frames on screen: one full-screen window per monitor, each showing one or more tiles
-// (a tile is a stream drawn into a rectangle of the window). All windows are presented in
-// the same refresh. Windows: Direct3D 11 flip-model swap chains. Elsewhere / tests: headless.
+// (a tile is a stream drawn into a rectangle of the window). Only windows whose picture changes
+// are drawn and presented (a flip-model window keeps showing its last picture), so a refresh
+// costs as many windows as change in it. Windows: Direct3D 11. Elsewhere / tests: headless.
 #pragma once
 
 #include <chrono>
@@ -23,6 +24,9 @@ struct PresentTiming {
     uint32_t syncPresentCount = 0;  // the newest present that reached the screen ...
     uint32_t syncRefreshCount = 0;  // ... at this vertical refresh of the monitor ...
     int64_t syncMicros = 0;         // ... at this time (microseconds, one clock for all windows)
+    int64_t refreshMicros = 0;      // the refresh (vertical blank) the loop pass that last presented this window started on ...
+    int64_t submitMicros = 0;       // ... and when it presented it (same clock)
+    bool presented = false;         // presented in the last present() call
 };
 
 struct TileDraw {
@@ -50,12 +54,15 @@ public:
     // Uploads new pictures (one per stream at most), each becoming its stream's newest; the
     // copies run in parallel.
     virtual void upload(const std::vector<Upload>& frames) = 0;
-    // Draws every window and presents them all. A window with flash[w] set is drawn plain white
-    // instead (flash test: filmed, it shows at a glance how far apart the displays are).
-    virtual void present(const std::vector<TileDraw>& tiles, const std::vector<bool>& flash) = 0;
+    // Draws and presents the windows with which[w] set. A window with flash[w] set is drawn plain
+    // white instead (flash test: filmed, it shows at a glance how far apart the displays are).
+    // A window whose swap chain can't take a frame yet is skipped (timings()[w].presented false):
+    // present it again next refresh. Never blocks for more than a few milliseconds.
+    virtual void present(const std::vector<TileDraw>& tiles, const std::vector<bool>& flash, const std::vector<bool>& which) = 0;
     // Per window, after present(): what reached the screen when.
     virtual std::vector<PresentTiming> timings() = 0;
-    // Blocks until the next display refresh. Also handles window messages.
+    // Blocks until the next display refresh, without taking a frame from any swap chain. Also
+    // handles window messages.
     virtual void waitForRefresh() = 0;
     virtual double refreshHz() const = 0;
 };
@@ -66,8 +73,9 @@ std::string localTime(std::chrono::system_clock::time_point t = std::chrono::sys
 
 // Headless: keeps refresh timing (60 Hz) but draws nothing. Used by --self-test and on macOS.
 // `extraLatency`: per window, refreshes later it "reaches the screen" (simulates a display that
-// Windows composites, for testing sync compensation).
-std::unique_ptr<Presenter> createHeadlessPresenter(double hz = 60.0, std::vector<int> extraLatency = {});
+// Windows composites, for testing sync compensation). `msPerWindow`: time each window's present
+// takes (simulates a slow GPU: a refresh with every window presented runs over).
+std::unique_ptr<Presenter> createHeadlessPresenter(double hz = 60.0, std::vector<int> extraLatency = {}, double msPerWindow = 0);
 // Direct3D 11 on Windows; nullptr elsewhere.
 std::unique_ptr<Presenter> createD3D11Presenter(bool softwareGpu, std::string& error);
 

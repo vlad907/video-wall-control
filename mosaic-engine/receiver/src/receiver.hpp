@@ -112,16 +112,16 @@ private:
     // On-screen timing per window (monitor), from the presenter's statistics: when each new
     // picture really appeared, so displays can be compared in milliseconds.
     struct Pending {
-        uint32_t present = 0;  // present number
-        uint64_t frameId = 0;  // the new picture it showed
-        int64_t heldUs = 0;    // how long compensation held it back
+        uint32_t present = 0;   // present number
+        uint64_t frameId = 0;   // the new picture it showed (0 = not a new one)
+        int64_t dueUs = 0;      // the first refresh after we presented it (the presenter's clock)
     };
     struct WindowTrack {
-        std::deque<Pending> pending;  // new pictures only
+        std::deque<Pending> pending;  // our presents not yet seen on screen
         uint64_t lastFrameId = 0, frameId = 0;  // frame id on screen (after any hold-back)
-        uint32_t lastSyncPresent = 0, lastSyncRefresh = 0;
-        bool seen = false, valid = false;
-        uint64_t missed = 0;        // refreshes the monitor showed without a new present from us
+        bool valid = false;
+        std::deque<double> lateUs;  // per present: on screen minus the refresh it was presented after, us (recent)
+        uint64_t missed = 0;        // refreshes the monitor showed our pictures later than it usually does
         std::deque<double> offsets;  // ms behind the earliest display, per frame (recent), as seen
         std::deque<double> lag;      // the same without our hold-back: how late Windows shows this display
         int hold = 0;                // refreshes this display is held back (compensation)
@@ -129,6 +129,14 @@ private:
     };
     std::vector<WindowTrack> windows_;
     std::vector<int> windowStream_;  // per window: the stream of its first tile
+    std::vector<uint64_t> drawn_;    // per window: what its last present showed (pictures, flash)
+    std::vector<uint64_t> tileGen_, tileWant_;  // per tile: picture (gen) on screen; wanted this refresh
+    std::vector<bool> tileSkipped_;             // per tile: kept its picture last refresh instead of a stale one
+    std::vector<Clock::time_point> busySince_;  // per window: wanted a present its swap chain couldn't take yet, since
+    uint64_t windowPresentCount_ = 0, holdChanges_ = 0;
+    double windowPresentsPerS_ = 0;  // window presents per second (all windows)
+    double msPerWindow_ = 0;         // one window's present (draw + present), smoothed
+    uint64_t deferred_ = 0;          // held-back displays' presents put off a refresh to keep within it
     struct ShownAt {
         std::vector<int64_t> at, lag;  // per window, us: when it appeared; minus our hold-back (-1 = not yet)
     };
@@ -142,7 +150,7 @@ private:
     // Freezes: the screens kept the same picture for a while. Each is logged with what held it
     // up, so it can be matched against what else the PC was doing at that time.
     //   network  a stream sent nothing for a while (the loop kept presenting its last frame)
-    //   wait     Windows / the GPU didn't take a new frame (waiting for the swap chains)
+    //   wait     Windows / the GPU didn't take a new frame (a swap chain still busy, or the refresh wait)
     //   upload   copying the pictures to the GPU took too long
     //   present  drawing / presenting took too long (GPU or driver busy)
     //   screen   presented on time, but the monitors skipped refreshes anyway

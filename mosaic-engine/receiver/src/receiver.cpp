@@ -190,6 +190,9 @@ void Receiver::apply(const ReceiverConfig& c) {
     if (!presenter_->configure(windows, error)) std::cerr << "[receiver] " << error << "\n";
     windows_.assign(windows.size(), {});
     windowStream_.assign(windows.size(), -1);
+    drawn_.assign(windows.size(), UINT64_MAX);  // every window is drawn once
+    tileGen_.clear();
+    busySince_.assign(windows.size(), {});
     for (auto& t : tiles_)
         if (windowStream_[t.window] < 0) windowStream_[t.window] = t.stream;
     shownAt_.clear();
@@ -284,45 +287,108 @@ void Receiver::frame() {
     // long ago (half a refresh of slack absorbs loop jitter).
     const auto period = std::chrono::duration<double>(1.0 / presenter_->refreshHz());
     std::vector<TileDraw> draw = tiles_;
-    for (auto& t : draw) {
-        if (t.stream < 0 || t.window >= static_cast<int>(windows_.size())) continue;
-        const auto& s = streams_[t.stream];
+    // What each window would show (its tiles' pictures): only windows where that changed are
+    // drawn and presented, so a refresh costs only the displays that change in it.
+    std::vector<uint64_t> look(windows_.size(), 0);
+    auto mix = [](uint64_t h, uint64_t v) { return (h ^ v) * 0x100000001b3ULL; };
+    if (tileGen_.size() != draw.size()) tileGen_.assign(draw.size(), 0), tileSkipped_.assign(draw.size(), false);
+    for (size_t k = 0; k < draw.size(); ++k) {
+        auto& t = draw[k];
+        if (t.window >= static_cast<int>(windows_.size())) continue;
         auto& win = windows_[t.window];
-        if (s.history.empty()) continue;
-        const Stream::Picture* pick = &s.history.front();
-        auto due = now - std::chrono::duration_cast<Clock::duration>(period * (win.hold - 0.5));
-        for (auto& p : s.history)
-            if (win.hold == 0 || p.at <= due) pick = &p;
-        t.back = static_cast<int>(s.gen - pick->gen);
-        if (windowStream_[t.window] == t.stream) win.frameId = pick->frameId;
+        uint64_t gen = 0;
+        if (t.stream >= 0 && !streams_[t.stream].history.empty()) {
+            const auto& s = streams_[t.stream];
+            const auto holdBack = std::chrono::duration_cast<Clock::duration>(period * (win.hold - 0.5));
+            size_t pick = 0;
+            for (size_t j = 0; j < s.history.size(); ++j)
+                if (win.hold == 0 || s.history[j].at + holdBack <= now) pick = j;
+            // A held display more than a refresh behind (the loop fell behind) with a newer
+            // picture due by the next refresh keeps what it shows and takes the newer one then,
+            // instead of presenting a stale picture alongside the others' new one: presenting
+            // every display in one refresh is what made the loop fall behind. Once only: a display
+            // skipped last refresh takes what's due now.
+            bool skip = false;
+            if (win.hold > 0 && !tileSkipped_[k] && pick + 1 < s.history.size() && now - (s.history[pick].at + holdBack) > period &&
+                s.history[pick + 1].at + holdBack <= now + period) {
+                auto shown = std::find_if(s.history.begin(), s.history.end(), [&](auto& p) { return p.gen == tileGen_[k]; });
+                if (shown != s.history.end()) pick = static_cast<size_t>(shown - s.history.begin()), skip = true;
+            }
+            tileSkipped_[k] = skip;
+            t.back = static_cast<int>(s.gen - s.history[pick].gen);
+            gen = s.history[pick].gen;
+            if (windowStream_[t.window] == t.stream) win.frameId = s.history[pick].frameId;
+        }
+        look[t.window] = mix(mix(look[t.window], static_cast<uint64_t>(t.stream + 1)), gen);
+        tileWant_.resize(draw.size());
+        tileWant_[k] = gen;
     }
     // Flash test: a window goes white while it shows an engine frame divisible by 30.
     std::vector<bool> flash(windows_.size(), false);
     for (size_t w = 0; w < windows_.size() && active_.flashTest; ++w) flash[w] = windows_[w].frameId && windows_[w].frameId % 30 == 0;
+    std::vector<bool> which(windows_.size(), false);
+    for (size_t w = 0; w < windows_.size(); ++w) {
+        look[w] = mix(look[w], flash[w] ? 1 : 0);
+        which[w] = look[w] != drawn_[w];
+    }
+    // Budget: if presenting every window wanted would run past this refresh (so the next one is
+    // missed and every display stutters), the held-back displays wait one refresh instead.
     auto presentStart = Clock::now();
-    presenter_->present(draw, flash);
+    {
+        double usedMs = std::chrono::duration<double, std::milli>(presentStart - now).count();
+        int wanted = static_cast<int>(std::count(which.begin(), which.end(), true));
+        if (wanted > 1 && usedMs + wanted * msPerWindow_ > 0.8 * 1000.0 / presenter_->refreshHz()) {
+            for (size_t w = 0; w < windows_.size(); ++w)
+                if (which[w] && windows_[w].hold > 0 && std::count(which.begin(), which.end(), true) > 1) which[w] = false, ++deferred_;
+        }
+    }
+    presenter_->present(draw, flash, which);
     auto presentedAt = Clock::now();
     presentMs_ = std::chrono::duration<double, std::milli>(presentedAt - presentStart).count();
     screenSkipped_ = 0;
-    trackTiming(presenter_->timings());
-
-    // Loop freeze: this present came 2.5 refreshes or more after the last one. The slowest step
-    // (if it took over a refresh) is what held it up.
+    auto timings = presenter_->timings();
+    {
+        int n = 0;
+        for (size_t w = 0; w < timings.size(); ++w) n += timings[w].presented ? 1 : 0;
+        if (n) msPerWindow_ = msPerWindow_ ? 0.9 * msPerWindow_ + 0.1 * (presentMs_ / n) : presentMs_ / n;  // what one window's present costs, smoothed
+    }
     const double periodMs = 1000.0 / presenter_->refreshHz();
+    for (size_t w = 0; w < windows_.size(); ++w) {
+        if (!which[w]) continue;
+        bool done = w < timings.size() && timings[w].presented;
+        if (!done) {
+            if (busySince_[w] == Clock::time_point{}) busySince_[w] = presentStart;
+            continue;
+        }
+        drawn_[w] = look[w];
+        for (size_t k = 0; k < draw.size(); ++k)
+            if (draw[k].window == static_cast<int>(w)) tileGen_[k] = tileWant_[k];
+        if (busySince_[w] != Clock::time_point{}) {
+            // Its swap chain didn't take the new picture for a while (Windows / the GPU behind on that monitor).
+            double ms = std::chrono::duration<double, std::milli>(presentedAt - busySince_[w]).count() + periodMs;
+            if (ms >= 2.5 * periodMs) hiccup("wait", ms, "window " + std::to_string(w) + "'s screen didn't take a new picture for " + std::to_string(std::lround(ms)) + " ms");
+            busySince_[w] = {};
+        }
+        ++windowPresentCount_;
+    }
+    trackTiming(timings);
+
+    // Loop freeze: this pass (one per refresh, presenting whatever changed) came 2.5 refreshes or
+    // more after the last one. The slowest step (if it took over a refresh) is what held it up.
     if (lastPresent_ != Clock::time_point{}) {
         double gap = std::chrono::duration<double, std::milli>(presentedAt - lastPresent_).count();
         if (gap >= 2.5 * periodMs) {
             std::pair<double, const char*> steps[] = {{waitMs_, "wait"}, {lastUploadMs_, "upload"}, {presentMs_, "present"}};
             auto slowest = *std::max_element(std::begin(steps), std::end(steps));
             char detail[160];
-            std::snprintf(detail, sizeof detail, "no present for %.0f ms (wait %.0f ms, upload %.0f ms, present %.0f ms)", gap, waitMs_, lastUploadMs_,
-                          presentMs_);
+            std::snprintf(detail, sizeof detail, "no pass for %.0f ms (refresh wait %.0f ms, upload %.0f ms, present %.0f ms)", gap, waitMs_,
+                          lastUploadMs_, presentMs_);
             hiccup(slowest.first > periodMs ? slowest.second : "loop", gap, detail);
             lastLoopHiccup_ = presentedAt;
-        } else if (screenSkipped_ >= 3 && presentedAt - lastLoopHiccup_ > std::chrono::milliseconds(500)) {
+        } else if (screenSkipped_ >= 2 && presentedAt - lastLoopHiccup_ > std::chrono::milliseconds(500)) {
             // The monitors' statistics trail by a few presents, so skips right after a loop freeze are that freeze.
             hiccup("screen", screenSkipped_ * periodMs,
-                   "monitors skipped " + std::to_string(screenSkipped_) + " refreshes though the receiver presented on time");
+                   "a monitor showed a picture " + std::to_string(screenSkipped_) + " refreshes later than usual though the receiver presented on time");
         }
     }
     lastPresent_ = presentedAt;
@@ -333,6 +399,8 @@ void Receiver::frame() {
     if (windowShown_.size() != streams_.size()) windowShown_.assign(streams_.size(), 0), streamFps_.assign(streams_.size(), 0);
     if (span >= 1.0) {
         presentFps_ = windowPresents_ / span;
+        windowPresentsPerS_ = windowPresentCount_ / span;
+        windowPresentCount_ = 0;
         uploadMs_ = windowUploadMs_ / static_cast<double>(windowPresents_);
         for (size_t i = 0; i < streams_.size(); ++i) {
             streamFps_[i] = (streams_[i].shown - windowShown_[i]) / span;
@@ -396,6 +464,10 @@ void Receiver::frame() {
                {"presenter", presenter_->name()},
                {"refreshHz", presenter_->refreshHz()},
                {"presentFps", presentFps_},
+               {"windowPresentsPerS", windowPresentsPerS_},
+               {"compensationChanges", holdChanges_},
+               {"presentMsPerWindow", msPerWindow_},
+               {"heldDeferred", deferred_},
                {"timing", timingOk ? "measured" : "not available"},
                {"screenSpreadMs", avgOf(spreads_)},
                {"screenSpreadMaxMs", maxOf(spreads_)},
@@ -419,10 +491,11 @@ void Receiver::frame() {
                {"displays", displays}};
 }
 
-// Matches each window's "this present reached the screen at T" with the frame that present
-// showed. A frame seen on several windows gives their offsets: how much later than the first
-// display each one showed it, in milliseconds. Also counts refreshes a monitor showed without a
-// new present from us (the loop fell behind: a repeated frame, i.e. stutter).
+// Matches each window's "this present reached the screen at T" with the present it was. How
+// long after we presented it Windows showed it is that display's lateness (our hold-back isn't
+// in it); a new picture seen on several windows gives their offsets: how much later than the
+// first display each one showed it, in milliseconds. A present shown later than that display
+// usually shows them counts as skipped refreshes (the monitor or Windows fell behind).
 void Receiver::trackTiming(const std::vector<PresentTiming>& timings) {
     const size_t keep = static_cast<size_t>(presenter_->refreshHz() * 10);  // ~10 s
     uint64_t newest = 0;
@@ -431,31 +504,44 @@ void Receiver::trackTiming(const std::vector<PresentTiming>& timings) {
         const auto& t = timings[w];
         uint64_t id = tr.frameId;
         newest = std::max(newest, id);
-        if (id && id != tr.lastFrameId) {
-            tr.pending.push_back({t.presentCount, id, static_cast<int64_t>(tr.hold * 1e6 / presenter_->refreshHz())});
+        if (t.presented) {
+            // Every present is remembered with when it was made; a new picture also gets timed across windows.
+            // The first refresh after the present: the pass's refresh plus however many whole
+            // refreshes had gone by when it was made (one, unless the pass overran).
+            const double periodUs = 1e6 / presenter_->refreshHz();
+            double behind = std::max(1.0, std::ceil((t.submitMicros - t.refreshMicros) / periodUs));
+            tr.pending.push_back({t.presentCount, id && id != tr.lastFrameId ? id : 0, t.refreshMicros + static_cast<int64_t>(behind * periodUs)});
             if (tr.pending.size() > 32) tr.pending.pop_front();
-            tr.lastFrameId = id;
+            if (id) tr.lastFrameId = id;
         }
         tr.valid = t.valid;
         if (!t.valid) continue;
-        if (tr.seen) {
-            uint32_t presents = t.syncPresentCount - tr.lastSyncPresent;
-            uint32_t refreshes = t.syncRefreshCount - tr.lastSyncRefresh;
-            if (presents > 0 && refreshes > presents && refreshes - presents < 600) {
-                tr.missed += refreshes - presents;
-                screenSkipped_ = std::max(screenSkipped_, refreshes - presents);
-            }
-        }
-        tr.seen = true;
-        tr.lastSyncPresent = t.syncPresentCount;
-        tr.lastSyncRefresh = t.syncRefreshCount;
+        const double periodUs = 1e6 / presenter_->refreshHz();
         while (!tr.pending.empty() && static_cast<int32_t>(tr.pending.front().present - t.syncPresentCount) <= 0) {
             const auto& p = tr.pending.front();
             if (p.present == t.syncPresentCount) {
-                auto& sa = shownAt_[p.frameId];
-                if (sa.at.empty()) sa.at.assign(windows_.size(), -1), sa.lag.assign(windows_.size(), -1);
-                sa.at[w] = t.syncMicros;
-                sa.lag[w] = t.syncMicros - p.heldUs;
+                // How late Windows showed it: on screen minus the first refresh after we presented it
+                // (0 normally; a refresh or more for a display Windows composites). Our hold-back
+                // isn't in it (a held display is presented later, not shown later), and neither is
+                // where in the refresh the loop got round to presenting it.
+                int64_t lateUs = t.syncMicros - p.dueUs;
+                if (tr.lateUs.size() >= 20) {
+                    double usual = median(tr.lateUs);
+                    double extra = (lateUs - usual) / periodUs;
+                    if (extra >= 1.5) {
+                        auto skipped = static_cast<uint32_t>(std::lround(extra));
+                        tr.missed += skipped;
+                        screenSkipped_ = std::max(screenSkipped_, skipped);
+                    }
+                }
+                tr.lateUs.push_back(static_cast<double>(lateUs));
+                if (tr.lateUs.size() > 180) tr.lateUs.pop_front();
+                if (p.frameId) {
+                    auto& sa = shownAt_[p.frameId];
+                    if (sa.at.empty()) sa.at.assign(windows_.size(), -1), sa.lag.assign(windows_.size(), -1);
+                    sa.at[w] = t.syncMicros;
+                    sa.lag[w] = lateUs;
+                }
             }
             tr.pending.pop_front();
         }
@@ -556,6 +642,7 @@ void Receiver::updateCompensation() {
             std::cerr << "[receiver] window " << w << ": shown " << latest - late[w] << " ms sooner than the latest; holding it back " << want << " refresh(es)\n";
             tr.hold = want;
             tr.wantCount = 0;
+            ++holdChanges_;
         }
     }
 }

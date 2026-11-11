@@ -47,13 +47,13 @@ and each endpoint chooses its player, so a PC can switch back at any time.
    happened in the last minute and the latest five; `logs\mosaic-receiver.log` on the PC has every one, with
    its local time (to match against whatever else the PC was doing) and what held it up:
    - **network**: a stream sent nothing for over 100 ms (the receiver kept showing its last frame)
-   - **wait**: Windows or the GPU didn't take a new frame in time
+   - **wait**: Windows or the GPU didn't take a new frame in time (the detail names the window)
    - **upload**: copying the pictures to the GPU was slow
    - **present**: drawing was slow (GPU or driver busy)
-   - **screen**: the receiver presented on time, but the monitors still skipped 3+ refreshes
+   - **screen**: the receiver presented on time, but a monitor showed it 2+ refreshes later than it usually does
    - **loop**: none of those steps was slow; the receiver's thread didn't get to run (CPU busy)
 
-   A loop freeze is a present 2.5 refreshes or more after the previous one. `/status` lists them as
+   A loop freeze is a loop pass 2.5 refreshes or more after the previous one. `/status` lists them as
    `freezes`, `freezesLastMinute` and `freezesTotal`.
 
    **PC health, to explain the freezes.** The dashboard on each receiving PC also reports:
@@ -134,8 +134,8 @@ colour conversion: it's uploaded as is and converted in the shader.
 
 **One PC (phase 1).** Every display refresh, the render thread:
 1. Picks the newest frame id that **every** stream on this PC has.
-2. Draws that frame on all displays.
-3. Presents all swap chains together.
+2. Draws that frame on the displays whose picture changed (see "The render loop" below).
+3. Presents those swap chains together.
 
 A stream that falls behind for longer than a deadline (2 refreshes, say) doesn't hold the others back:
 its display keeps the previous frame, and that counts as a *late* frame in the status.
@@ -185,8 +185,13 @@ later than displays the receiver flips directly. At the venue that was the top r
 16.7 ms behind the bottom row, every frame.
 
 The receiver measures it and corrects it:
-- DXGI frame statistics give, per display, when each frame reached the screen. Taking away the
-  receiver's own hold-back leaves how late Windows shows that display (`windowsLateMs`, median of ~3 s).
+- DXGI frame statistics give, per display, when each present reached the screen. Compared with the
+  first refresh after the receiver made that present, that's how late Windows shows that display
+  (`windowsLateMs`, median of ~3 s). The receiver's own hold-back isn't in it (a held display is
+  presented later, not shown later), and neither is where in the refresh the present was made. (The
+  first version subtracted the hold-back as a fixed 16.7 ms; on a PC that couldn't present every
+  refresh the hold really took two, so the measurement said "in step", the hold was released, then
+  set again: on and off every few seconds, the displays a refresh apart half the time.)
 - Displays that Windows shows sooner are held back by the difference, in whole refreshes
   (`heldRefreshes`, at most 2): they draw the picture that was newest that many refreshes ago. Each
   stream keeps its last 4 pictures on the GPU for this.
@@ -196,7 +201,35 @@ The receiver measures it and corrects it:
   receiver starts.
 
 It's on by default (`"compensate": true` in the receiver config). The self-test simulates two late
-displays and checks the other two get held back and all four line up.
+displays and checks the other two get held back and all four line up, also on a slow GPU.
+`compensationChanges` counts hold-back changes since the receiver started: it should stay at the
+first setting (one per held display), not keep climbing.
+
+### The render loop: only what changed, every refresh
+
+A hold-back of one refresh only works if the receiver presents on every refresh. Presenting all
+four 4K displays every refresh didn't fit on the venue's RTX A400 (wait for the slowest monitor,
+upload, draw and present four windows: 30–50 ms a pass, so about 33 passes a second on 60 Hz
+screens). So each pass now:
+- waits for the first monitor's vertical blank (the wall's monitors run off one GPU and refresh
+  together), not for every swap chain;
+- uploads new pictures, then draws and presents only the windows whose picture changed. With
+  30 fps content and the bottom row held back one refresh, that's the top pair on one refresh and
+  the bottom pair on the next: half the work per pass. A flip-model window keeps showing its last
+  picture, so an unchanged window costs nothing;
+- skips a window whose swap chain can't take a frame yet (tried again next refresh), instead of
+  blocking the others;
+- stays within the refresh: if presenting everything wanted would run past it (going by how long a
+  window's present takes, `presentMsPerWindow`), the held-back displays wait one refresh
+  (`heldDeferred`). A held display that's fallen more than a refresh behind, with a newer picture due
+  by the next refresh, keeps what it shows and takes the newer one then, so the loop doesn't get
+  stuck presenting all four every pass.
+
+`presentFps` is passes per second (should be the refresh rate) and `windowPresentsPerS` the window
+presents across all displays (about 2 per refresh for 30 fps content on a 2x2 wall with one row held
+back). A loop freeze is now a pass that came 2.5 refreshes or more after the last one; a window whose
+swap chain didn't take a new picture for that long is a `wait` freeze naming the window, and a present
+shown 2 or more refreshes later than that display usually shows them is a `screen` freeze.
 
 ### Buffer (hiding network stalls)
 

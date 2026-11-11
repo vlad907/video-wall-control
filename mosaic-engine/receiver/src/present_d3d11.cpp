@@ -1,6 +1,7 @@
 // Direct3D 11 presenter: a borderless, topmost window per monitor, each with a flip-model
-// swap chain (so DWM doesn't add a frame) and a frame-latency waitable object, used to pace
-// the render loop to the displays. One device draws every window; all are presented together.
+// swap chain (so DWM doesn't add a frame) and a frame-latency waitable object (whether it can take
+// a frame). The loop runs on the first monitor's vertical blank; one device draws every window
+// and only windows whose picture changed are drawn and presented.
 #include "presenter.hpp"
 
 #include <windows.h>
@@ -162,6 +163,7 @@ public:
             windows_.push_back(std::move(w));
         }
         hz_ = queryRefreshHz();
+        if (!windows_.empty()) windows_[0].swap->GetContainingOutput(&output_);
         return true;
     }
 
@@ -217,7 +219,17 @@ public:
         for (auto* tex : mapped) ctx_->Unmap(tex, 0);
     }
 
-    void present(const std::vector<TileDraw>& tiles, const std::vector<bool>& flash) override {
+    void present(const std::vector<TileDraw>& tiles, const std::vector<bool>& flash, const std::vector<bool>& which) override {
+        // Which of the wanted windows can take a frame now (its last one is on screen). One that
+        // can't is skipped, not waited for: it's tried again next refresh and the others go ahead.
+        // A short grace absorbs the swap chain being signalled a moment after the vertical blank.
+        const auto grace = Clock::now() + std::chrono::milliseconds(3);
+        std::vector<bool> go(windows_.size(), false);
+        for (size_t i = 0; i < windows_.size(); ++i) {
+            if (i >= which.size() || !which[i]) continue;
+            auto left = std::chrono::duration_cast<std::chrono::milliseconds>(grace - Clock::now()).count();
+            go[i] = WaitForSingleObjectEx(windows_[i].waitable, static_cast<DWORD>(std::max<int64_t>(0, left)), FALSE) == WAIT_OBJECT_0;
+        }
         const float black[4] = {0, 0, 0, 1};
         ctx_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ctx_->IASetInputLayout(nullptr);
@@ -225,6 +237,7 @@ public:
         ctx_->PSSetShader(ps_.Get(), nullptr, 0);
         ctx_->PSSetSamplers(0, 1, sampler_.GetAddressOf());
         for (size_t i = 0; i < windows_.size(); ++i) {
+            if (!go[i]) continue;
             auto& w = windows_[i];
             ctx_->OMSetRenderTargets(1, w.rtv.GetAddressOf(), nullptr);
             if (i < flash.size() && flash[i]) {
@@ -258,12 +271,20 @@ public:
                 ctx_->Draw(3, 0);
             }
         }
-        // Every window in the same pass: each flips on its own monitor's next refresh.
-        for (auto& w : windows_) w.swap->Present(1, 0);
+        // Each flips on its own monitor's next refresh.
+        for (size_t i = 0; i < windows_.size(); ++i) {
+            if (!go[i]) continue;
+            windows_[i].refreshMicros = refreshMicros_;
+            windows_[i].submitMicros = qpcMicros();
+            windows_[i].swap->Present(1, 0);
+        }
         // Then ask each swap chain which present reached its monitor, and when.
         timings_.assign(windows_.size(), {});
         for (size_t i = 0; i < windows_.size(); ++i) {
             auto& t = timings_[i];
+            t.presented = go[i];
+            t.refreshMicros = windows_[i].refreshMicros;
+            t.submitMicros = windows_[i].submitMicros;
             UINT last = 0;
             windows_[i].swap->GetLastPresentCount(&last);
             t.presentCount = last;
@@ -286,14 +307,11 @@ public:
             DispatchMessageW(&msg);
         }
         keepOnTop();
-        if (windows_.empty()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(16));
-            return;
-        }
-        // Ready when every swap chain can take a frame, i.e. after the latest monitor's refresh.
-        std::vector<HANDLE> handles;
-        for (auto& w : windows_) handles.push_back(w.waitable);
-        WaitForMultipleObjectsEx(static_cast<DWORD>(handles.size()), handles.data(), TRUE, 1000, TRUE);
+        // The first window's monitor's vertical blank (the wall's monitors run off one GPU and
+        // refresh together). The swap chains' own waitable objects aren't used here: waiting on
+        // one takes a frame from it, so only windows about to be presented are waited on.
+        if (!output_ || FAILED(output_->WaitForVBlank())) std::this_thread::sleep_for(std::chrono::microseconds(static_cast<int64_t>(1e6 / hz_)));
+        refreshMicros_ = qpcMicros();
     }
 
     double refreshHz() const override { return hz_; }
@@ -305,6 +323,7 @@ private:
         ComPtr<IDXGISwapChain2> swap;
         ComPtr<ID3D11RenderTargetView> rtv;
         HANDLE waitable = nullptr;
+        int64_t refreshMicros = 0, submitMicros = 0;  // its last present: the pass's refresh, and when
     };
     struct Picture {
         ComPtr<ID3D11Texture2D> tex;
@@ -348,12 +367,20 @@ private:
             if (w.hwnd) DestroyWindow(w.hwnd);
         }
         windows_.clear();
+        output_.Reset();
+    }
+
+    int64_t qpcMicros() const {
+        LARGE_INTEGER q;
+        QueryPerformanceCounter(&q);
+        return static_cast<int64_t>(static_cast<double>(q.QuadPart) * 1e6 / static_cast<double>(qpcFreq_));
     }
 
     std::chrono::steady_clock::time_point raisedAt_{};
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> ctx_;
     ComPtr<IDXGIFactory2> factory_;
+    ComPtr<IDXGIOutput> output_;  // the first window's monitor (paces the loop)
     ComPtr<ID3D11VertexShader> vs_;
     ComPtr<ID3D11PixelShader> ps_, psUyvy_;
     ComPtr<ID3D11Buffer> picture_;
@@ -367,6 +394,7 @@ private:
     }();
     std::map<int, Stream> textures_;
     double hz_ = 60.0;
+    int64_t refreshMicros_ = 0;  // when the last waitForRefresh() returned (a vertical blank)
 };
 
 }  // namespace

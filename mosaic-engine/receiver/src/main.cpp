@@ -89,6 +89,40 @@ int selfTest(double seconds) {
               "held the other displays back one refresh");
         check(s2.value("screenSpreadNowMs", 99.0) < 8, "with compensation all displays show each frame together (under half a refresh apart)");
     }
+    // A slow GPU, like the venue's receiving PC: each window's present takes 4.5 ms, so presenting
+    // all four every refresh (18 ms) can't keep up. Only displays whose picture changes are
+    // presented (the top pair one refresh, the held-back bottom pair the next), so the loop keeps
+    // every refresh and the hold-back stays put instead of flipping on and off.
+    {
+        json cfg4 = {{"displays", json::array()}};
+        for (int i = 1; i <= 4; ++i)
+            cfg4["displays"].push_back({{"index", i}, {"stream", "synthetic"}, {"synthetic", {{"width", 64}, {"height", 36}, {"fps", 30}}},
+                                        {"window", {{"x", (i - 1) * 1920}, {"y", 0}, {"w", 1920}, {"h", 1080}}}});
+        ReceiverConfig c4;
+        from_json(cfg4, c4);
+        Receiver rx4([](std::string&) { return createHeadlessPresenter(60.0, {1, 1, 0, 0}, 4.5); });
+        rx4.setConfig(c4);
+        // Until the hold-back is measured (~3 s) all four change together and the loop can't keep up: judge after that.
+        std::this_thread::sleep_for(std::chrono::seconds(6));
+        json before4 = rx4.status();
+        std::this_thread::sleep_for(std::chrono::seconds(4));
+        json s4 = rx4.status();
+        double passes = (s4.value("presents", 0) - before4.value("presents", 0)) / 4.0;
+        int freezes4 = s4.value("freezesTotal", 0) - before4.value("freezesTotal", 0);
+        auto& d4 = s4["displays"];
+        std::cout << "slow GPU: " << passes << " passes/s, " << s4.value("windowPresentsPerS", 0.0) << " window presents/s, held "
+                  << d4[0].value("heldRefreshes", -1) << " " << d4[1].value("heldRefreshes", -1) << " " << d4[2].value("heldRefreshes", -1) << " "
+                  << d4[3].value("heldRefreshes", -1) << ", changes " << s4.value("compensationChanges", -1) << ", apart now "
+                  << s4.value("screenSpreadNowMs", -1.0) << " ms, freezes " << freezes4 << ", deferred " << s4.value("heldDeferred", -1) << "\n";
+        check(passes > 55, "the loop kept every refresh though presenting every window would take 18 ms");
+        check(s4.value("windowPresentsPerS", 999.0) < 140, "only the displays that changed were presented (about 2 per refresh)");
+        check(d4[0].value("heldRefreshes", -1) == 0 && d4[1].value("heldRefreshes", -1) == 0 && d4[2].value("heldRefreshes", -1) == 1 &&
+                  d4[3].value("heldRefreshes", -1) == 1,
+              "held the bottom displays back one refresh");
+        check(s4.value("compensationChanges", 99) <= 2, "the hold-back was set once and stayed (" + std::to_string(s4.value("compensationChanges", 99)) + " changes)");
+        check(s4.value("screenSpreadNowMs", 99.0) < 8, "all displays show each frame together on the slow GPU");
+        check(freezes4 == 0, "no freezes on the slow GPU once the hold-back is set (" + std::to_string(freezes4) + ")");
+    }
     // Buffer: like the venue's congested network, one stream stalls for 150 ms and then its
     // frames arrive all at once. With a 250 ms buffer nobody sees it: every display stays on
     // the same frame and nothing counts as a freeze.
