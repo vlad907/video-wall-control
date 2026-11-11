@@ -23,13 +23,40 @@ Canvases::~Canvases() {
     }
 }
 
+std::vector<GpuInfo> Canvases::gpus() const {
+    std::lock_guard l(gpuMutex_);
+    auto now = std::chrono::steady_clock::now();
+    if (gpusAt_ == std::chrono::steady_clock::time_point{} || now - gpusAt_ > std::chrono::seconds(5)) {
+        gpus_ = listGpus();
+        gpusAt_ = now;
+    }
+    return gpus_;
+}
+
+int Canvases::resolveGpu(const Layout& l) const {
+    if (l.gpu < 0) return -1;
+    auto list = gpus();
+    if (l.gpuName.empty() || (l.gpu < static_cast<int>(list.size()) && list[static_cast<size_t>(l.gpu)].name == l.gpuName)) return l.gpu;
+    for (auto& g : list)
+        if (g.name == l.gpuName) return g.index;  // moved: the same card under another number
+    return l.gpu;  // not found by name: as numbered (it fails clearly if there's no such number)
+}
+
 void Canvases::sync() {
     auto slots = store_.canvases();
     std::vector<std::shared_ptr<CanvasRun>> stopping;  // destroyed outside the lock (joins render threads)
+    std::map<std::string, int> wantGpu;
+    for (auto& c : slots)
+        if (auto l = store_.snapshot(c.id)) wantGpu[c.id] = resolveGpu(*l);
     {
         std::lock_guard l(m_);
         for (auto it = runs_.begin(); it != runs_.end();) {
             bool keep = std::any_of(slots.begin(), slots.end(), [&](auto& c) { return c.id == it->first; });
+            if (keep && wantGpu.count(it->first) && wantGpu[it->first] != it->second->gpu) {
+                // Moved to another GPU: started again there (its streams pause for a moment).
+                std::cerr << "[canvas] " << it->first << " moves to " << (wantGpu[it->first] < 0 ? std::string("the default GPU") : "GPU " + std::to_string(wantGpu[it->first] + 1)) << "\n";
+                keep = false;
+            }
             if (keep) {
                 ++it;
                 continue;
@@ -38,10 +65,19 @@ void Canvases::sync() {
             stopping.push_back(std::move(it->second));
             it = runs_.erase(it);
         }
+    }
+    // Stopped (render threads joined, NDI senders closed) before anything starts again, so a
+    // canvas moving to another GPU never sends its streams twice. A request still holding one
+    // keeps it until it finishes.
+    stopping.clear();
+    {
+        std::lock_guard l(m_);
         for (auto& c : slots) {
             if (runs_.count(c.id)) continue;
             auto run = std::make_shared<CanvasRun>();
-            run->renderer = createRenderer(rendererOptions_, run->error);
+            RendererOptions ro = rendererOptions_;
+            ro.gpu = run->gpu = wantGpu.count(c.id) ? wantGpu[c.id] : -1;
+            run->renderer = createRenderer(ro, run->error);
             if (run->renderer) {
                 run->engine = std::make_unique<Engine>(*run->renderer, store_, ndi_, c.id);
                 run->engine->setMediaDir(mediaDir_);

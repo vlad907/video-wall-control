@@ -1,5 +1,30 @@
 import { useEffect, useState } from "react";
-import type { Layout, Output, Rect } from "./api";
+import { api, NEUTRAL_COLOR, type ColorAdjust, type GpuInfo, type Layout, type Output, type Rect } from "./api";
+
+// One colour-correction slider: commits when released (each change re-renders the output).
+function ColorSlider({ label, value, min, max, step, onCommit }: { label: string; value: number; min: number; max: number; step: number; onCommit: (v: number) => void }) {
+  const [v, setV] = useState(value);
+  useEffect(() => setV(value), [value]);
+  const commit = () => v !== value && onCommit(v);
+  return (
+    <label className="field wide color-slider">
+      <span>
+        {label} <b>{v.toFixed(2)}</b>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={v}
+        onChange={(e) => setV(+e.target.value)}
+        onPointerUp={commit}
+        onKeyUp={commit}
+        onDoubleClick={() => onCommit((NEUTRAL_COLOR as unknown as Record<string, number>)[label.toLowerCase()] ?? v)}
+      />
+    </label>
+  );
+}
 import { LivePreview } from "./LivePreview";
 
 const RESOLUTIONS: [string, number, number][] = [
@@ -74,6 +99,13 @@ export function Inspector({
   onBezel?: () => void; // selects its whole group for bezel correction
 }) {
   const crop = (k: keyof Rect) => (v: number) => onPatch({ crop: { ...output.crop, [k]: v } });
+  const [gpus, setGpus] = useState<GpuInfo[]>([]);
+  useEffect(() => {
+    api.gpus().then(setGpus).catch(() => {});
+  }, []);
+  // Monitors this output can go to: those on the canvas's GPU (any GPU's while it's on the default one).
+  const monitors = gpus.flatMap((g) => (layout.gpu === undefined || layout.gpu < 0 || g.index === layout.gpu ? g.outputs.map((o) => ({ gpu: g, ...o })) : []));
+  const monitorLabel = (name: string) => name.replace(/^\\\\\.\\/, "");
   const resKey = `${output.width}x${output.height}`;
   const preset = RESOLUTIONS.find(([, w, h]) => `${w}x${h}` === resKey);
   const fitCanvas = () => onPatch({ crop: { x: 0, y: 0, w: layout.canvas.width, h: layout.canvas.height } });
@@ -107,7 +139,25 @@ export function Inspector({
 
       <div className="group">
         <TextField label="Name" value={output.name} onCommit={(name) => onPatch({ name })} />
-        <TextField label="NDI stream name" value={output.ndiName} onCommit={(ndiName) => onPatch({ ndiName })} />
+        <label className="field wide" title="NDI: a stream receiving PCs show. A monitor: full screen on a connector of this canvas's GPU (DisplayPort / HDMI to a video wall or its controller).">
+          <span>Send to</span>
+          <select value={output.display ?? ""} onChange={(e) => onPatch({ display: e.target.value })}>
+            <option value="">NDI stream (receiving PCs)</option>
+            {monitors.map((m) => (
+              <option key={m.name} value={m.name}>
+                Monitor {monitorLabel(m.name)} · {m.width}×{m.height}
+                {m.refreshHz ? ` ${m.refreshHz} Hz` : ""}
+                {gpus.length > 1 ? ` · ${m.gpu.name}` : ""}
+              </option>
+            ))}
+            {output.display && !monitors.some((m) => m.name === output.display) && <option value={output.display}>Monitor {monitorLabel(output.display)} (not found)</option>}
+          </select>
+        </label>
+        {output.display ? (
+          <small className="muted">Drawn at the monitor's resolution, on every refresh of it. The output resolution below only matters for NDI.</small>
+        ) : (
+          <TextField label="NDI stream name" value={output.ndiName} onCommit={(ndiName) => onPatch({ ndiName })} />
+        )}
       </div>
 
       <div className="group">
@@ -181,6 +231,31 @@ export function Inspector({
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="group">
+        <h3>Colour</h3>
+        {(() => {
+          const c: ColorAdjust = { ...NEUTRAL_COLOR, ...(output.color ?? {}) };
+          const set = (k: keyof ColorAdjust) => (v: number) => onPatch({ color: { ...c, [k]: v } });
+          return (
+            <>
+              <ColorSlider label="Brightness" value={c.brightness} min={-0.5} max={0.5} step={0.01} onCommit={set("brightness")} />
+              <ColorSlider label="Contrast" value={c.contrast} min={0} max={2} step={0.01} onCommit={set("contrast")} />
+              <ColorSlider label="Saturation" value={c.saturation} min={0} max={2} step={0.01} onCommit={set("saturation")} />
+              <ColorSlider label="Gamma" value={c.gamma} min={0.5} max={2} step={0.01} onCommit={set("gamma")} />
+              <ColorSlider label="Red" value={c.red} min={0} max={1.5} step={0.01} onCommit={set("red")} />
+              <ColorSlider label="Green" value={c.green} min={0} max={1.5} step={0.01} onCommit={set("green")} />
+              <ColorSlider label="Blue" value={c.blue} min={0} max={1.5} step={0.01} onCommit={set("blue")} />
+              <div className="row buttons">
+                <button disabled={!output.color} onClick={() => onPatch({ color: null as unknown as ColorAdjust })}>
+                  Reset colour
+                </button>
+              </div>
+              <small className="wide-note muted">Matches this display to the others. Double-click a slider to reset it. Applied in the engine, so it works for NDI and monitor outputs alike.</small>
+            </>
+          );
+        })()}
       </div>
 
       <div className="group">

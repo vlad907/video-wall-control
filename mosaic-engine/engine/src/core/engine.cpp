@@ -1,4 +1,5 @@
 #include "core/engine.hpp"
+#include "io/capture.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -111,7 +112,10 @@ void Engine::start() {
 void Engine::stop() {
     if (!running_.exchange(false)) return;
     if (thread_.joinable()) thread_.join();
-    // Tear down: stop senders, let the GPU finish, then free resources.
+    // Tear down: close display outputs, stop senders, let the GPU finish, then free resources.
+    for (auto& [oid, d] : displays_)
+        if (d.id) renderer_.destroyDisplay(d.id);
+    displays_.clear();
     std::map<std::string, std::shared_ptr<OutputChannel>> channels;
     {
         std::lock_guard l(channelsMutex_);
@@ -167,18 +171,42 @@ void Engine::loop() {
             applied_ = layout;
             reconcile(*layout);
         }
-        targetFps_ = layout->frameRate;
         auto interval = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / layout->frameRate));
+        if (frameId_ % 120 == 0) syncDisplays(*layout, true);  // monitors that weren't there: try again
 
-        sleeper.sleepUntil(next);
-        auto tick = Clock::now();
-        jitterMs_.add(msBetween(next, tick));  // how late the tick fired
-        if (tick - next > interval) {
-            // Fell behind by more than a frame: skip ahead instead of bursting.
-            lateFrames_++;
-            next = tick;
+        // A canvas with display outputs runs on its first monitor's refresh (a frame every
+        // refresh, or every other one for 30 fps on 60 Hz), so they never drop or repeat frames.
+        DisplayId pace = 0;
+        double paceHz = 0;
+        for (auto& [oid, d] : displays_)
+            if (d.id) {
+                pace = d.id;
+                paceHz = renderer_.displayStats(d.id).refreshHz;
+                break;
+            }
+        bool paced = false;
+        if (pace && paceHz > 0) {
+            int perFrame = std::max(1, static_cast<int>(std::lround(paceHz / layout->frameRate)));
+            paced = true;
+            for (int i = 0; i < perFrame && paced; ++i) paced = renderer_.waitDisplayVBlank(pace);
+            if (paced) targetFps_ = paceHz / perFrame;
         }
-        next += interval;
+        if (!paced) {
+            targetFps_ = layout->frameRate;
+            sleeper.sleepUntil(next);
+        }
+        auto tick = Clock::now();
+        if (paced) {
+            next = tick + interval;
+        } else {
+            jitterMs_.add(msBetween(next, tick));  // how late the tick fired
+            if (tick - next > interval) {
+                // Fell behind by more than a frame: skip ahead instead of bursting.
+                lateFrames_++;
+                next = tick;
+            }
+            next += interval;
+        }
 
         uint64_t frameId = ++frameId_;
         double seconds = std::chrono::duration<double>(tick - start_).count();
@@ -269,16 +297,12 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
         }
     }
     outputDraws_.clear();
-    for (auto& ch : active) {
-        const OutputConfig* o = layout.findOutput(ch->id);
-        int slot = ch->acquireSlot({frameId, tick, timecode});
-        if (slot < 0) {
-            ch->countNoSlotDrop();
-            continue;
-        }
+    // How an output samples the view (or its one source) into a w x h target.
+    auto mapping = [&](const OutputConfig& oc, int w, int h, TexId& src) {
+        const OutputConfig* o = &oc;
         // Crop is in canvas pixels; the view's texture covers exactly the canvas
         // (whatever its own resolution), so normalise by the canvas size.
-        TexId src = view_.tex;
+        src = view_.tex;
         float sw = float(canvasW_), sh = float(canvasH_);
         bool solid = false;
         if (o->source != "canvas") {
@@ -291,7 +315,7 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
                 solid = true;
             }
         }
-        Uniforms u = makeUniforms(0, 0, float(ch->width), float(ch->height));
+        Uniforms u = makeUniforms(0, 0, float(w), float(h));
         u.crop[0] = float(o->crop.x);
         u.crop[1] = float(o->crop.y);
         u.crop[2] = float(o->crop.w);
@@ -306,6 +330,63 @@ void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_poi
         u.iparams[1] = static_cast<uint32_t>(o->rotation);
         u.iparams[2] = scaleModeIndex(o->scaleMode);
         u.iparams[3] = solid ? 1u : 0u;
+        if (!o->color.neutral()) {
+            const ColorAdjust& c = o->color;
+            u.iparams[3] |= 4u;
+            u.grade0[0] = c.red;
+            u.grade0[1] = c.green;
+            u.grade0[2] = c.blue;
+            u.grade0[3] = c.brightness;
+            u.grade1[0] = c.contrast;
+            u.grade1[1] = c.saturation;
+            u.grade1[2] = c.gamma;
+        }
+        return u;
+    };
+    // Display outputs: drawn straight into their monitor's back buffer, at its resolution.
+    for (auto& [oid, d] : displays_) {
+        const OutputConfig* o = layout.findOutput(oid);
+        if (!o || !o->enabled || !d.id) continue;
+        TexId target = renderer_.displayTarget(d.id);
+        if (!target) continue;  // the monitor hasn't shown the last frame yet: skipped (counted)
+        DisplayStats st = renderer_.displayStats(d.id);
+        TexId src = 0;
+        Uniforms u = mapping(*o, st.width, st.height, src);
+        renderer_.beginPass(target, layout.canvas.background.data());
+        renderer_.drawTextured(src, u);
+        renderer_.endPass();
+        renderer_.presentDisplay(d.id);
+        outputDraws_[oid] = {src, u};
+    }
+    if (frameId % 30 == 0 && !displays_.empty()) {
+        // What reached each monitor, for metrics() (the renderer's displays are render-thread only).
+        json status = json::object();
+        double secs = std::chrono::duration<double>(tick - displayStatsAt_).count();
+        for (auto& [oid, d] : displays_) {
+            json j = {{"monitor", d.monitor}, {"error", d.error}, {"open", d.id != 0}};
+            if (d.id) {
+                DisplayStats st = renderer_.displayStats(d.id);
+                double fps = secs > 0 && displayPresents_.count(oid) ? (st.presents - displayPresents_[oid]) / secs : 0;
+                displayPresents_[oid] = st.presents;
+                j.update({{"width", st.width}, {"height", st.height}, {"refreshHz", st.refreshHz}, {"fps", fps}, {"presents", st.presents},
+                          {"busy", st.busy}, {"repeats", st.repeats}});
+                if (!st.error.empty()) j["error"] = st.error;
+            }
+            status[oid] = j;
+        }
+        displayStatsAt_ = tick;
+        std::lock_guard l(displayStatusMutex_);
+        displayStatus_ = status;
+    }
+    for (auto& ch : active) {
+        const OutputConfig* o = layout.findOutput(ch->id);
+        int slot = ch->acquireSlot({frameId, tick, timecode});
+        if (slot < 0) {
+            ch->countNoSlotDrop();
+            continue;
+        }
+        TexId src = 0;
+        Uniforms u = mapping(*o, ch->width, ch->height, src);
         if (ch->uyvy) {
             // Map, sample and pack to UYVY in one pass: half the readback bytes, NDI's
             // native format, and no full-size BGRA intermediate. The viewport is the
@@ -348,7 +429,7 @@ void Engine::renderCanvas(const Layout& layout, const std::set<std::string>& nee
         SourceState& s = it->second;
         Uniforms u = makeUniforms(float(sc.rect.x), float(sc.rect.y), float(sc.rect.w), float(sc.rect.h));
         u.fparams[3] = sc.opacity;
-        if (sc.type == SourceType::Ndi && s.signalLost) {
+        if ((sc.type == SourceType::Ndi || sc.type == SourceType::Capture) && s.signalLost) {
             if (const ImageTex* fb = fallbackFor(layout, sc)) {
                 u.sizes[0] = u.crop[2] = float(fb->w);
                 u.sizes[1] = u.crop[3] = float(fb->h);
@@ -458,9 +539,9 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
             renderer_.beginPass(s.tex[0], nullptr);
             renderer_.drawTestPattern(u);
             renderer_.endPass();
-        } else if (s.cfg.type == SourceType::Ndi) {
+        } else if (s.cfg.type == SourceType::Ndi || s.cfg.type == SourceType::Capture) {
             if (!s.rx) {
-                st["status"] = ndi_ ? "receiver failed" : "NDI unavailable";
+                st["status"] = s.cfg.type == SourceType::Capture ? s.error : ndi_ ? "receiver failed" : "NDI unavailable";
                 s.signalLost = now - s.createdAt > kNoFirstFrameAfter;  // nothing will arrive
                 st["signal"] = s.signalLost ? "lost" : "ok";
                 if (s.signalLost && fallbackFor(layout, s.cfg)) st["showing"] = "fallback image";
@@ -519,7 +600,7 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
                 std::string vs = s.video->status();
                 st["status"] = vs != "ok" ? vs : !s.error.empty() ? s.error : s.video->finished() ? "ended (holding the last frame)" : s.pausedAt >= 0 ? "paused" : "playing";
                 st["video"] = {{"width", vi.width},  {"height", vi.height},       {"fps", vi.fps},
-                               {"codec", vi.codec},  {"hardware", vi.hardware},   {"durationS", vi.durationS},
+                               {"codec", vi.codec},  {"hardware", vi.hardware}, {"decoder", vi.decoder},   {"durationS", vi.durationS},
                                {"positionS", vi.durationS > 0 ? std::fmod(t, vi.durationS) : t},
                                {"decodeFps", s.video->decodeFps()}, {"playing", s.pausedAt < 0},
                                {"hdr", vi.hdr},      {"bitDepth", vi.bitDepth}};
@@ -644,6 +725,35 @@ void Engine::destroySource(SourceState& s) {
     s.hasFrame = false;
 }
 
+// Display outputs: a window opened on the monitor an output names, closed when the output goes,
+// is turned off or names another monitor. One that couldn't open is tried again when asked.
+void Engine::syncDisplays(const Layout& layout, bool retryFailed) {
+    for (auto it = displays_.begin(); it != displays_.end();) {
+        const OutputConfig* o = layout.findOutput(it->first);
+        bool keep = o && o->enabled && o->display == it->second.monitor && (it->second.id || !retryFailed);
+        if (keep) {
+            ++it;
+            continue;
+        }
+        if (it->second.id) renderer_.destroyDisplay(it->second.id);
+        it = displays_.erase(it);
+    }
+    for (auto& o : layout.outputs) {
+        if (o.display.empty() || !o.enabled || displays_.count(o.id)) continue;
+        DisplayOut d;
+        d.monitor = o.display;
+        for (auto& [oid, other] : displays_)
+            if (other.monitor == o.display) d.error = o.display + " already shows the output " + oid;
+        if (d.error.empty()) d.id = renderer_.createDisplay(o.display, d.error);
+        if (!d.id && !retryFailed) std::cerr << "[engine] display output '" << o.id << "': " << d.error << "\n";
+        displays_[o.id] = d;
+    }
+    json status = json::object();
+    for (auto& [oid, d] : displays_) status[oid] = {{"monitor", d.monitor}, {"error", d.error}, {"open", d.id != 0}};
+    std::lock_guard l(displayStatusMutex_);
+    displayStatus_ = status;
+}
+
 void Engine::reconcile(const Layout& layout) {
     // Sound outputs line up with the wall by default: a frame reaches the screens about half a
     // frame (waiting for the next render) + ~55 ms (rendering, NDI to the receivers, their
@@ -690,7 +800,7 @@ void Engine::reconcile(const Layout& layout) {
     for (auto it = sources_.begin(); it != sources_.end();) {
         const SourceConfig* c = layout.findSource(it->first);
         bool keep = c && c->type == it->second.cfg.type && c->ndiName == it->second.cfg.ndiName &&
-                    c->image == it->second.cfg.image && c->video == it->second.cfg.video &&
+                    c->image == it->second.cfg.image && c->video == it->second.cfg.video && c->device == it->second.cfg.device &&
                     (c->type != SourceType::TestPattern || (c->rect.w == it->second.w && c->rect.h == it->second.h));
         if (keep) {
             if (c->animated != it->second.cfg.animated) it->second.patternDrawn = false;
@@ -734,6 +844,10 @@ void Engine::reconcile(const Layout& layout) {
             s.hasFrame = true;
         } else if (c.type == SourceType::Ndi && ndi_) {
             s.rx = ndi_->createReceiver(c.ndiName);
+        } else if (c.type == SourceType::Capture) {
+            // Shared with any other canvas showing the same device (it can only be opened once).
+            if (c.device.empty()) s.error = "no capture device chosen";
+            else if (!(s.rx = openCapture(c.device, s.error))) std::cerr << "[engine] capture '" << c.device << "': " << s.error << "\n";
         } else if (c.type == SourceType::Video) {
             bool safe = !c.video.empty() && c.video.find_first_of("/\\") == std::string::npos && c.video.find("..") == std::string::npos;
             if (!safe) s.error = c.video.empty() ? "no video chosen" : "bad video name";
@@ -790,7 +904,7 @@ void Engine::reconcile(const Layout& layout) {
         std::lock_guard l(channelsMutex_);
         for (auto it = channels_.begin(); it != channels_.end();) {
             const OutputConfig* o = layout.findOutput(it->first);
-            bool keep = o && o->width == it->second->width && o->height == it->second->height &&
+            bool keep = o && o->display.empty() && o->width == it->second->width && o->height == it->second->height &&
                         o->ndiName == it->second->ndiName && (o->pixelFormat == PixelFormat::Uyvy) == it->second->uyvy;
             if (keep) {
                 ++it;
@@ -808,6 +922,7 @@ void Engine::reconcile(const Layout& layout) {
         retired.clear();
     }
     for (auto& o : layout.outputs) {
+        if (!o.display.empty()) continue;  // a display output: no stream (see syncDisplays)
         {
             std::lock_guard l(channelsMutex_);
             if (channels_.count(o.id)) continue;
@@ -821,6 +936,7 @@ void Engine::reconcile(const Layout& layout) {
         channelByReadback_[ch->readback()] = ch;
         channels_[o.id] = ch;
     }
+    syncDisplays(layout, false);
     view_ = {};  // may point at a source texture destroyed above; set again next frame
     std::cerr << "[engine] applied layout '" << layout.id << "': canvas " << canvasW_ << "x" << canvasH_ << ", "
               << sources_.size() << " source(s), " << layout.outputs.size() << " output(s)\n";
@@ -841,7 +957,20 @@ json Engine::metrics() {
     }
     uint64_t minId = UINT64_MAX, maxId = 0;
     double readbackBytesPerSec = 0;
+    json displays;
+    {
+        std::lock_guard l(displayStatusMutex_);
+        displays = displayStatus_;
+    }
     for (auto& o : layout->outputs) {
+        if (!o.display.empty()) {
+            // A display output: the monitor it's on and what reached it.
+            json d = displays.contains(o.id) ? displays[o.id] : json{{"monitor", o.display}, {"error", "starting"}, {"open", false}};
+            json m = {{"id", o.id}, {"name", o.name}, {"sink", "display"}, {"display", o.display}, {"enabled", o.enabled}};
+            for (auto& [k, v] : d.items()) m[k] = v;
+            outputs.push_back(m);
+            continue;
+        }
         auto it = std::find_if(chans.begin(), chans.end(), [&](auto& p) { return p.first == o.id; });
         if (it == chans.end()) continue;
         OutputMetrics m = it->second->metrics();

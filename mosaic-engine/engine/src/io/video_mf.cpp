@@ -90,9 +90,11 @@ public:
             auto* held = new ComPtr<IMFSample>(sample);
             out.hold = std::shared_ptr<void>(held, [](void* p) { delete static_cast<ComPtr<IMFSample>*>(p); });
             info_.hardware = true;
+            info_.decoder = std::string("GPU (DXVA), ") + (info_.bitDepth == 10 ? "P010" : "NV12") + (attempts_.empty() ? "" : " · tried: " + attempts_);
             return true;
         }
         if (device_) {
+            attempts_ += std::string(attempts_.empty() ? "" : ", ") + (forceP010_ ? "P010" : "NV12") + " gave CPU frames";
             // Asked for GPU frames but got memory. With 10-bit video (most 8K / HDR files), Windows
             // accepts NV12 but then decodes in software to convert: ask the GPU for P010 instead.
             // Only if that gives memory frames too is there no hardware decoder: decode in software.
@@ -127,6 +129,8 @@ public:
         out.stride = info_.width * 4;
         out.hold = pixels;
         info_.hardware = false;
+        info_.decoder = "software (CPU)" + (attempts_.empty() ? std::string(": no GPU device for decoding") : " · GPU attempts: " + attempts_) +
+                        " · see GET /api/system/decoders for the " + info_.codec + " decoders installed";
         return true;
     }
 
@@ -183,8 +187,10 @@ private:
         h = forceP010_ && device_ ? E_FAIL : tryFormat(device_ ? MFVideoFormat_NV12 : MFVideoFormat_RGB32);
         info_.bitDepth = 8;
         if (FAILED(h) && device_) {
+            if (!forceP010_) attempts_ += std::string(attempts_.empty() ? "" : ", ") + hr("NV12 refused", h);
             h = tryFormat(MFVideoFormat_P010);
             if (SUCCEEDED(h)) info_.bitDepth = 10;
+            else attempts_ += std::string(attempts_.empty() ? "" : ", ") + hr("P010 refused", h);
         }
         if (FAILED(h))
             return error = h == MF_E_TOPO_CODEC_NOT_FOUND || h == MF_E_INVALIDMEDIATYPE
@@ -236,6 +242,7 @@ private:
     LONG stride_ = 0;
     int colorSpace_ = 0;
     bool forceP010_ = false;  // NV12 gave memory frames: the video is 10-bit; ask the GPU for P010
+    std::string attempts_;    // GPU formats tried and what happened (for VideoInfo::decoder)
 };
 
 }  // namespace
@@ -244,6 +251,38 @@ std::unique_ptr<VideoBackend> openVideoBackend(const std::string& path, void* na
     auto b = std::make_unique<MfBackend>();
     if (!b->open(path, static_cast<ID3D11Device*>(nativeDevice), error)) return nullptr;
     return b;
+}
+
+std::vector<DecoderInfo> listVideoDecoders() {
+    std::vector<DecoderInfo> out;
+    HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    HRESULT mf = MFStartup(MF_VERSION, MFSTARTUP_LITE);
+    const std::pair<const char*, GUID> codecs[] = {{"H.264", MFVideoFormat_H264}, {"HEVC", MFVideoFormat_HEVC}, {"AV1", MFVideoFormat_AV1}, {"VP9", MFVideoFormat_VP90}};
+    for (auto& [name, sub] : codecs) {
+        for (UINT32 hwFlag : {static_cast<UINT32>(MFT_ENUM_FLAG_HARDWARE), static_cast<UINT32>(MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_ASYNCMFT)}) {
+            MFT_REGISTER_TYPE_INFO in{MFMediaType_Video, sub};
+            IMFActivate** list = nullptr;
+            UINT32 n = 0;
+            if (FAILED(MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER, hwFlag | MFT_ENUM_FLAG_SORTANDFILTER, &in, nullptr, &list, &n))) continue;
+            for (UINT32 i = 0; i < n; ++i) {
+                WCHAR* fn = nullptr;
+                UINT32 len = 0;
+                std::string friendly = "(unnamed)";
+                if (SUCCEEDED(list[i]->GetAllocatedString(MFT_FRIENDLY_NAME_Attribute, &fn, &len))) {
+                    int k = WideCharToMultiByte(CP_UTF8, 0, fn, -1, nullptr, 0, nullptr, nullptr);
+                    friendly.assign(k > 0 ? k - 1 : 0, '\0');
+                    if (k > 0) WideCharToMultiByte(CP_UTF8, 0, fn, -1, friendly.data(), k, nullptr, nullptr);
+                    CoTaskMemFree(fn);
+                }
+                out.push_back({name, friendly, hwFlag == static_cast<UINT32>(MFT_ENUM_FLAG_HARDWARE)});
+                list[i]->Release();
+            }
+            CoTaskMemFree(list);
+        }
+    }
+    if (SUCCEEDED(mf)) MFShutdown();
+    if (SUCCEEDED(co)) CoUninitialize();
+    return out;
 }
 
 }  // namespace mosaic

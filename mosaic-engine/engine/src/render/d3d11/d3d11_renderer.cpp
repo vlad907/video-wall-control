@@ -15,7 +15,7 @@
 
 #include <d3d11_4.h>
 #include <d3dcompiler.h>
-#include <dxgi1_2.h>
+#include <dxgi1_3.h>
 #include <pdh.h>
 #include <pdhmsg.h>
 #include <wrl/client.h>
@@ -160,19 +160,72 @@ private:
     double value_ = -1;
 };
 
+// Display output windows: no pointer, never activated or closed by anyone but the engine.
+LRESULT CALLBACK displayWndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
+    switch (msg) {
+        case WM_SETCURSOR:
+            SetCursor(nullptr);
+            return TRUE;
+        case WM_CLOSE:
+            return 0;
+        case WM_MOUSEACTIVATE:
+            return MA_NOACTIVATE;
+        case WM_DPICHANGED:
+            return 0;  // stay exactly on the monitor's rectangle (physical pixels)
+    }
+    return DefWindowProcW(h, msg, w, l);
+}
+
+// Windows would scale an unaware program's windows on a monitor at 150 % / 200 %; display outputs
+// are placed in physical pixels, so the engine says it handles scaling itself.
+void usePhysicalPixels() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    using SetContext = BOOL(WINAPI*)(HANDLE);
+    auto fn = reinterpret_cast<SetContext>(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext")));
+    if (!fn || !fn(reinterpret_cast<HANDLE>(-4)))  // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        SetProcessDPIAware();
+}
+
+// The hardware GPUs (no software rasterizers), in DXGI's order: the numbering canvases use.
+std::vector<ComPtr<IDXGIAdapter1>> hardwareAdapters() {
+    std::vector<ComPtr<IDXGIAdapter1>> out;
+    ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return out;
+    ComPtr<IDXGIAdapter1> a;
+    for (UINT i = 0; factory->EnumAdapters1(i, &a) != DXGI_ERROR_NOT_FOUND; ++i, a.Reset()) {
+        DXGI_ADAPTER_DESC1 d{};
+        if (FAILED(a->GetDesc1(&d)) || (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) continue;
+        out.push_back(a);
+    }
+    return out;
+}
+
+ComPtr<IDXGIAdapter1> hardwareAdapter(int index) {
+    auto all = hardwareAdapters();
+    return index >= 0 && index < static_cast<int>(all.size()) ? all[static_cast<size_t>(index)] : nullptr;
+}
+
 class D3D11Renderer final : public Renderer {
 public:
-    explicit D3D11Renderer(bool warp) {
+    D3D11Renderer(bool warp, int gpu) {
         UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
         const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+        // A chosen GPU (canvas setting): its adapter, with the "unknown" driver type that requires.
+        ComPtr<IDXGIAdapter1> chosen;
+        if (!warp && gpu >= 0) {
+            chosen = hardwareAdapter(gpu);
+            if (!chosen) throw std::runtime_error("there's no GPU number " + std::to_string(gpu + 1) + " on this PC");
+        }
+        IDXGIAdapter* adapterArg = chosen.Get();
+        D3D_DRIVER_TYPE type = chosen ? D3D_DRIVER_TYPE_UNKNOWN : warp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE;
         // Video support lets Media Foundation decode video files on this device (hardware decoding,
         // frames stay on the GPU). Some drivers / WARP refuse it; then videos decode in software.
-        HRESULT hr = D3D11CreateDevice(nullptr, warp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE, nullptr,
-                                       flags | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, levels, 2, D3D11_SDK_VERSION, &device_, nullptr, &ctx_);
+        HRESULT hr = D3D11CreateDevice(adapterArg, type, nullptr, flags | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, levels, 2, D3D11_SDK_VERSION,
+                                       &device_, nullptr, &ctx_);
         if (FAILED(hr))
-            check(D3D11CreateDevice(nullptr, warp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels, 2,
-                                    D3D11_SDK_VERSION, &device_, nullptr, &ctx_),
-                  "D3D11CreateDevice");
+            check(D3D11CreateDevice(adapterArg, type, nullptr, flags, levels, 2, D3D11_SDK_VERSION, &device_, nullptr, &ctx_), "D3D11CreateDevice");
 
         ComPtr<IDXGIDevice> dxgi;
         ComPtr<IDXGIAdapter> adapter;
@@ -236,6 +289,7 @@ public:
     }
 
     ~D3D11Renderer() override {
+        while (!displays_.empty()) destroyDisplay(displays_.begin()->first);
         waitIdle();
         if (completionThread_.joinable()) {
             {
@@ -283,6 +337,166 @@ public:
     void destroyTexture(TexId id) override {
         textures_.erase(id);
         videoOutViews_.erase(id);
+    }
+
+    // ---- display outputs ----
+    DisplayId createDisplay(const std::string& monitor, std::string& error) override {
+        usePhysicalPixels();
+        ComPtr<IDXGIDevice> dxgi;
+        ComPtr<IDXGIAdapter> adapter;
+        if (FAILED(device_.As(&dxgi)) || FAILED(dxgi->GetAdapter(&adapter))) return error = "no DXGI adapter", 0;
+        ComPtr<IDXGIOutput> output;
+        DXGI_OUTPUT_DESC od{};
+        for (UINT k = 0;; ++k) {
+            ComPtr<IDXGIOutput> o;
+            if (adapter->EnumOutputs(k, &o) == DXGI_ERROR_NOT_FOUND) break;
+            DXGI_OUTPUT_DESC d{};
+            if (SUCCEEDED(o->GetDesc(&d)) && d.AttachedToDesktop && narrow(d.DeviceName) == monitor) {
+                output = o;
+                od = d;
+                break;
+            }
+        }
+        if (!output) {
+            for (auto& g : listGpus())
+                for (auto& m : g.outputs)
+                    if (m.name == monitor)
+                        return error = monitor + " is connected to " + g.name + " (GPU " + std::to_string(g.index + 1) + "): render this canvas on that GPU", 0;
+            return error = "no monitor " + monitor + " (unplugged, or turned off in Windows' display settings)", 0;
+        }
+        static bool registered = false;
+        if (!registered) {
+            WNDCLASSW wc{};
+            wc.lpfnWndProc = displayWndProc;
+            wc.hInstance = GetModuleHandleW(nullptr);
+            wc.lpszClassName = L"MosaicDisplayOutput";
+            wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+            RegisterClassW(&wc);
+            registered = true;
+        }
+        Display d;
+        d.monitor = monitor;
+        d.output = output;
+        const RECT r = od.DesktopCoordinates;
+        d.w = r.right - r.left;
+        d.h = r.bottom - r.top;
+        DEVMODEW dm{};
+        dm.dmSize = sizeof dm;
+        if (EnumDisplaySettingsW(od.DeviceName, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1) d.hz = dm.dmDisplayFrequency;
+        d.hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"MosaicDisplayOutput", L"Mosaic display output", WS_POPUP | WS_VISIBLE,
+                                 r.left, r.top, d.w, d.h, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (!d.hwnd) return error = "cannot open a window on " + monitor, 0;
+        ComPtr<IDXGIFactory2> factory;
+        DXGI_SWAP_CHAIN_DESC1 sd{};
+        sd.Width = static_cast<UINT>(d.w);
+        sd.Height = static_cast<UINT>(d.h);
+        sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        sd.SampleDesc.Count = 1;
+        sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        sd.BufferCount = 2;
+        sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;  // flip model: independent flip, no frame added by Windows
+        sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+        sd.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+        ComPtr<IDXGISwapChain1> sc1;
+        if (FAILED(adapter->GetParent(IID_PPV_ARGS(&factory))) || FAILED(factory->CreateSwapChainForHwnd(device_.Get(), d.hwnd, &sd, nullptr, nullptr, &sc1)) ||
+            FAILED(sc1.As(&d.swap))) {
+            DestroyWindow(d.hwnd);
+            return error = "cannot create a swap chain on " + monitor, 0;
+        }
+        factory->MakeWindowAssociation(d.hwnd, DXGI_MWA_NO_ALT_ENTER);
+        d.swap->SetMaximumFrameLatency(1);
+        d.waitable = d.swap->GetFrameLatencyWaitableObject();
+        // Buffer 0 is always the current back buffer in Direct3D 11 (the runtime rotates them).
+        Texture t;
+        t.w = d.w;
+        t.h = d.h;
+        if (FAILED(d.swap->GetBuffer(0, IID_PPV_ARGS(&t.tex))) || FAILED(device_->CreateRenderTargetView(t.tex.Get(), nullptr, &t.rtv))) {
+            if (d.waitable) CloseHandle(d.waitable);
+            d.swap.Reset();
+            DestroyWindow(d.hwnd);
+            return error = "cannot draw to " + monitor, 0;
+        }
+        d.target = nextId_++;
+        textures_[d.target] = t;
+        DisplayId id = nextDisplay_++;
+        displays_[id] = std::move(d);
+        return id;
+    }
+
+    void destroyDisplay(DisplayId id) override {
+        auto it = displays_.find(id);
+        if (it == displays_.end()) return;
+        Display& d = it->second;
+        ctx_->OMSetRenderTargets(0, nullptr, nullptr);
+        textures_.erase(d.target);
+        ctx_->Flush();
+        if (d.waitable) CloseHandle(d.waitable);
+        d.swap.Reset();
+        if (d.hwnd) DestroyWindow(d.hwnd);
+        displays_.erase(it);
+    }
+
+    TexId displayTarget(DisplayId id) override {
+        auto it = displays_.find(id);
+        if (it == displays_.end()) return 0;
+        Display& d = it->second;
+        pumpDisplayMessages();
+        // Can it take a frame (its last one is on screen)? If not, skip this one rather than wait.
+        if (WaitForSingleObjectEx(d.waitable, 0, FALSE) != WAIT_OBJECT_0) {
+            ++d.busy;
+            return 0;
+        }
+        d.ready = true;
+        return d.target;
+    }
+
+    void presentDisplay(DisplayId id) override {
+        auto it = displays_.find(id);
+        if (it == displays_.end() || !it->second.ready) return;
+        Display& d = it->second;
+        d.ready = false;
+        HRESULT hr = d.swap->Present(1, 0);
+        if (FAILED(hr)) {
+            char buf[64];
+            std::snprintf(buf, sizeof buf, "present failed (0x%08lx)", static_cast<unsigned long>(hr));
+            d.error = buf;
+            return;
+        }
+        d.error.clear();
+        ++d.presents;
+        DXGI_FRAME_STATISTICS st{};
+        if (SUCCEEDED(d.swap->GetFrameStatistics(&st)) && st.SyncRefreshCount) {
+            if (d.seen) {
+                UINT presents = st.PresentCount - d.lastPresent, refreshes = st.SyncRefreshCount - d.lastRefresh;
+                if (refreshes > presents && refreshes - presents < 600) d.repeats += refreshes - presents;
+            }
+            d.seen = true;
+            d.lastPresent = st.PresentCount;
+            d.lastRefresh = st.SyncRefreshCount;
+        }
+    }
+
+    DisplayStats displayStats(DisplayId id) override {
+        DisplayStats s;
+        auto it = displays_.find(id);
+        if (it == displays_.end()) return s;
+        const Display& d = it->second;
+        s.monitor = d.monitor;
+        s.width = d.w;
+        s.height = d.h;
+        s.refreshHz = d.hz;
+        s.presents = d.presents;
+        s.busy = d.busy;
+        s.repeats = d.repeats;
+        s.error = d.error;
+        return s;
+    }
+
+    bool waitDisplayVBlank(DisplayId id) override {
+        auto it = displays_.find(id);
+        if (it == displays_.end() || !it->second.output) return false;
+        pumpDisplayMessages();
+        return SUCCEEDED(it->second.output->WaitForVBlank());
     }
 
     void* nativeDevice() override { return device_.Get(); }
@@ -727,6 +941,38 @@ private:
     ComPtr<ID3D11BlendState> blendOver_;
 
     std::unordered_map<int, Texture> textures_;               // render thread only
+    struct Display {
+        std::string monitor;
+        HWND hwnd = nullptr;
+        ComPtr<IDXGISwapChain2> swap;
+        ComPtr<IDXGIOutput> output;
+        HANDLE waitable = nullptr;
+        TexId target = 0;
+        int w = 0, h = 0;
+        double hz = 60;
+        bool ready = false;  // displayTarget() took a frame slot: present() must follow
+        uint64_t presents = 0, busy = 0, repeats = 0;
+        bool seen = false;
+        UINT lastPresent = 0, lastRefresh = 0;
+        std::string error;
+    };
+    std::map<DisplayId, Display> displays_;  // render thread only
+    DisplayId nextDisplay_ = 1;
+    std::chrono::steady_clock::time_point raisedAt_{};
+    // The display windows belong to the render thread: handle their messages, and put them back
+    // on top once a second (the taskbar or a notification can come up over them).
+    void pumpDisplayMessages() {
+        MSG msg;
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        auto now = std::chrono::steady_clock::now();
+        if (now - raisedAt_ < std::chrono::seconds(1)) return;
+        raisedAt_ = now;
+        for (auto& [id, d] : displays_)
+            SetWindowPos(d.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    }
     std::unordered_map<int, std::shared_ptr<Readback>> readbacks_;  // guarded by m_
     std::atomic<int> nextId_{1};
 
@@ -743,9 +989,40 @@ private:
 
 }  // namespace
 
+std::vector<GpuInfo> listGpus() {
+    std::vector<GpuInfo> out;
+    auto all = hardwareAdapters();
+    for (size_t i = 0; i < all.size(); ++i) {
+        DXGI_ADAPTER_DESC1 d{};
+        all[i]->GetDesc1(&d);
+        GpuInfo g;
+        g.index = static_cast<int>(i);
+        g.name = narrow(d.Description);
+        g.memoryMB = d.DedicatedVideoMemory / (1024 * 1024);
+        ComPtr<IDXGIOutput> o;
+        for (UINT k = 0; all[i]->EnumOutputs(k, &o) != DXGI_ERROR_NOT_FOUND; ++k, o.Reset()) {
+            DXGI_OUTPUT_DESC od{};
+            if (FAILED(o->GetDesc(&od)) || !od.AttachedToDesktop) continue;
+            GpuOutputInfo m;
+            m.name = narrow(od.DeviceName);
+            m.x = od.DesktopCoordinates.left;
+            m.y = od.DesktopCoordinates.top;
+            m.w = od.DesktopCoordinates.right - od.DesktopCoordinates.left;
+            m.h = od.DesktopCoordinates.bottom - od.DesktopCoordinates.top;
+            m.primary = m.x == 0 && m.y == 0;
+            DEVMODEW dm{};
+            dm.dmSize = sizeof dm;
+            if (EnumDisplaySettingsW(od.DeviceName, ENUM_CURRENT_SETTINGS, &dm)) m.refreshHz = dm.dmDisplayFrequency;
+            g.outputs.push_back(m);
+        }
+        out.push_back(g);
+    }
+    return out;
+}
+
 std::unique_ptr<Renderer> createRenderer(const RendererOptions& options, std::string& error) {
     try {
-        return std::make_unique<D3D11Renderer>(options.softwareGpu);
+        return std::make_unique<D3D11Renderer>(options.softwareGpu, options.gpu);
     } catch (const std::exception& e) {
         error = e.what();
         return nullptr;

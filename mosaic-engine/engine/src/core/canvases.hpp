@@ -2,6 +2,7 @@
 // each with its own GPU device and render thread, started and stopped to match.
 #pragma once
 
+#include <chrono>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -22,6 +23,7 @@ struct CanvasRun {
     std::unique_ptr<Renderer> renderer;
     std::unique_ptr<Engine> engine;
     std::string error;  // why it couldn't start (no engine then)
+    int gpu = -1;       // the GPU it was started on (RendererOptions::gpu)
     ~CanvasRun();
 };
 
@@ -41,6 +43,10 @@ public:
     std::vector<std::pair<std::string, std::shared_ptr<CanvasRun>>> all() const;
     // Problems across canvases (the same NDI stream name sent from two of them).
     std::vector<std::string> problems() const;
+    // This PC's GPUs (cached for a few seconds).
+    std::vector<GpuInfo> gpus() const;
+    // Which GPU a layout asks for, by number, found again by name if the numbering changed.
+    int resolveGpu(const Layout& l) const;
     const std::filesystem::path& mediaDir() const { return mediaDir_; }
 
 private:
@@ -50,6 +56,9 @@ private:
     std::filesystem::path mediaDir_;
     mutable std::mutex m_;
     std::map<std::string, std::shared_ptr<CanvasRun>> runs_;
+    mutable std::mutex gpuMutex_;
+    mutable std::vector<GpuInfo> gpus_;
+    mutable std::chrono::steady_clock::time_point gpusAt_{};
 };
 
 }  // namespace mosaic

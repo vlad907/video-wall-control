@@ -54,7 +54,7 @@ export function GroupContent({
             {[...showing].reverse().map((s) => (
               <button key={s.id} className="link" onClick={() => onEditSources(s.id)} title="Edit this layer">
                 {s.name}
-                {s.type === "ndi" ? "" : ` (${s.type === "solid" ? "colour" : s.type === "image" ? "image" : s.type === "video" ? "video" : "pattern"})`}
+                {s.type === "ndi" ? "" : ` (${s.type === "solid" ? "colour" : s.type === "image" ? "image" : s.type === "video" ? "video" : s.type === "capture" ? "capture" : "pattern"})`}
               </button>
             ))}
           </div>

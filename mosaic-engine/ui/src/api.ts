@@ -2,7 +2,7 @@
 
 export type Rect = { x: number; y: number; w: number; h: number };
 export type ScaleMode = "stretch" | "fit" | "fill";
-export type SourceType = "test_pattern" | "ndi" | "solid" | "image" | "video";
+export type SourceType = "test_pattern" | "ndi" | "solid" | "image" | "video" | "capture";
 
 // A sound output of the media server: an NDI source's audio on one of its sound devices.
 export interface AudioOutput {
@@ -80,6 +80,7 @@ export interface VideoStatus {
   playing: boolean;
   hdr?: boolean;
   bitDepth?: number;
+  decoder?: string; // how it decodes, and why not on the GPU if it doesn't
 }
 
 export interface Source {
@@ -89,6 +90,7 @@ export interface Source {
   ndiName?: string;
   image?: string; // media file name (type "image")
   video?: string; // media file name (type "video")
+  device?: string; // capture device name (type "capture")
   loop?: boolean; // video: start again at the end
   playing?: boolean; // video: false = paused
   rect: Rect;
@@ -108,6 +110,18 @@ export interface GroupPreset {
   sources: Source[];
 }
 
+// Colour correction of one output, to match displays to each other.
+export interface ColorAdjust {
+  brightness: number; // -0.5..0.5
+  contrast: number; // 0..3
+  saturation: number; // 0..3
+  gamma: number; // 0.2..5
+  red: number; // 0..2 gains
+  green: number;
+  blue: number;
+}
+export const NEUTRAL_COLOR: ColorAdjust = { brightness: 0, contrast: 1, saturation: 1, gamma: 1, red: 1, green: 1, blue: 1 };
+
 export interface Output {
   id: string;
   name: string;
@@ -121,6 +135,8 @@ export interface Output {
   source: string;
   pixelFormat: "uyvy" | "bgra";
   group?: string; // id of the wall group that generated it
+  color?: ColorAdjust; // colour correction (absent = neutral)
+  display?: string; // a monitor on the canvas's GPU ("\\\\.\\DISPLAY3"): sent there full screen instead of as NDI
   enabled: boolean;
 }
 
@@ -242,6 +258,8 @@ export interface EndpointsInfo {
   endpoints: EndpointView[];
   unassigned: { host: string; address: string; screens: Screen[]; online: boolean }[];
   elsewhere?: { host: string; name: string; layout: string }[]; // PCs set up on other canvases
+  // How far apart this canvas's receiving PCs show the same frames (Mosaic Receivers only).
+  groupSync?: { pcs: number; frames?: number; spreadMs?: number; maxMs?: number; perPc?: { name: string; offsetMs: number }[] };
   engineHost: string;
   receiverVersion?: string; // the receiver the engine hands out
 }
@@ -257,6 +275,9 @@ export interface Layout {
   name: string;
   frameRate: number;
   receiverBufferMs?: number; // Mosaic Receivers show frames this long after they're made (hides network stalls)
+  gpu?: number; // the media server GPU this canvas renders on (-1 = default)
+  gpuName?: string;
+  ndiPrefix?: string; // new outputs' NDI names: <ndiPrefix>_01, ...
   audioOutputs?: AudioOutput[]; // the media server's sound outputs
   canvas: { width: number; height: number; background: [number, number, number, number] };
   sources: Source[];
@@ -296,13 +317,24 @@ export interface CanvasInfo {
   primary: boolean;
   current: boolean;
   running: boolean;
-  gpu: string;
+  gpu: string; // the GPU it runs on now
+  gpuIndex: number;
+  gpuWanted: number;
   error: string;
   outputs: number;
   endpoints: number;
   frameRate: number;
   renderFps?: number;
   canvas: { width: number; height: number };
+}
+
+// A GPU in the media server and the monitors connected to it.
+export interface GpuInfo {
+  index: number;
+  name: string;
+  memoryMB: number;
+  outputs: { name: string; x: number; y: number; width: number; height: number; refreshHz: number; primary: boolean }[];
+  canvases: string[];
 }
 
 // The canvas this editor window works on ("" = the primary). Sent with every request
@@ -462,6 +494,12 @@ export const api = {
   canvases: () => call<{ canvases: CanvasInfo[]; current: string; problems: string[] }>("GET", "/api/canvases"),
   addCanvas: (body: { name: string } | { layout: string }) => call<{ id: string; layout: string; problems: string[] }>("POST", "/api/canvases", body),
   stopCanvas: (id: string) => call("DELETE", `/api/canvases/${id}`),
+  gpus: () => call<{ gpus: GpuInfo[] }>("GET", "/api/gpus").then((r) => r.gpus),
+  capture: () =>
+    call<{ devices: { name: string; kind: string }[]; open: { name: string; width: number; height: number; fps: number; viewers: number; error: string }[]; error: string }>(
+      "GET",
+      "/api/capture",
+    ),
   activate: (id: string, transitionMs = 0) => call("POST", `/api/layouts/${id}/activate`, { transitionMs }),
   saveAs: (name: string) => call<Layout>("POST", "/api/layouts", { fromActive: true, name }),
   deleteLayout: (id: string) => call("DELETE", `/api/layouts/${id}`),

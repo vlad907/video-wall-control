@@ -485,6 +485,7 @@ void Receiver::frame() {
                {"bufferReady", active_.bufferMs > 0 && engineClockKnown_},
                {"heldMs", heldMs_},
                {"gapsAbsorbed", gapsAbsorbed_},
+               {"shownAtEngine", shownAtEngineJson()},
                {"freezesLastMinute", hiccupTimes_.size()},
                {"freezesTotal", hiccupTotal_},
                {"freezes", hiccups},
@@ -559,6 +560,12 @@ void Receiver::trackTiming(const std::vector<PresentTiming>& timings) {
         int n = 0;
         for (int64_t v : at)
             if (v >= 0) first = std::min(first, v), last = std::max(last, v), ++n;
+        // When the frame appeared, on the engine's clock (this PC's estimate of it: see
+        // trackEngineClock), so the engine can compare the PCs of one canvas with each other.
+        if (n >= 1 && engineClockKnown_) {
+            shownAtEngine_.push_back({it->first, first - engineOffsetUs_});
+            if (shownAtEngine_.size() > 120) shownAtEngine_.pop_front();
+        }
         if (n >= 2) {
             int64_t lagFirst = INT64_MAX;
             for (int64_t v : lag)

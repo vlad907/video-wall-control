@@ -16,7 +16,7 @@ struct Rect {
 };
 
 enum class ScaleMode { Stretch, Fit, Fill };
-enum class SourceType { TestPattern, Ndi, Solid, Image, Video };
+enum class SourceType { TestPattern, Ndi, Solid, Image, Video, Capture };
 // Wire format of an output. UYVY is NDI's native 4:2:2 format (half the bytes of BGRA).
 enum class PixelFormat { Uyvy, Bgra };
 
@@ -27,6 +27,7 @@ struct SourceConfig {
     std::string ndiName;                      // for SourceType::Ndi
     std::string image;                        // for SourceType::Image: a file in the media folder (data/media)
     std::string video;                        // for SourceType::Video: a file in the media folder
+    std::string device;                       // for SourceType::Capture: the capture device's name (GET /api/capture)
     bool loop = true;                         // video: start again at the end (else hold the last frame)
     bool playing = true;                      // video: false = paused
     Rect rect;                                // placement on the canvas, in canvas pixels
@@ -46,6 +47,18 @@ struct GroupPreset {
     std::vector<SourceConfig> sources;
 };
 
+// Colour correction of one output, to match displays to each other. Neutral = no change (and no cost).
+struct ColorAdjust {
+    float brightness = 0.f;  // -0.5..0.5, added
+    float contrast = 1.f;    // 0..3, about mid grey
+    float saturation = 1.f;  // 0 (grey)..3
+    float gamma = 1.f;       // 0.2..5; above 1 lifts the mid tones
+    float red = 1.f, green = 1.f, blue = 1.f;  // 0..2 gain per channel (white balance)
+    bool neutral() const {
+        return brightness == 0.f && contrast == 1.f && saturation == 1.f && gamma == 1.f && red == 1.f && green == 1.f && blue == 1.f;
+    }
+};
+
 struct OutputConfig {
     std::string id;
     std::string name;
@@ -58,6 +71,11 @@ struct OutputConfig {
     std::string source = "canvas";            // "canvas" or a source id (crop is then in source pixels)
     PixelFormat pixelFormat = PixelFormat::Uyvy;
     std::string group;                        // id of the wall group that generated it (empty = standalone)
+    // A monitor on this canvas's GPU ("\\.\DISPLAY3"): the output goes there full screen (DisplayPort /
+    // HDMI to a video wall or its controller) instead of out as an NDI stream. Drawn at the
+    // monitor's resolution, timed to its refresh.
+    std::string display;
+    ColorAdjust color;
     bool enabled = true;
 };
 
@@ -143,6 +161,11 @@ struct Layout {
     // New outputs' NDI streams are named <ndiPrefix>_01, _02, ... Each canvas has its own, so
     // two canvases running at once don't send streams with the same name.
     std::string ndiPrefix = "Mosaic_Output";
+    // The GPU this canvas renders on: its number on the media server (GET /api/gpus), -1 = the
+    // default one. gpuName is its name when chosen: if the numbering changes (a card added or
+    // moved), the canvas finds its card by name.
+    int gpu = -1;
+    std::string gpuName;
 
     const SourceConfig* findSource(const std::string& sid) const;
     const OutputConfig* findOutput(const std::string& oid) const;

@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace mosaic {
 
@@ -31,7 +32,16 @@ struct VideoInfo {
     bool hardware = false;  // decoded by the GPU
     bool hdr = false;       // HDR (PQ / HLG): shown converted to the wall's SDR
     int bitDepth = 8;
+    std::string decoder;    // how it's decoded, and why not on the GPU if it isn't (for finding out)
 };
+
+// The video decoders this PC has, per codec: name and whether it's a hardware (GPU) one.
+// Windows: Media Foundation's; elsewhere empty.
+struct DecoderInfo {
+    std::string codec, name;
+    bool hardware = false;
+};
+std::vector<DecoderInfo> listVideoDecoders();
 
 // Platform part: reads one frame at a time, on the decoder thread only.
 class VideoBackend {

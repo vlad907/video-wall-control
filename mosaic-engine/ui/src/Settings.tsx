@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { dialog, toast } from "./Dialogs";
 import { api, storeKey, storedKey, type Layout, type LayoutVersion, type MediaFile } from "./api";
 import { AudioSection } from "./Audio";
+import { CanvasSettings } from "./CanvasSettings";
 import { UpdatesSection } from "./Updates";
 
 const kb = (n: number) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
@@ -140,6 +141,7 @@ export function SettingsPanel({ layout, onChanged, onError }: { layout: Layout; 
 
   return (
     <>
+      <CanvasSettings layout={layout} onChanged={onChanged} onError={onError} />
       <section className="list">
         <div className="list-head">
           <h3>Layout file</h3>

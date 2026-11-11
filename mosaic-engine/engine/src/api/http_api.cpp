@@ -23,6 +23,8 @@
 
 #include "audio/audio_device.hpp"
 #include "core/canvases.hpp"
+#include "io/capture.hpp"
+#include "io/video_file.hpp"
 #include "core/engine.hpp"
 #include "core/layout_store.hpp"
 #include "util/paths.hpp"
@@ -898,7 +900,56 @@ struct HttpApi::Impl {
         }));
 
         // ---- endpoints: receiving PCs and which output goes on each of their screens ----
-        s.Get("/api/endpoints", guard([this](const httplib::Request&, httplib::Response& res) {
+        // How far apart this canvas's receiving PCs show the same frames: each Mosaic Receiver
+        // reports when recent frames appeared on its first display, on its estimate of the
+        // engine's clock (so the PCs' own clocks don't matter, within the network's fastest
+        // transit). Median and worst spread over the frames every PC reported, and how far each
+        // PC is from the group's average (positive = later).
+        auto groupSync = [this](const Layout& l) {
+            std::vector<std::pair<std::string, std::map<uint64_t, int64_t>>> pcs;
+            {
+                std::lock_guard lock(checkinMutex);
+                double now = nowSeconds();
+                for (auto& e : l.endpoints) {
+                    auto it = checkins.find(hostKey(e.host));
+                    if (it == checkins.end() || now - it->second.value("time", 0.0) > kEndpointOnlineSeconds) continue;
+                    std::map<uint64_t, int64_t> shown;
+                    for (auto& p : it->second.value("receiver", json::object()).value("shownAtEngine", json::array()))
+                        if (p.is_array() && p.size() == 2) shown[p[0].get<uint64_t>()] = p[1].get<int64_t>();
+                    if (!shown.empty()) pcs.emplace_back(e.name.empty() ? e.host : e.name, std::move(shown));
+                }
+            }
+            json out = {{"pcs", pcs.size()}};
+            if (pcs.size() < 2) return out;
+            std::vector<double> spreads;
+            std::vector<double> offsetSum(pcs.size(), 0);
+            for (auto& [fid, t0] : pcs[0].second) {
+                std::vector<int64_t> ts{t0};
+                for (size_t k = 1; k < pcs.size(); ++k) {
+                    auto f = pcs[k].second.find(fid);
+                    if (f == pcs[k].second.end()) break;
+                    ts.push_back(f->second);
+                }
+                if (ts.size() != pcs.size()) continue;
+                auto [lo, hi] = std::minmax_element(ts.begin(), ts.end());
+                spreads.push_back((*hi - *lo) / 1000.0);
+                double mean = 0;
+                for (auto t : ts) mean += double(t);
+                mean /= double(ts.size());
+                for (size_t k = 0; k < ts.size(); ++k) offsetSum[k] += (double(ts[k]) - mean) / 1000.0;
+            }
+            out["frames"] = spreads.size();
+            if (spreads.empty()) return out;
+            json per = json::array();
+            for (size_t k = 0; k < pcs.size(); ++k) per.push_back({{"name", pcs[k].first}, {"offsetMs", std::round(offsetSum[k] / double(spreads.size()) * 10) / 10}});
+            std::vector<double> sorted = spreads;
+            std::sort(sorted.begin(), sorted.end());
+            out["spreadMs"] = std::round(sorted[sorted.size() / 2] * 10) / 10;
+            out["maxMs"] = std::round(sorted.back() * 10) / 10;
+            out["perPc"] = per;
+            return out;
+        };
+        s.Get("/api/endpoints", guard([this, groupSync](const httplib::Request&, httplib::Response& res) {
             auto l = store.active();
             auto discovered = eng().discoveredNdiSources();
             json list = json::array(), unassigned = json::array();
@@ -925,7 +976,8 @@ struct HttpApi::Impl {
                                               {"screens", c.value("screens", json::array())},
                                               {"online", now - c.value("time", 0.0) < kEndpointOnlineSeconds}});
             }
-            sendJson(res, {{"endpoints", list}, {"unassigned", unassigned}, {"elsewhere", elsewhere}, {"engineHost", machine}, {"receiverVersion", receiverPackage()["version"]}});
+            sendJson(res, {{"endpoints", list}, {"unassigned", unassigned}, {"elsewhere", elsewhere}, {"groupSync", groupSync(*l)}, {"engineHost", machine},
+                           {"receiverVersion", receiverPackage()["version"]}});
         }));
         s.Post("/api/endpoints", guard([this](const httplib::Request& req, httplib::Response& res) {
             json body = parseBody(req);
@@ -1216,12 +1268,45 @@ struct HttpApi::Impl {
                           {"canvas", {{"width", l->canvas.width}, {"height", l->canvas.height}}}};
                 c["running"] = run && run->engine;
                 c["gpu"] = run && run->renderer ? run->renderer->deviceName() : "";
+                c["gpuIndex"] = run ? run->gpu : -1;
+                c["gpuWanted"] = l->gpu;
                 c["error"] = run ? run->error : "starting";
                 if (run && run->engine) c["renderFps"] = run->engine->metrics()["engine"].value("renderFps", 0.0);
                 list.push_back(c);
                 first = false;
             }
             sendJson(res, {{"canvases", list}, {"current", current}, {"problems", canvases.problems()}});
+        }));
+        // Video decoders Windows has, per codec, and which are hardware (GPU). Finds out why a
+        // video decodes in software (e.g. the AV1 / HEVC Video Extension missing or GPU-less).
+        s.Get("/api/system/decoders", guard([](const httplib::Request&, httplib::Response& res) {
+            json list = json::array();
+            for (auto& d : listVideoDecoders()) list.push_back({{"codec", d.codec}, {"name", d.name}, {"hardware", d.hardware}});
+            sendJson(res, {{"decoders", list}});
+        }));
+        // Capture devices (capture cards) on this PC, and the ones open now (shared by every canvas
+        // showing them). A source {"type": "capture", "device": name} shows one.
+        s.Get("/api/capture", guard([](const httplib::Request&, httplib::Response& res) {
+            std::string error;
+            json devices = json::array(), open = json::array();
+            for (auto& d : listCaptureDevices(error)) devices.push_back({{"name", d.name}, {"kind", d.kind}});
+            for (auto& c : captureStatus())
+                open.push_back({{"name", c.name}, {"width", c.width}, {"height", c.height}, {"fps", c.fps}, {"viewers", c.viewers}, {"error", c.error}});
+            sendJson(res, {{"devices", devices}, {"open", open}, {"error", error}});
+        }));
+        // This PC's GPUs and the monitors on each (for a canvas's GPU and its display outputs).
+        s.Get("/api/gpus", guard([this](const httplib::Request&, httplib::Response& res) {
+            json list = json::array();
+            for (auto& g : canvases.gpus()) {
+                json outs = json::array();
+                for (auto& o : g.outputs)
+                    outs.push_back({{"name", o.name}, {"x", o.x}, {"y", o.y}, {"width", o.w}, {"height", o.h}, {"refreshHz", o.refreshHz}, {"primary", o.primary}});
+                json canvasesOn = json::array();
+                for (auto& [id, run] : canvases.all())
+                    if (run && run->gpu == g.index) canvasesOn.push_back(id);
+                list.push_back({{"index", g.index}, {"name", g.name}, {"memoryMB", g.memoryMB}, {"outputs", outs}, {"canvases", canvasesOn}});
+            }
+            sendJson(res, {{"gpus", list}});
         }));
         s.Post("/api/canvases", guard([this](const httplib::Request& req, httplib::Response& res) {
             json body = parseBody(req);

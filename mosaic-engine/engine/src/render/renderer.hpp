@@ -14,6 +14,18 @@ namespace mosaic {
 
 using TexId = int;
 using ReadbackId = int;
+using DisplayId = int;
+
+// A display output: what reached the monitor.
+struct DisplayStats {
+    std::string monitor;
+    int width = 0, height = 0;  // the monitor's mode (the size the output is drawn at)
+    double refreshHz = 0;
+    uint64_t presents = 0;      // frames handed to it
+    uint64_t busy = 0;          // frames skipped because it hadn't shown the previous one yet
+    uint64_t repeats = 0;       // refreshes that showed the previous frame again (normal below the refresh rate)
+    std::string error;
+};
 
 enum class TexUsage {
     RenderTarget,  // GPU-only, rendered to and sampled
@@ -29,8 +41,10 @@ struct alignas(16) Uniforms {
     float fparams[4];  // time (s), tile width, tile height, opacity (drawTextured; blended over the target)
     uint32_t iparams[4];  // frame id, rotation (deg), scale mode, flags
     float xform[4];    // cos, sin of the crop's free angle (clockwise about its centre), unused, unused
+    float grade0[4];   // colour correction when flags bit 4 is set: red, green, blue gain, brightness
+    float grade1[4];   // contrast, saturation, gamma, unused
 };
-static_assert(sizeof(Uniforms) == 112, "Uniforms layout must match shaders");
+static_assert(sizeof(Uniforms) == 144, "Uniforms layout must match shaders");
 
 // A finished GPU->CPU copy. `data` stays valid until releaseSlot() for it.
 struct ReadbackView {
@@ -85,6 +99,26 @@ public:
     // ---- video files (render thread) ----
     // The native device (ID3D11Device* on Windows), so a hardware video decoder can use the same GPU.
     virtual void* nativeDevice() { return nullptr; }
+
+    // ---- display outputs: full screen on a monitor connected to this GPU (render thread) ----
+    // Opens a borderless full-screen window on the monitor ("\\.\DISPLAY3", see listGpus()). 0 and
+    // `error` set if it can't (no such monitor, it's on another GPU, not supported here).
+    virtual DisplayId createDisplay(const std::string& monitor, std::string& error) {
+        error = "display outputs need Windows (Direct3D 11)";
+        (void)monitor;
+        return 0;
+    }
+    virtual void destroyDisplay(DisplayId) {}
+    // The display's back buffer as a render target (draw the output into it with beginPass), 0 if
+    // it has none. Its size is DisplayStats::width x height.
+    virtual TexId displayTarget(DisplayId) { return 0; }
+    // Shows what was drawn at the monitor's next refresh. Never waits: if the monitor hasn't shown
+    // the previous frame yet, this one is skipped (counted as busy).
+    virtual void presentDisplay(DisplayId) {}
+    virtual DisplayStats displayStats(DisplayId) { return {}; }
+    // Blocks until the display's monitor's next vertical blank (paces a canvas that drives
+    // monitors). False if it can't (then the caller keeps its own timing).
+    virtual bool waitDisplayVBlank(DisplayId) { return false; }
     // Converts a decoded NV12 / P010 frame (the decoder's texture and array slice, on nativeDevice())
     // into `dst`, a RenderTarget texture, on the GPU's video processor. colorSpace: 0 = BT.709,
     // 1 = BT.2020 PQ (HDR10), 2 = BT.2020 HLG; HDR is mapped to SDR. False if the backend can't.
@@ -99,8 +133,27 @@ struct RendererOptions {
     // Windows: use WARP (the CPU rasterizer that ships with Windows) instead of
     // a hardware GPU. For CI machines without a GPU; correctness only, not speed.
     bool softwareGpu = false;
+    // Which GPU: an index into listGpus(); -1 = the system's default one.
+    int gpu = -1;
 };
 
 std::unique_ptr<Renderer> createRenderer(const RendererOptions& options, std::string& error);
+
+// A monitor connected to a GPU.
+struct GpuOutputInfo {
+    std::string name;            // Windows display device ("\\.\DISPLAY3")
+    int x = 0, y = 0, w = 0, h = 0;  // desktop rectangle, physical pixels
+    double refreshHz = 0;
+    bool primary = false;
+};
+
+// A GPU this PC has (hardware only), in the order createRenderer() numbers them.
+struct GpuInfo {
+    int index = 0;
+    std::string name;
+    uint64_t memoryMB = 0;
+    std::vector<GpuOutputInfo> outputs;
+};
+std::vector<GpuInfo> listGpus();
 
 }  // namespace mosaic

@@ -40,6 +40,17 @@ export function EndpointList({
         <h3 title="Receiving PCs of this canvas: set up here which output goes on each of their screens">Endpoints</h3>
         <button onClick={() => onSetUp("", [])}>+ Add</button>
       </div>
+      {info?.groupSync && info.groupSync.pcs >= 2 && info.groupSync.spreadMs !== undefined && (
+        <small
+          className={info.groupSync.spreadMs > 12 ? "warn" : "muted"}
+          title={`Measured over ${info.groupSync.frames} frames on each PC's estimate of the engine's clock. Per PC (+ = later than the average): ${(info.groupSync.perPc ?? [])
+            .map((p) => `${p.name} ${p.offsetMs > 0 ? "+" : ""}${p.offsetMs} ms`)
+            .join(", ")}`}
+        >
+          {info.groupSync.pcs} PCs in step: {info.groupSync.spreadMs} ms apart (worst {info.groupSync.maxMs} ms)
+          {info.groupSync.spreadMs > 12 ? " · set a Buffer so they show frames at the same time" : ""}
+        </small>
+      )}
       {!info?.endpoints.length && !info?.unassigned.length && (
         <small className="muted">
           A receiving PC appears here once its dashboard has this PC set as <i>Engine PC</i>.

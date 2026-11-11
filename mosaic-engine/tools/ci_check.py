@@ -20,7 +20,7 @@ Runs the engine on a frozen test pattern and checks real pixels:
 
 Set MOSAIC_SOFTWARE_GPU=1 to run on WARP (no GPU needed). Exits non-zero on failure.
 """
-import argparse, json, os, subprocess, sys, tempfile, time, urllib.request
+import argparse, json, os, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 here = os.path.dirname(os.path.abspath(__file__))
 root = os.path.dirname(here)
@@ -62,20 +62,24 @@ def check(cond, msg):
     if not cond:
         failures.append(msg)
 
-def get(path, timeout=10):
-    with urllib.request.urlopen(BASE + path, timeout=timeout) as r:
+def get(path, timeout=10, canvas=None):
+    req = urllib.request.Request(BASE + path, headers={"X-Mosaic-Canvas": canvas} if canvas else {})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.headers, r.read()
 
-def call(method, path, body=None):
+def call(method, path, body=None, canvas=None):
     data = json.dumps(body).encode() if body is not None else b"{}"
-    req = urllib.request.Request(BASE + path, method=method, data=data, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if canvas:
+        headers["X-Mosaic-Canvas"] = canvas
+    req = urllib.request.Request(BASE + path, method=method, data=data, headers=headers)
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read() or b"null")
 
-def frame(oid):
+def frame(oid, canvas=None):
     for _ in range(30):  # WARP can be slow to produce the first frames
         try:
-            h, body = get(f"/api/outputs/{oid}/frame.bgra")
+            h, body = get(f"/api/outputs/{oid}/frame.bgra", canvas=canvas)
             return int(h["X-Width"]), int(h["X-Height"]), body
         except Exception:
             time.sleep(0.5)
@@ -334,6 +338,82 @@ with tempfile.TemporaryDirectory() as tmp:
         check(r["endpoint"]["player"] == "mosaic", "the check-in tells the PC to use the Mosaic Receiver")
         e = next(x for x in json.loads(get("/api/endpoints")[1])["endpoints"] if x["id"] == "wall-pc")
         check(e["receiver"]["spreadMax10s"] == 0 and e["displays"][0]["shownFrameId"] == 1234, "the receiver's sync status reaches the editor")
+
+        print("colour correction:", flush=True)
+        def mean_rgb(img):
+            w, h, data = img
+            n, acc = 0, [0, 0, 0]
+            for i in range(0, len(data), 4 * 101):
+                acc[0] += data[i + 2]; acc[1] += data[i + 1]; acc[2] += data[i]; n += 1
+            return [a / n for a in acc]
+        call("PATCH", "/api/outputs/out-1", {"color": None})
+        time.sleep(0.5)
+        base_rgb = mean_rgb(frame("out-1"))
+        call("PATCH", "/api/outputs/out-1", {"color": {"red": 0.5}})
+        time.sleep(0.5)
+        half = mean_rgb(frame("out-1"))
+        check(abs(half[0] - base_rgb[0] * 0.5) < 12 and abs(half[1] - base_rgb[1]) < 12, f"red gain 0.5 halves red only ({base_rgb[0]:.0f} -> {half[0]:.0f})")
+        call("PATCH", "/api/outputs/out-1", {"color": {"red": 1, "saturation": 0}})
+        time.sleep(0.5)
+        g = mean_rgb(frame("out-1"))
+        check(max(g) - min(g) < 3, f"saturation 0 makes it grey ({[round(x) for x in g]})")
+        call("PATCH", "/api/outputs/out-1", {"color": None})
+        check("color" not in next(o for o in json.loads(get("/api/layout")[1])["outputs"] if o["id"] == "out-1"), "reset leaves no colour settings")
+
+        print("capture card (built-in test device):", flush=True)
+        devs = call("GET", "/api/capture")["devices"]
+        check(any(d["kind"] == "test" for d in devs), f"capture devices listed ({[d['name'] for d in devs]})")
+        call("POST", "/api/sources", {"id": "cap", "name": "Capture", "type": "capture", "device": "Mosaic test capture", "rect": {"x": 0, "y": 0, "w": 64, "h": 36}})
+        call("POST", "/api/outputs", {"id": "cap-ndi", "name": "Capture (NDI)", "source": "cap", "crop": {"x": 0, "y": 0, "w": 1280, "h": 720}, "width": 1280, "height": 720, "pixelFormat": "bgra"})
+        time.sleep(1.5)
+        img = frame("cap-ndi")
+        bars = [pixel(img, x, 360) for x in range(80, 1280, 160)]
+        check(close(bars[0], (255, 255, 255), 30) and close(bars[1], (255, 255, 0), 30) and close(bars[6], (0, 0, 255), 30), f"a capture source sent as NDI carries its picture ({bars[:3]}...)")
+        st = next(c for c in call("GET", "/api/capture")["open"] if c["name"] == "Mosaic test capture")
+        check(st["width"] == 1280 and st["fps"] > 20, f"the device runs ({st['width']}x{st['height']}, {st['fps']:.0f} fps)")
+        call("DELETE", "/api/outputs/cap-ndi")
+        call("DELETE", "/api/sources/cap")
+
+        print("display outputs:", flush=True)
+        call("PATCH", "/api/outputs/out-5", {"display": "\\\\.\\DISPLAY99"})
+        time.sleep(1)
+        m5 = next(o for o in json.loads(get("/api/metrics")[1])["outputs"] if o["id"] == "out-5")
+        check(m5["sink"] == "display" and m5.get("error"), f"an output on a monitor that isn't there says why ({m5.get('error')})")
+        call("PATCH", "/api/outputs/out-5", {"display": ""})
+        time.sleep(1)
+        m5 = next(o for o in json.loads(get("/api/metrics")[1])["outputs"] if o["id"] == "out-5")
+        check(m5["sink"] != "display", "back to an NDI stream")
+        gpus = call("GET", "/api/gpus")["gpus"]
+        print(f"  (GPUs: {[g['name'] for g in gpus]})")
+
+        print("canvases:", flush=True)
+        r = call("POST", "/api/canvases", {"name": "Wall Two"})
+        c2 = r["id"]
+        call("POST", "/api/walls", {"id": "w2", "name": "Wall two", "cols": 2, "rows": 1, "outputWidth": 640, "outputHeight": 360}, canvas=c2)
+        l2 = json.loads(get("/api/layout", canvas=c2)[1])
+        names2 = [o["ndiName"] for o in l2["outputs"]]
+        check(names2 == ["Wall_Two_01", "Wall_Two_02"], f"a new canvas names its streams after itself ({names2})")
+        check(len(json.loads(get("/api/layout")[1])["outputs"]) == 5, "the first canvas is untouched")
+        time.sleep(1.5)
+        check(json.loads(get("/api/metrics", canvas=c2)[1])["engine"]["renderFps"] > 5, "the second canvas renders at the same time")
+        call("POST", "/api/endpoints", {"name": "Two A", "host": "two-a", "player": "mosaic", "displays": [{"output": "w2-1"}]}, canvas=c2)
+        call("POST", "/api/endpoints", {"name": "Two B", "host": "two-b", "player": "mosaic", "displays": [{"output": "w2-2"}]}, canvas=c2)
+        r = call("POST", "/api/endpoints/checkin", {"host": "two-a", "screens": [], "panels": []})
+        check(r["layout"] == l2["id"] and r["displays"][0]["stream"].endswith("(Wall_Two_01)"), "a PC set up on the second canvas gets its streams")
+        shown = lambda off: [[1000 + i, 5_000_000 + i * 33333 + off] for i in range(40)]
+        call("POST", "/api/endpoints/checkin", {"host": "two-a", "screens": [], "panels": [], "receiver": {"shownAtEngine": shown(0)}})
+        call("POST", "/api/endpoints/checkin", {"host": "two-b", "screens": [], "panels": [], "receiver": {"shownAtEngine": shown(6000)}})
+        gs = json.loads(get("/api/endpoints", canvas=c2)[1])["groupSync"]
+        check(gs.get("pcs") == 2 and abs(gs.get("spreadMs", 0) - 6) < 0.5, f"the canvas's PCs are compared ({gs})")
+        check(any(x["host"] == "two-a" for x in json.loads(get("/api/endpoints")[1]).get("elsewhere", [])), "the first canvas lists them as on another canvas")
+        call("DELETE", f"/api/canvases/{c2}")
+        try:
+            call("PATCH", "/api/outputs/w2-1", {"name": "x"}, canvas=c2)
+            refused = False
+        except urllib.error.HTTPError as ex:
+            refused = ex.code == 409
+        check(refused, "a change aimed at a stopped canvas is refused")
+        check(len(call("GET", "/api/canvases")["canvases"]) == 1, "the canvas is stopped")
 
         print("frame delivery:", flush=True)
         time.sleep(2)

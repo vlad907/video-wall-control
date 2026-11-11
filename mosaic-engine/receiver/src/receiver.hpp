@@ -178,6 +178,14 @@ private:
     bool engineClockKnown_ = false;
     void trackEngineClock(Clock::time_point now);
     double windowHeldMs_ = 0, heldMs_ = 0;  // time from arrival to on screen, per new picture
+    // Recent frames: id and when the first display showed it, in engine-clock microseconds.
+    std::deque<std::pair<uint64_t, int64_t>> shownAtEngine_;
+    nlohmann::json shownAtEngineJson() const {
+        nlohmann::json a = nlohmann::json::array();
+        for (size_t i = shownAtEngine_.size() > 60 ? shownAtEngine_.size() - 60 : 0; i < shownAtEngine_.size(); ++i)
+            a.push_back({shownAtEngine_[i].first, shownAtEngine_[i].second});
+        return a;
+    }
     uint64_t windowHeldCount_ = 0;
 
     std::atomic<bool> stop_{false};

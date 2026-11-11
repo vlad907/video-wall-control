@@ -320,6 +320,15 @@ export function SourcesPanel({
             if (e.target.value === "solid") add({ name: "Black", type: "solid", color: [0, 0, 0, 1] });
             if (e.target.value === "image") add({ name: "Image", type: "image", image: "" });
             if (e.target.value === "video") add({ name: "Video", type: "video", video: "", loop: true, playing: true });
+            if (e.target.value === "capture")
+              api
+                .capture()
+                .then((c) => {
+                  const real = c.devices.filter((d) => d.kind === "device");
+                  const dev = (real[0] ?? c.devices[0])?.name ?? "";
+                  add({ name: "Capture card", type: "capture", device: dev });
+                })
+                .catch(onError);
           }}
         >
           <option value="">+ Add…</option>
@@ -327,6 +336,7 @@ export function SourcesPanel({
           <option value="solid">Solid colour</option>
           <option value="image">Image</option>
           <option value="video">Video file</option>
+          <option value="capture">Capture card</option>
         </select>
       </div>
       {layers.map((s, i) => {
@@ -361,7 +371,7 @@ export function SourcesPanel({
             </div>
             <div className="list-text">
               <div>
-                {s.name} <small>({s.type === "ndi" ? "NDI" : s.type === "solid" ? "colour" : s.type === "image" ? "image" : s.type === "video" ? "video" : "pattern"})</small>
+                {s.name} <small>({s.type === "ndi" ? "NDI" : s.type === "solid" ? "colour" : s.type === "image" ? "image" : s.type === "video" ? "video" : s.type === "capture" ? "capture" : "pattern"})</small>
                 {i === 0 && n > 1 && <span className="layer-badge">top</span>}
               </div>
               <small>

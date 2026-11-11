@@ -98,6 +98,8 @@ private:
 
 }  // namespace
 
+std::vector<DecoderInfo> listVideoDecoders() { return {}; }  // macOS: AVFoundation picks (VideoToolbox, on the GPU where it can)
+
 std::unique_ptr<VideoBackend> openVideoBackend(const std::string& path, void*, std::string& error) {
     auto b = std::make_unique<AvfBackend>();
     if (!b->open(path, error)) return nullptr;

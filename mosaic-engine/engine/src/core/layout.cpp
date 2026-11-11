@@ -48,6 +48,7 @@ const char* toString(SourceType t) {
         case SourceType::Solid: return "solid";
         case SourceType::Image: return "image";
         case SourceType::Video: return "video";
+        case SourceType::Capture: return "capture";
         default: return "test_pattern";
     }
 }
@@ -65,6 +66,7 @@ static SourceType sourceTypeFrom(const std::string& s) {
     if (s == "solid") return SourceType::Solid;
     if (s == "image") return SourceType::Image;
     if (s == "video") return SourceType::Video;
+    if (s == "capture") return SourceType::Capture;
     return SourceType::TestPattern;
 }
 
@@ -105,6 +107,7 @@ void to_json(json& j, const SourceConfig& s) {
     if (s.type == SourceType::Solid) j["color"] = s.color;
     if (s.type == SourceType::TestPattern) j["animated"] = s.animated;
     if (s.type == SourceType::Image) j["image"] = s.image;
+    if (s.type == SourceType::Capture) j["device"] = s.device;
     if (s.type == SourceType::Video) {
         j["video"] = s.video;
         j["loop"] = s.loop;
@@ -120,6 +123,7 @@ void from_json(const json& j, SourceConfig& s) {
     s.ndiName = j.value("ndiName", s.ndiName);
     s.image = j.value("image", s.image);
     s.video = j.value("video", s.video);
+    s.device = j.value("device", s.device);
     s.loop = j.value("loop", s.loop);
     s.playing = j.value("playing", s.playing);
     if (j.contains("rect")) s.rect = j.at("rect").get<Rect>();
@@ -145,6 +149,10 @@ void to_json(json& j, const OutputConfig& o) {
              {"rotation", o.rotation}, {"angle", o.angle}, {"scaleMode", toString(o.scaleMode)},
              {"source", o.source},   {"pixelFormat", toString(o.pixelFormat)}, {"enabled", o.enabled}};
     if (!o.group.empty()) j["group"] = o.group;
+    if (!o.display.empty()) j["display"] = o.display;
+    if (!o.color.neutral())
+        j["color"] = {{"brightness", o.color.brightness}, {"contrast", o.color.contrast}, {"saturation", o.color.saturation}, {"gamma", o.color.gamma},
+                      {"red", o.color.red},             {"green", o.color.green},       {"blue", o.color.blue}};
 }
 
 void from_json(const json& j, OutputConfig& o) {
@@ -168,6 +176,19 @@ void patchOutput(OutputConfig& o, const json& p) {
     o.source = p.value("source", o.source);
     if (p.contains("pixelFormat")) o.pixelFormat = pixelFormatFrom(p.at("pixelFormat").get<std::string>());
     o.group = p.value("group", o.group);
+    o.display = p.value("display", o.display);
+    if (p.contains("color") && p.at("color").is_object()) {
+        const auto& c = p.at("color");  // partial updates allowed
+        o.color.brightness = std::clamp(c.value("brightness", o.color.brightness), -0.5f, 0.5f);
+        o.color.contrast = std::clamp(c.value("contrast", o.color.contrast), 0.f, 3.f);
+        o.color.saturation = std::clamp(c.value("saturation", o.color.saturation), 0.f, 3.f);
+        o.color.gamma = std::clamp(c.value("gamma", o.color.gamma), 0.2f, 5.f);
+        o.color.red = std::clamp(c.value("red", o.color.red), 0.f, 2.f);
+        o.color.green = std::clamp(c.value("green", o.color.green), 0.f, 2.f);
+        o.color.blue = std::clamp(c.value("blue", o.color.blue), 0.f, 2.f);
+    } else if (p.contains("color") && p.at("color").is_null()) {
+        o.color = {};  // reset
+    }
     o.enabled = p.value("enabled", o.enabled);
 }
 
@@ -269,7 +290,8 @@ void to_json(json& j, const Layout& l) {
     j = json{{"id", l.id},         {"name", l.name},       {"frameRate", l.frameRate},
              {"canvas", l.canvas}, {"sources", l.sources}, {"outputs", l.outputs}, {"walls", l.walls},
              {"scenes", l.scenes}, {"endpoints", l.endpoints}, {"fallbackImage", l.fallbackImage},
-             {"receiverBufferMs", l.receiverBufferMs}, {"audioOutputs", l.audioOutputs}, {"ndiPrefix", l.ndiPrefix}};
+             {"receiverBufferMs", l.receiverBufferMs}, {"audioOutputs", l.audioOutputs}, {"ndiPrefix", l.ndiPrefix},
+             {"gpu", l.gpu}, {"gpuName", l.gpuName}};
 }
 
 void from_json(const json& j, Layout& l) {
@@ -291,6 +313,8 @@ void from_json(const json& j, Layout& l) {
     l.fallbackImage = j.value("fallbackImage", l.fallbackImage);
     l.receiverBufferMs = j.value("receiverBufferMs", l.receiverBufferMs);
     l.ndiPrefix = j.value("ndiPrefix", l.ndiPrefix);
+    l.gpu = j.value("gpu", l.gpu);
+    l.gpuName = j.value("gpuName", l.gpuName);
     if (j.contains("audioOutputs")) l.audioOutputs = j.at("audioOutputs").get<std::vector<AudioOutputConfig>>();
 }
 
@@ -303,6 +327,8 @@ std::vector<std::string> normalize(Layout& l) {
     if (l.name.empty()) l.name = l.id;
     l.frameRate = std::clamp(l.frameRate, 1.0, 240.0);
     l.receiverBufferMs = std::clamp(l.receiverBufferMs, 0, 1000);
+    l.gpu = std::clamp(l.gpu, -1, 15);
+    if (l.gpu < 0) l.gpuName.clear();
     {
         std::string p;
         for (char c : l.ndiPrefix)

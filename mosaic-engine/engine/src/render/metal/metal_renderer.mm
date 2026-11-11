@@ -26,8 +26,14 @@ constexpr int kMaxFramesInFlight = 2;
 
 class MetalRenderer final : public Renderer {
 public:
-    MetalRenderer() {
-        device_ = MTLCreateSystemDefaultDevice();
+    explicit MetalRenderer(int gpu) {
+        if (gpu >= 0) {
+            NSArray<id<MTLDevice>>* all = MTLCopyAllDevices();
+            if (gpu >= static_cast<int>(all.count)) throw std::runtime_error("there's no GPU number " + std::to_string(gpu + 1) + " on this Mac");
+            device_ = all[static_cast<NSUInteger>(gpu)];
+        } else {
+            device_ = MTLCreateSystemDefaultDevice();
+        }
         if (!device_) throw std::runtime_error("no Metal device");
         queue_ = [device_ newCommandQueue];
         inflight_ = dispatch_semaphore_create(kMaxFramesInFlight);
@@ -288,10 +294,25 @@ private:
 
 }  // namespace
 
-std::unique_ptr<Renderer> createRenderer(const RendererOptions&, std::string& error) {
+std::vector<GpuInfo> listGpus() {
+    std::vector<GpuInfo> out;
+    @autoreleasepool {
+        NSArray<id<MTLDevice>>* all = MTLCopyAllDevices();
+        for (NSUInteger i = 0; i < all.count; ++i) {
+            GpuInfo g;
+            g.index = static_cast<int>(i);
+            g.name = all[i].name.UTF8String;
+            g.memoryMB = all[i].recommendedMaxWorkingSetSize / (1024 * 1024);
+            out.push_back(g);
+        }
+    }
+    return out;
+}
+
+std::unique_ptr<Renderer> createRenderer(const RendererOptions& options, std::string& error) {
     try {
         @autoreleasepool {
-            return std::make_unique<MetalRenderer>();
+            return std::make_unique<MetalRenderer>(options.gpu);
         }
     } catch (const std::exception& e) {
         error = e.what();

@@ -18,7 +18,19 @@ struct Uniforms {
     float4 fparams;   // time, tile w, tile h, opacity (textured draws)
     uint4  iparams;   // frame id, rotation, scale mode, flags
     float4 xform;     // cos, sin of the crop's free angle, -, -
+    float4 grade0;    // colour correction (flags bit 4): red, green, blue gain, brightness
+    float4 grade1;    // contrast, saturation, gamma, -
 };
+
+// Colour correction of an output (matching displays to each other): per-channel gain (white
+// balance), saturation, contrast about mid grey plus brightness, then gamma (> 1 lifts the mids).
+float3 gradeColor(float3 c, float4 g0, float4 g1) {
+    c = c * g0.xyz;
+    float l = dot(c, float3(0.2126, 0.7152, 0.0722));
+    c = lerp(float3(l, l, l), c, g1.y);
+    c = saturate((c - 0.5) * g1.x + 0.5 + g0.w);
+    return pow(c, float3(1.0 / g1.z, 1.0 / g1.z, 1.0 / g1.z));
+}
 
 // ---------------------------------------------------------------------------
 // Output mapping
@@ -234,9 +246,12 @@ fragment float4 ps_pattern(VOut in [[stage_in]], constant Uniforms& u [[buffer(0
 
 // Colour of the output at uv (0..1): the mapped source pixel, or the background.
 float3 outColor(float2 uv, constant Uniforms& u, texture2d<float> tex, sampler smp) {
-    if ((u.iparams.w & 1u) != 0u) return u.bg.rgb;  // solid colour
-    float3 s = outputSampleUV(uv, u.iparams.y, u.iparams.z, u.crop, u.sizes.xy, u.sizes.zw, u.xform.xy);
-    return s.z > 0.5 ? tex.sample(smp, s.xy, level(0)).rgb : u.bg.rgb;  // no mips; explicit LOD keeps it valid in branches
+    float3 c = u.bg.rgb;  // solid colour, or outside the picture
+    if ((u.iparams.w & 1u) == 0u) {
+        float3 s = outputSampleUV(uv, u.iparams.y, u.iparams.z, u.crop, u.sizes.xy, u.sizes.zw, u.xform.xy);
+        if (s.z > 0.5) c = tex.sample(smp, s.xy, level(0)).rgb;  // no mips; explicit LOD keeps it valid in branches
+    }
+    return (u.iparams.w & 4u) != 0u ? gradeColor(c, u.grade0, u.grade1) : c;
 }
 
 // Alpha is the draw's opacity (fparams.w), times the texture's alpha when iparams.w bit 2 is set;
@@ -281,9 +296,12 @@ float4 ps_pattern(float4 pos : SV_Position) : SV_Target {
 }
 
 float3 outColor(float2 uv) {
-    if ((u.iparams.w & 1u) != 0u) return u.bg.rgb;
-    float3 s = outputSampleUV(uv, u.iparams.y, u.iparams.z, u.crop, u.sizes.xy, u.sizes.zw, u.xform.xy);
-    return s.z > 0.5 ? tex.SampleLevel(smp, s.xy, 0).rgb : u.bg.rgb;
+    float3 c = u.bg.rgb;
+    if ((u.iparams.w & 1u) == 0u) {
+        float3 s = outputSampleUV(uv, u.iparams.y, u.iparams.z, u.crop, u.sizes.xy, u.sizes.zw, u.xform.xy);
+        if (s.z > 0.5) c = tex.SampleLevel(smp, s.xy, 0).rgb;
+    }
+    return (u.iparams.w & 4u) != 0u ? gradeColor(c, u.grade0, u.grade1) : c;
 }
 
 float4 ps_textured(float4 pos : SV_Position) : SV_Target {

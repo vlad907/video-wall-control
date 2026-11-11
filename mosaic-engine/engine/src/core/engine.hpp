@@ -149,6 +149,18 @@ private:
     };
     std::map<std::string, OutputDraw> outputDraws_;  // this frame's output mappings, for previews (render thread)
 
+    // Display outputs (an output with a monitor set): its window on the monitor, by output id.
+    struct DisplayOut {
+        DisplayId id = 0;  // 0 = couldn't open (error says why; tried again every few seconds)
+        std::string monitor, error;
+    };
+    std::map<std::string, DisplayOut> displays_;  // render thread only
+    void syncDisplays(const Layout& layout, bool retryFailed);
+    std::mutex displayStatusMutex_;
+    nlohmann::json displayStatus_ = nlohmann::json::object();  // by output id, for metrics()
+    Clock::time_point displayStatsAt_{};
+    std::map<std::string, uint64_t> displayPresents_;  // render thread: presents at the last status update
+
     std::mutex channelsMutex_;
     std::map<std::string, std::shared_ptr<OutputChannel>> channels_;
     std::unordered_map<ReadbackId, std::shared_ptr<OutputChannel>> channelByReadback_;

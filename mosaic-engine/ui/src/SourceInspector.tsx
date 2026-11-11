@@ -1,6 +1,61 @@
+import { useEffect, useState } from "react";
 import { api, wallBounds, type Layout, type Rect, type Source } from "./api";
 import { NumberField, TextField } from "./Inspector";
 import { MediaSelect } from "./Settings";
+
+// A capture source: which device, what it delivers, and "send it as NDI" (instead of OBS).
+function CaptureFields({ source, layout, onPatch }: { source: Source; layout: Layout; onPatch: (p: Partial<Source>) => void }) {
+  const [devices, setDevices] = useState<{ name: string; kind: string }[]>([]);
+  const [note, setNote] = useState("");
+  useEffect(() => {
+    api
+      .capture()
+      .then((c) => {
+        setDevices(c.devices);
+        if (c.error) setNote(c.error);
+      })
+      .catch(() => {});
+  }, []);
+  const st = source.status;
+  const sendAsNdi = () => {
+    const w = st?.width || 1920;
+    const h = st?.height || 1080;
+    const prefix = layout.ndiPrefix ?? "Mosaic_Output";
+    api
+      .addOutput({ name: `${source.name} (NDI)`, ndiName: `${prefix}_${source.name.replace(/[^A-Za-z0-9]+/g, "_")}`, source: source.id, crop: { x: 0, y: 0, w, h }, width: w, height: h })
+      .then(() => setNote(`Sending as NDI: it's under Screens as "${source.name} (NDI)"; receiving PCs and OBS can pick it up.`))
+      .catch((e) => setNote(String(e instanceof Error ? e.message : e)));
+  };
+  return (
+    <>
+      <label className="field wide">
+        <span>Device</span>
+        <select value={source.device ?? ""} onChange={(e) => onPatch({ device: e.target.value })}>
+          <option value="">Choose a capture device…</option>
+          {devices.map((d) => (
+            <option key={d.name} value={d.name}>
+              {d.name}
+              {d.kind === "test" ? " (built-in test)" : ""}
+            </option>
+          ))}
+          {source.device && !devices.some((d) => d.name === source.device) && <option value={source.device}>{source.device} (not found)</option>}
+        </select>
+      </label>
+      {st && st.width > 0 && (
+        <small className="wide-note muted">
+          {st.width}×{st.height} · {(st.inputFps ?? 0).toFixed(1)} fps
+        </small>
+      )}
+      <div className="row buttons">
+        <button onClick={sendAsNdi} title="Adds an output that sends this capture card as its own NDI stream, at its own resolution (replaces OBS)">
+          Send as NDI stream
+        </button>
+      </div>
+      <small className="wide-note muted">A capture card can be open in one program at a time: close OBS first. Several canvases can show the same card.</small>
+      {note && <small className="wide-note">{note}</small>}
+    </>
+  );
+}
 
 const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
@@ -64,7 +119,9 @@ export function SourceInspector({
               ? "image"
               : source.type === "video"
                 ? "video file"
-                : "test pattern"}
+                : source.type === "capture"
+                  ? `capture card · ${source.device ?? ""}`
+                  : "test pattern"}
         {source.status ? ` · ${source.status.status}` : ""}
       </small>
 
@@ -76,6 +133,7 @@ export function SourceInspector({
             <MediaSelect value={source.image ?? ""} placeholder="Choose an image…" onError={() => {}} onChange={(image) => onPatch({ image })} />
           </label>
         )}
+        {source.type === "capture" && <CaptureFields source={source} layout={layout} onPatch={onPatch} />}
         {source.type === "video" && (
           <>
             <label className="field wide">
@@ -95,7 +153,10 @@ export function SourceInspector({
               Loop (otherwise it stops on the last frame)
             </label>
             {source.status?.video && (
-              <small className={`wide-note ${source.status.video.decodeFps && source.status.video.decodeFps < source.status.video.fps * 0.9 ? "warn" : "muted"}`}>
+              <small
+                className={`wide-note ${source.status.video.decodeFps && source.status.video.decodeFps < source.status.video.fps * 0.9 ? "warn" : "muted"}`}
+                title={source.status.video.decoder}
+              >
                 {source.status.video.width}×{source.status.video.height} · {source.status.video.codec} · {source.status.video.fps.toFixed(2)} fps ·{" "}
                 {source.status.video.hdr ? `HDR ${source.status.video.bitDepth ?? 10}-bit (shown as SDR) · ` : ""}
                 {source.status.video.hardware ? "GPU decoding" : "software decoding"} · {fmtTime(source.status.video.positionS)} / {fmtTime(source.status.video.durationS)}

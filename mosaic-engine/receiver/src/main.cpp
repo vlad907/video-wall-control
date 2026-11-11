@@ -154,6 +154,16 @@ int selfTest(double seconds) {
         check(s3.value("gapsAbsorbed", 0) >= 1, "the 150 ms stall was absorbed by the buffer");
         check(lateDuring == 0, "the stalled display never fell behind (" + std::to_string(lateDuring) + " late)");
         check(s3.value("freezesTotal", 99) == 0, "no freezes");
+        // Cross-PC sync check: each frame's show time on the engine's clock. With a 250 ms buffer
+        // it's the frame's timecode + 250 ms, plus up to two refreshes (picked on the refresh after
+        // it's due, on screen at the one after that) and the test network's jitter.
+        std::vector<double> after;
+        for (auto& p : s3.value("shownAtEngine", json::array()))
+            after.push_back((p[1].get<int64_t>() - p[0].get<int64_t>() * 1000000 / 30) / 1000.0 - 250.0);
+        std::sort(after.begin(), after.end());
+        double med = after.empty() ? -99 : after[after.size() / 2];
+        std::cout << "engine-clock show times: " << after.size() << " frames, median " << med << " ms after due\n";
+        check(after.size() > 20 && med > -2 && med < 42, "frames' show times on the engine's clock are their due time (within two refreshes)");
     }
     std::cout << (ok ? "SELF-TEST PASSED" : "SELF-TEST FAILED") << "\n";
     return ok ? 0 : 1;

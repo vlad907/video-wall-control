@@ -136,12 +136,43 @@ one per separate video wall or group of receiving PCs. For example:
 - The canvases are kept in `data/state.json`; before canvases it held only the active layout, which
   becomes `canvas-1`.
 
-For now every canvas renders on the same GPU (the first). Next: a GPU per canvas, outputs straight to
-a monitor connector (DisplayPort), and a capture card source.
+**GPU per canvas** (Settings → Canvas → GPU): a canvas renders on any of the media server's GPUs
+(`gpu`, its number in `GET /api/gpus`, which also lists the monitors on each). Changing it starts the
+canvas again on that GPU (its streams pause a moment). The card is found again by name if the
+numbering changes.
 
-Keeping the PCs of one canvas in step with each other needs the Mosaic Receiver with a buffer
-(each PC shows each frame at the engine's time plus the buffer): within one refresh, since separate
-PCs' monitors can't be locked to one refresh.
+**Display outputs** (an output's *Send to*: a monitor): the output goes full screen to a monitor
+connector of the canvas's GPU (DisplayPort / HDMI to a video wall or its controller) instead of out as
+NDI. It's drawn at the monitor's resolution straight into a flip-model window (no copy, no added
+frame), and a canvas with display outputs runs on its first monitor's refresh (every refresh, or every
+other one for 30 fps on 60 Hz), so they never drop or repeat frames. A monitor on another GPU is
+refused with which GPU it's on; one that's unplugged is tried again every couple of seconds. Status per
+output in `/api/metrics` (`presents`, `busy`, `repeats`, `error`). Windows only.
+
+**Keeping a canvas's PCs in step**: each Mosaic Receiver reports when recent frames appeared, on its
+estimate of the engine's clock, and the Endpoints panel shows how far apart the canvas's PCs are
+(`groupSync` in `GET /api/endpoints`: median and worst spread, each PC's offset). With a Buffer set, every
+PC shows each frame at the engine's time plus the buffer: within one refresh of each other, since
+separate PCs' monitors can't be locked to one refresh.
+
+## Capture cards
+
+A **Capture card** source (Inputs → + Add…) shows a capture device: PCIe / USB capture cards appear on
+Windows as video capture devices (Media Foundation; Windows converts their format to BGRA). The
+device's largest format is used, at up to 60 fps. A card can be open in one program at a time, so close
+OBS; the engine opens each card once and shares it with every canvas that shows it. **Send as NDI
+stream** (in the source's panel) adds an output that sends the card on its own, at its own resolution,
+which replaces OBS for that. `GET /api/capture` lists the devices and the open ones (size, fps,
+viewers). A built-in *Mosaic test capture* device (colour bars, 1280 × 720 at 60 fps) works on any PC,
+for trying the whole path without a card.
+
+## Colour correction
+
+Each output has a **Colour** section: brightness, contrast, saturation, gamma and a red / green / blue
+gain (white balance), to match displays to each other. Applied in the output's own pass on the GPU,
+so it costs nothing when neutral and works for NDI and display outputs alike. In a layout:
+`"color": {"brightness": 0.05, "red": 0.97, ...}` on an output (absent = neutral; `"color": null` in a
+PATCH resets it).
 
 ## Video walls, layering and scenes
 
@@ -315,6 +346,9 @@ Across the whole source there's also:
 | GET | `/api/canvases` | running canvases (primary first): layout, GPU, frame rate, which one this request is about, problems |
 | POST | `/api/canvases` | `{"name"}`: a new canvas with a new layout, or `{"layout"}`: run a saved layout as another canvas |
 | DELETE | `/api/canvases/:id` | stop a canvas (its layout stays saved; not the last one) |
+| GET | `/api/gpus` | the media server's GPUs, the monitors on each, and the canvases on each |
+| GET | `/api/capture` | capture devices, and the open ones (size, fps, viewers, error) |
+| GET | `/api/system/decoders` | Windows' video decoders per codec, and which are hardware (why a video decodes in software) |
 | GET | `/api/layouts` | saved layouts |
 | GET / DELETE | `/api/layouts/:id` | |
 | POST | `/api/layouts` | save a layout (full body), or `{"fromActive":true,"name":"..."}` to save a copy |
