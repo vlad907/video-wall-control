@@ -24,6 +24,33 @@ function Rotate($path) {
 $engineArgs = @("--port", $Port)
 if ($Layout) { $engineArgs += @("--layout", $Layout) }
 
+# At boot this runs before the network is up. NDI picks its network adapters once, when the engine
+# starts: started too early, it never finds any stream. So wait (up to 2 minutes) until the address
+# NDI is limited to (ndi-config.v1.json "adapters.allowed") is up, or any real IPv4 address if none.
+function NdiAddresses {
+    foreach ($f in "$env:ProgramData\NDI\ndi-config.v1.json", "$env:APPDATA\NDI\ndi-config.v1.json") {
+        try {
+            $cfg = Get-Content $f -Raw -ErrorAction Stop | ConvertFrom-Json
+            if ($cfg.ndi.adapters.allowed) { return @($cfg.ndi.adapters.allowed) }
+        } catch {}
+    }
+    return @()
+}
+function NetworkReady {
+    $up = @(Get-NetIPAddress -AddressFamily IPv4 -AddressState Preferred -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" } | ForEach-Object { $_.IPAddress })
+    $want = NdiAddresses
+    if ($want.Count) { return [bool]($want | Where-Object { $up -contains $_ }) }
+    return $up.Count -gt 0
+}
+$deadline = (Get-Date).AddMinutes(2)
+if (-not (NetworkReady)) {
+    Note "waiting for the network (NDI adapters: $((NdiAddresses) -join ', '))"
+    while (-not (NetworkReady) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+    Start-Sleep -Seconds 5  # the address is there; give the link and its multicast a moment
+    Note $(if (NetworkReady) { "network up" } else { "network still not up after 2 minutes; starting anyway" })
+}
+
 while ($true) {
     if (-not (Test-Path $Exe)) {
         Note "engine not built yet ($Exe); checking again in 30 s"
