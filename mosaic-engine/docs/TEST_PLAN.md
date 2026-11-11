@@ -48,7 +48,9 @@ motion if unsure.
 
 1. A canvas per wall (for example "Video wall 1"), on the GPU its DisplayPort cables are on.
 2. Its outputs → **Send to** → the monitor (the list shows the monitors of the canvas's GPU).
-3. `GET /api/metrics` (canvas header `X-Mosaic-Canvas: canvas-N`) → that output: `open: true`,
+   For a group: its *Displays* tab → **Send to monitors in order** (row by row, to the monitors left to
+   right, top to bottom as Windows arranges them).
+3. `GET /api/metrics?canvas=canvas-N` → that output: `open: true`,
    `fps` ≈ the refresh rate (or half for a 30 fps canvas), `busy` and `repeats` not climbing fast,
    no `error`.
 4. Windows' display settings: each wall's monitors must be **extended** (not duplicated), at the
@@ -62,6 +64,8 @@ motion if unsure.
 3. **Send as NDI stream** in its panel → check it in Studio Monitor or on a receiver.
 4. If the card shows an error: send it to me (the text says whether Windows can't convert its format,
    or another program has it).
+5. Its sound: Settings → Audio → **+ Output** → Source → *Sound inputs* → the card's recording
+   device. Clap in front of the camera and adjust the trim until sound and picture line up.
 
 ## 6. Colour correction
 
@@ -78,6 +82,11 @@ resets it; *Reset colour* resets all.
 
 With Mosaic 2's PCs running, the Endpoints panel shows "*N* PCs in step: *x* ms apart". Expect under
 a refresh (17 ms) with a Buffer set; hovering shows each PC's offset.
+
+## 9. A canvas recovering by itself
+
+`POST /api/canvases/canvas-N/simulate-gpu-loss` (not on the canvas that's on air): it stops and
+starts again within a few seconds (`GET /api/canvases` → `restarts`), the other canvases untouched.
 
 ## Going back
 

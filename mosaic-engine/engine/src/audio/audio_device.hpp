@@ -37,4 +37,20 @@ public:
 // `deviceId` empty = the Windows default output.
 std::unique_ptr<AudioDeviceStream> openAudioDevice(const std::string& deviceId, AudioRender render);
 
+// ---- sound inputs: recording devices (a capture card's audio, a line in) ----
+std::vector<AudioDevice> listAudioInputs(std::string& error);
+
+class AudioRing;
+// Records from an input into a ring (stereo, each block with when it was captured) on its own
+// thread, reopening the device like the outputs do. An audio output plays it delayed like an
+// NDI source's audio (layout: source "input:<device id>").
+class AudioInputStream {
+public:
+    virtual ~AudioInputStream() = default;
+    virtual std::string error() const = 0;  // empty while recording
+    virtual std::string deviceName() const = 0;
+    virtual int channels() const = 0;       // of the device (0 until opened)
+};
+std::unique_ptr<AudioInputStream> openAudioInput(const std::string& deviceId, std::shared_ptr<AudioRing> ring);
+
 }  // namespace mosaic

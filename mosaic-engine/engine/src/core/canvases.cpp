@@ -52,6 +52,14 @@ void Canvases::sync() {
         std::lock_guard l(m_);
         for (auto it = runs_.begin(); it != runs_.end();) {
             bool keep = std::any_of(slots.begin(), slots.end(), [&](auto& c) { return c.id == it->first; });
+            auto& run = it->second;
+            bool failed = !run->engine ? !run->error.empty() : run->engine->failed();
+            if (keep && failed && std::chrono::steady_clock::now() - run->started > std::chrono::seconds(3 + std::min(run->restarts, 10) * 3)) {
+                // Its GPU device was lost or it couldn't start: try again (waiting longer each time).
+                std::cerr << "[canvas] " << it->first << " starts again (" << (run->engine ? run->engine->failure() : run->error) << ")\n";
+                restarts_[it->first] = run->restarts + 1;
+                keep = false;
+            }
             if (keep && wantGpu.count(it->first) && wantGpu[it->first] != it->second->gpu) {
                 // Moved to another GPU: started again there (its streams pause for a moment).
                 std::cerr << "[canvas] " << it->first << " moves to " << (wantGpu[it->first] < 0 ? std::string("the default GPU") : "GPU " + std::to_string(wantGpu[it->first] + 1)) << "\n";
@@ -77,6 +85,7 @@ void Canvases::sync() {
             auto run = std::make_shared<CanvasRun>();
             RendererOptions ro = rendererOptions_;
             ro.gpu = run->gpu = wantGpu.count(c.id) ? wantGpu[c.id] : -1;
+            run->restarts = restarts_.count(c.id) ? restarts_[c.id] : 0;
             run->renderer = createRenderer(ro, run->error);
             if (run->renderer) {
                 run->engine = std::make_unique<Engine>(*run->renderer, store_, ndi_, c.id);

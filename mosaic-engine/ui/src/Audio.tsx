@@ -49,6 +49,7 @@ export function AudioSection({ layout, onChanged, onError }: { layout: Layout; o
     const s = named.find((x) => x.ndiName === ndi);
     return s && s.name !== ndi ? `${s.name} (${ndi})` : ndi;
   };
+  const inputs = info?.inputs ?? [];
 
   return (
     <section className="list">
@@ -77,7 +78,7 @@ export function AudioSection({ layout, onChanged, onError }: { layout: Layout; o
         </button>
       </div>
       <small className="muted">
-        Plays an NDI source's sound on one of the media server's sound devices, delayed to match the wall
+        Plays an NDI source's sound, or a sound input such as a capture card's audio, on one of the media server's sound devices, delayed to match the wall
         {info ? ` (${Math.round(info.wallDelayMs)} ms now: the receivers' buffer plus the media server's and receivers' own delay)` : ""}. The TVs add their own
         processing on top: clap in front of the wall and adjust the trim until sound and picture line up.
       </small>
@@ -102,13 +103,26 @@ export function AudioSection({ layout, onChanged, onError }: { layout: Layout; o
             <label className="field wide">
               <span>Source</span>
               <select value={o.source} onChange={(e) => patch(o.id, { source: e.target.value })}>
-                <option value="">Choose an NDI source…</option>
-                {sourceNames.map((n) => (
-                  <option key={n} value={n}>
-                    {label(n)}
-                  </option>
-                ))}
-                {o.source && !sourceNames.includes(o.source) && <option value={o.source}>{o.source} (not seen)</option>}
+                <option value="">Choose a source…</option>
+                <optgroup label="NDI sources">
+                  {sourceNames.map((n) => (
+                    <option key={n} value={n}>
+                      {label(n)}
+                    </option>
+                  ))}
+                </optgroup>
+                {inputs.length > 0 && (
+                  <optgroup label="Sound inputs (capture card audio, line in)">
+                    {inputs.map((d) => (
+                      <option key={d.id} value={`input:${d.id}`}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {o.source && !sourceNames.includes(o.source) && !inputs.some((d) => `input:${d.id}` === o.source) && (
+                  <option value={o.source}>{o.source.startsWith("input:") ? "a sound input (not connected)" : `${o.source} (not seen)`}</option>
+                )}
               </select>
             </label>
             <div className="audio-row">

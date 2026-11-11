@@ -305,6 +305,14 @@ public:
 
     std::string backendName() const override { return fence_ ? "Direct3D 11.4" : "Direct3D 11"; }
     std::string deviceName() const override { return deviceName_; }
+    std::string deviceLost() override {
+        HRESULT r = device_->GetDeviceRemovedReason();
+        if (r == S_OK) return "";
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "the GPU device was lost (0x%08lx: %s)", static_cast<unsigned long>(r),
+                      r == DXGI_ERROR_DEVICE_HUNG ? "hung" : r == DXGI_ERROR_DEVICE_RESET ? "reset" : r == DXGI_ERROR_DRIVER_INTERNAL_ERROR ? "driver error" : r == DXGI_ERROR_DEVICE_REMOVED ? "removed or the driver restarted" : "other");
+        return buf;
+    }
     double gpuUtilization() override { return util_.sample(); }
 
     TexId createTexture(int w, int h, TexUsage usage) override {

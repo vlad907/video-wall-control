@@ -99,6 +99,8 @@ public:
     // ---- video files (render thread) ----
     // The native device (ID3D11Device* on Windows), so a hardware video decoder can use the same GPU.
     virtual void* nativeDevice() { return nullptr; }
+    // Why the GPU device stopped working (driver reset, card removed), "" while it's fine.
+    virtual std::string deviceLost() { return ""; }
 
     // ---- display outputs: full screen on a monitor connected to this GPU (render thread) ----
     // Opens a borderless full-screen window on the monitor ("\\.\DISPLAY3", see listGpus()). 0 and

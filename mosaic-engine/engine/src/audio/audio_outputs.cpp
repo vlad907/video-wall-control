@@ -12,10 +12,15 @@ using nlohmann::json;
 
 namespace mosaic {
 
+// What an output plays: an NDI source's audio, or a sound input ("input:<device id>": a capture
+// card's audio, a line in), into a ring shared by every output playing it.
 struct AudioOutputs::Source {
     std::shared_ptr<AudioRing> ring = std::make_shared<AudioRing>();
     std::unique_ptr<NdiAudioInput> rx;
+    std::unique_ptr<AudioInputStream> in;
 };
+
+static bool isInput(const std::string& source) { return source.rfind("input:", 0) == 0; }
 
 // What an output's device thread reads (settings) and writes (meters), without locks.
 struct AudioOutputs::Live {
@@ -92,7 +97,8 @@ void AudioOutputs::configure(const std::vector<AudioOutputConfig>& outputs, doub
             auto& src = sources_[c->source];
             if (!src) {
                 src = std::make_shared<Source>();
-                if (ndi_) src->rx = ndi_->createAudioReceiver(c->source, src->ring);
+                if (isInput(c->source)) src->in = openAudioInput(c->source.substr(6), src->ring);
+                else if (ndi_) src->rx = ndi_->createAudioReceiver(c->source, src->ring);
             }
             o->source = src;
             o->live->ring = src->ring;
@@ -128,14 +134,28 @@ json AudioOutputs::status() const {
             error = "the device has " + std::to_string(ch) + " channels: no channel pair " + std::to_string(o->cfg.channelPair * 2 + 1) + "-" +
                     std::to_string(o->cfg.channelPair * 2 + 2);
         double since = steadySeconds() - src.ring->lastArrival();
+        std::string sourceError;
+        bool sourceConnected = false;
+        int sourceChannels = 0;
+        if (src.in) {
+            sourceError = src.in->error();
+            if (sourceError.empty() && since > 1) sourceError = "no sound from the input";
+            sourceConnected = sourceError.empty();
+            sourceChannels = src.in->channels();
+        } else {
+            sourceError = !ndi_ ? "NDI isn't available" : !src.rx ? "cannot connect to the source" : since > 1 ? "no audio from the source" : "";
+            sourceConnected = src.rx != nullptr && src.rx->connected();
+            sourceChannels = src.rx ? src.rx->channels() : 0;
+        }
         list.push_back({{"id", id},
                         {"device", o->stream->deviceName()},
                         {"channels", ch},
                         {"rate", o->stream->rate()},
                         {"error", error},
-                        {"sourceConnected", src.rx != nullptr && src.rx->connected()},
-                        {"sourceChannels", src.rx ? src.rx->channels() : 0},
-                        {"sourceError", !ndi_ ? "NDI isn't available" : !src.rx ? "cannot connect to the source" : since > 1 ? "no audio from the source" : ""},
+                        {"sourceConnected", sourceConnected},
+                        {"sourceChannels", sourceChannels},
+                        {"sourceError", sourceError},
+                        {"sourceName", src.in ? src.in->deviceName() : ""},
                         {"levelDb", {db(live.peakL.exchange(0)), db(live.peakR.exchange(0))}},
                         {"delayMs", effectiveDelayMs(o->cfg, wallDelayMs_)},
                         {"offByMs", live.errorMs.load()},

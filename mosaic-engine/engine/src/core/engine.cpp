@@ -112,10 +112,14 @@ void Engine::start() {
 void Engine::stop() {
     if (!running_.exchange(false)) return;
     if (thread_.joinable()) thread_.join();
-    // Tear down: close display outputs, stop senders, let the GPU finish, then free resources.
-    for (auto& [oid, d] : displays_)
-        if (d.id) renderer_.destroyDisplay(d.id);
-    displays_.clear();
+    if (failed_) {
+        // The device is gone: GPU calls would fail. Senders stop; GPU objects go with the renderer.
+        std::lock_guard l(channelsMutex_);
+        for (auto& [id, ch] : channels_) ch->shutdown();
+        return;
+    }
+    // Tear down: stop senders, let the GPU finish, then free resources (display outputs were
+    // closed by the render thread).
     std::map<std::string, std::shared_ptr<OutputChannel>> channels;
     {
         std::lock_guard l(channelsMutex_);
@@ -158,10 +162,46 @@ bool Engine::captureForTransition(int ms, Rect region) {
 // ---------------------------------------------------------------------------
 
 void Engine::loop() {
+    try {
+        run();
+    } catch (const std::exception& e) {
+        // The GPU device was lost (driver reset, card removed) or a GPU call failed: this canvas
+        // stops here and Canvases starts it again; the other canvases carry on.
+        fail(e.what());
+    }
+    // Display windows belong to this thread: closed here (Windows won't let another thread).
+    try {
+        for (auto& [oid, d] : displays_)
+            if (d.id) renderer_.destroyDisplay(d.id);
+    } catch (...) {
+    }
+    displays_.clear();
+}
+
+void Engine::fail(const std::string& why) {
+    {
+        std::lock_guard l(statusMutex_);
+        failure_ = why;
+    }
+    failed_ = true;
+    std::cerr << "[engine] canvas " << canvasId_ << " stopped: " << why << "\n";
+}
+
+std::string Engine::failure() const {
+    std::lock_guard l(statusMutex_);
+    return failure_;
+}
+
+void Engine::run() {
     raiseThreadPriority(ThreadRole::Render);
     PreciseSleeper sleeper;
     auto next = Clock::now();
     while (running_) {
+        if (simulateFailure_) throw std::runtime_error("simulated GPU device loss (test)");
+        if (frameId_ % 60 == 0) {
+            std::string lost = renderer_.deviceLost();
+            if (!lost.empty()) return fail(lost);
+        }
         auto layout = store_.snapshot(canvasId_);
         if (!layout) {  // the canvas is being stopped
             std::this_thread::sleep_for(std::chrono::milliseconds(20));

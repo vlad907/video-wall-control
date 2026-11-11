@@ -23,6 +23,8 @@ export interface AudioInfo {
   wallDelayMs: number;
   devices: { id: string; name: string; channels: number; rate: number; default: boolean }[];
   devicesError: string;
+  inputs?: { id: string; name: string; channels: number; rate: number }[]; // sound inputs (capture card audio): source "input:<id>"
+  inputsError?: string;
   ndiSources: string[];
   outputs: {
     id: string;
@@ -362,6 +364,14 @@ export function switchCanvas(id: string) {
 export const withCanvas = (url: string) => (canvasId ? `${url}${url.includes("?") ? "&" : "?"}canvas=${encodeURIComponent(canvasId)}` : url);
 
 export interface OutputMetrics {
+  // Display outputs (sink "display"): the monitor and what reached it (no NDI numbers).
+  display?: string;
+  open?: boolean;
+  error?: string;
+  presents?: number;
+  busy?: number;
+  repeats?: number;
+  refreshHz?: number;
   id: string;
   name: string;
   ndiName: string;

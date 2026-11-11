@@ -147,7 +147,14 @@ NDI. It's drawn at the monitor's resolution straight into a flip-model window (n
 frame), and a canvas with display outputs runs on its first monitor's refresh (every refresh, or every
 other one for 30 fps on 60 Hz), so they never drop or repeat frames. A monitor on another GPU is
 refused with which GPU it's on; one that's unplugged is tried again every couple of seconds. Status per
-output in `/api/metrics` (`presents`, `busy`, `repeats`, `error`). Windows only.
+output in `/api/metrics` (`presents`, `busy`, `repeats`, `error`). Windows only. A wall group's
+*Displays* tab has **Send to monitors in order**: its displays, row by row, to the GPU's monitors
+left to right, top to bottom (as arranged in Windows' display settings), and **Back to NDI**.
+
+**If a GPU's driver resets** (or a GPU call fails), only that canvas stops: its render thread
+reports why and the canvas starts again by itself after 3 s (longer after repeated failures); the
+other canvases carry on. `GET /api/canvases` shows `error` and `restarts`.
+`POST /api/canvases/:id/simulate-gpu-loss` triggers it, for testing.
 
 **Keeping a canvas's PCs in step**: each Mosaic Receiver reports when recent frames appeared, on its
 estimate of the engine's clock, and the Endpoints panel shows how far apart the canvas's PCs are
@@ -162,7 +169,9 @@ Windows as video capture devices (Media Foundation; Windows converts their forma
 device's largest format is used, at up to 60 fps. A card can be open in one program at a time, so close
 OBS; the engine opens each card once and shares it with every canvas that shows it. **Send as NDI
 stream** (in the source's panel) adds an output that sends the card on its own, at its own resolution,
-which replaces OBS for that. `GET /api/capture` lists the devices and the open ones (size, fps,
+which replaces OBS for that. The card's **sound** usually appears in Windows as a recording device:
+pick it as an audio output's source (Settings → Audio, *Sound inputs*), and it plays delayed to match
+the wall like an NDI source's audio (`"source": "input:<device id>"`, devices in `GET /api/audio`). `GET /api/capture` lists the devices and the open ones (size, fps,
 viewers). A built-in *Mosaic test capture* device (colour bars, 1280 × 720 at 60 fps) works on any PC,
 for trying the whole path without a card.
 

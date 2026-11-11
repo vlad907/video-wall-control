@@ -20,4 +20,20 @@ public:
 
 std::unique_ptr<AudioDeviceStream> openAudioDevice(const std::string&, AudioRender) { return std::make_unique<NoDevice>(); }
 
+std::vector<AudioDevice> listAudioInputs(std::string& error) {
+    error = "sound inputs need Windows";
+    return {};
+}
+
+namespace {
+class NoInput final : public AudioInputStream {
+public:
+    std::string error() const override { return "sound inputs need Windows"; }
+    std::string deviceName() const override { return ""; }
+    int channels() const override { return 0; }
+};
+}  // namespace
+
+std::unique_ptr<AudioInputStream> openAudioInput(const std::string&, std::shared_ptr<AudioRing>) { return std::make_unique<NoInput>(); }
+
 }  // namespace mosaic

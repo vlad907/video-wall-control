@@ -406,6 +406,16 @@ with tempfile.TemporaryDirectory() as tmp:
         gs = json.loads(get("/api/endpoints", canvas=c2)[1])["groupSync"]
         check(gs.get("pcs") == 2 and abs(gs.get("spreadMs", 0) - 6) < 0.5, f"the canvas's PCs are compared ({gs})")
         check(any(x["host"] == "two-a" for x in json.loads(get("/api/endpoints")[1]).get("elsewhere", [])), "the first canvas lists them as on another canvas")
+        call("POST", f"/api/canvases/{c2}/simulate-gpu-loss", {})
+        back = False
+        for _ in range(40):
+            time.sleep(0.5)
+            c = next(x for x in call("GET", "/api/canvases")["canvases"] if x["id"] == c2)
+            if c["restarts"] >= 1 and c["running"] and not c["error"] and c.get("renderFps", 0) > 5:
+                back = True
+                break
+        check(back, "a canvas whose GPU device is lost starts again by itself")
+        check(json.loads(get("/api/metrics")[1])["engine"]["renderFps"] > 5, "the other canvas kept running")
         call("DELETE", f"/api/canvases/{c2}")
         try:
             call("PATCH", "/api/outputs/w2-1", {"name": "x"}, canvas=c2)

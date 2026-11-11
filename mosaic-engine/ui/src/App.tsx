@@ -109,7 +109,7 @@ export function App() {
     const es = new EventSource(withCanvas("/api/events"));
     es.onmessage = (ev) => {
       const data = JSON.parse(ev.data) as { metrics: Metrics; layoutVersion: number };
-      setMetrics(data.metrics);
+      setMetrics(data.metrics?.engine ? data.metrics : null);  // empty while this canvas is (re)starting
       if (versionRef.current !== -1 && data.layoutVersion !== versionRef.current) reload();
       versionRef.current = data.layoutVersion;
     };
@@ -509,14 +509,19 @@ export function App() {
               <h3>Outputs</h3>
             </div>
             {(metrics?.outputs ?? []).map((o) => {
-              const bad = o.enabled && (o.fps < (metrics?.engine.targetFps ?? 60) * 0.97 || o.droppedNoBuffer + o.droppedQueue > 0);
+              const isDisplay = o.sink === "display";
+              const bad = o.enabled && (isDisplay ? !o.open || !!o.error : o.fps < (metrics?.engine.targetFps ?? 60) * 0.97 || o.droppedNoBuffer + o.droppedQueue > 0);
               return (
                 <div key={o.id} className="list-item" onClick={() => selectOutput(o.id)}>
                   <span className={`dot ${!o.enabled ? "off" : bad ? "warn" : "on"}`} />
                   <div className="list-text">
                     <div>{o.name}</div>
                     <small>
-                      {o.fps.toFixed(1)} fps · {o.connections >= 0 ? `${o.connections} receiver(s)` : o.sink}
+                      {isDisplay
+                        ? o.error
+                          ? `monitor ${o.display ?? ""}: ${o.error}`
+                          : `${(o.fps ?? 0).toFixed(1)} fps on ${o.display ?? "a monitor"}`
+                        : `${o.fps.toFixed(1)} fps · ${o.connections >= 0 ? `${o.connections} receiver(s)` : o.sink}`}
                     </small>
                   </div>
                 </div>

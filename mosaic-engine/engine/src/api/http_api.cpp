@@ -1270,7 +1270,8 @@ struct HttpApi::Impl {
                 c["gpu"] = run && run->renderer ? run->renderer->deviceName() : "";
                 c["gpuIndex"] = run ? run->gpu : -1;
                 c["gpuWanted"] = l->gpu;
-                c["error"] = run ? run->error : "starting";
+                c["error"] = !run ? "starting" : run->engine && run->engine->failed() ? run->engine->failure() + " (starting again)" : run->error;
+                c["restarts"] = run ? run->restarts : 0;
                 if (run && run->engine) c["renderFps"] = run->engine->metrics()["engine"].value("renderFps", 0.0);
                 list.push_back(c);
                 first = false;
@@ -1339,6 +1340,13 @@ struct HttpApi::Impl {
             if (id.empty()) return sendError(res, 409, "that layout is already on a canvas");
             canvases.sync();
             sendJson(res, {{"id", id}, {"layout", layoutId}, {"problems", canvases.problems()}}, 201);
+        }));
+        // Tests: the canvas's render thread fails as if its GPU device was lost; it starts again.
+        s.Post(R"(/api/canvases/([A-Za-z0-9_\-]+)/simulate-gpu-loss)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            auto run = canvases.get(req.matches[1]);
+            if (!run || !run->engine) return sendError(res, 404, "no such running canvas");
+            run->engine->simulateFailure();
+            sendJson(res, {{"simulated", std::string(req.matches[1])}});
         }));
         s.Delete(R"(/api/canvases/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
             std::string id = req.matches[1];
@@ -1421,6 +1429,12 @@ struct HttpApi::Impl {
             json out = eng().audioStatus();
             out["devices"] = devices;
             out["devicesError"] = error;
+            // Sound inputs (a capture card's audio, a line in): an output plays one as source "input:<id>".
+            std::string inError;
+            json inputs = json::array();
+            for (auto& d : listAudioInputs(inError)) inputs.push_back({{"id", d.id}, {"name", d.name}, {"channels", d.channels}, {"rate", d.rate}});
+            out["inputs"] = inputs;
+            out["inputsError"] = inError;
             out["ndiSources"] = eng().discoveredNdiSources();
             sendJson(res, out);
         }));

@@ -286,6 +286,25 @@ Connection: close
 `Content-Length: 0`, and the preset is recalled with a cut. Look for `HTTP/1.1 200` in the reply.
 Q-SYS Lua can use `HttpClient.Upload{Url=..., Method="POST", Data=..., Headers={["Content-Type"]="application/json"}}`.
 
+## Other walls (canvases)
+
+Each canvas (Mosaic 1, Mosaic 2, Video wall 1, ...) has its own groups and presets. Requests go to the
+primary canvas unless they name another, so existing buttons keep working. To control another one,
+add **`?canvas=<id>`** to the URL (works everywhere, including Companion and raw TCP) or send the
+header `X-Mosaic-Canvas: <id>`. The ids are `canvas-1`, `canvas-2`, ...:
+
+```bash
+curl http://192.168.1.187:8090/api/canvases          # ids, names, which layout each shows
+curl "http://192.168.1.187:8090/api/control?canvas=canvas-2"   # groups and presets of canvas 2
+curl -X POST "http://192.168.1.187:8090/api/walls/main-wall/presets/camera-1-full/recall?canvas=canvas-2" \
+     -H 'Content-Type: application/json' -d '{"transitionMs":500}'
+```
+
+- **Companion**: the same button URL with `?canvas=canvas-2` at the end. One connection serves every wall.
+- **Raw TCP** (Crestron / Q-SYS / AMX): `POST /api/walls/main-wall/presets/camera-1-full/recall?canvas=canvas-2 HTTP/1.1`.
+- A canvas id stays the same when the layout on it changes. If a canvas is stopped, changes naming it
+  get `409` (nothing is changed on another wall by mistake).
+
 ## Live status
 
 `GET /api/events` is a Server-Sent Events stream. About twice a second it sends

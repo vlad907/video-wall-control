@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { dialog } from "./Dialogs";
-import type { Layout, Wall } from "./api";
+import { useEffect, useState } from "react";
+import { dialog, toast } from "./Dialogs";
+import { api, type GpuInfo, type Layout, type Wall } from "./api";
 import { GroupContent } from "./GroupContent";
 import { NumberField } from "./Inspector";
 
@@ -52,6 +52,64 @@ function freeSpot(layout: Layout): { x: number; y: number } {
 // Edits one wall group: one output per panel of a cols x rows grid, leaving canvas
 // pixels out for the bezels so lines continue straight across panel edges.
 // A 1 x 1 group is a single display (a double-wide screen is one 3840 x 1080 panel).
+// A group's displays on monitors of the canvas's GPU (DisplayPort / HDMI) instead of NDI: assigns its
+// outputs, row by row, to the monitors in desktop order (left to right, top to bottom), the way
+// they're usually arranged in Windows' display settings to match the wall.
+function GroupMonitors({ layout, wall, onChanged, onError }: { layout: Layout; wall: Wall; onChanged: () => void; onError: (e: unknown) => void }) {
+  const [gpus, setGpus] = useState<GpuInfo[]>([]);
+  useEffect(() => {
+    api.gpus().then(setGpus).catch(() => {});
+  }, []);
+  const outputs = layout.outputs
+    .filter((o) => o.group === wall.id)
+    .sort((a, b) => +(a.id.match(/(\d+)$/)?.[1] ?? 0) - +(b.id.match(/(\d+)$/)?.[1] ?? 0));
+  const monitors = gpus
+    .filter((g) => layout.gpu === undefined || layout.gpu < 0 || g.index === layout.gpu)
+    .flatMap((g) => g.outputs)
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+  const label = (n: string) => n.replace(/^\\\\\.\\/, "");
+  const onMonitors = outputs.filter((o) => o.display).length;
+  const assign = async (toMonitors: boolean) => {
+    if (toMonitors && monitors.length < outputs.length) {
+      const ok = await dialog.confirm(`Only ${monitors.length} monitor(s) for ${outputs.length} displays`, {
+        message: "The first ones go to the monitors; the rest stay NDI streams.",
+        okLabel: "Go ahead",
+      });
+      if (!ok) return;
+    }
+    try {
+      for (let i = 0; i < outputs.length; ++i) await api.patchOutput(outputs[i].id, { display: toMonitors ? (monitors[i]?.name ?? "") : "" });
+      toast(toMonitors ? "Sent to the monitors" : "Back to NDI streams");
+      onChanged();
+    } catch (e) {
+      onError(e);
+    }
+  };
+  return (
+    <div className="group">
+      <h3>Monitors (DisplayPort)</h3>
+      <small className="muted">
+        {onMonitors
+          ? `${onMonitors} of ${outputs.length} display(s) on monitors: ${outputs
+              .filter((o) => o.display)
+              .map((o) => `${o.name} → ${label(o.display!)}`)
+              .join(", ")}`
+          : monitors.length
+            ? `This canvas's GPU has ${monitors.length} monitor(s): ${monitors.map((m) => `${label(m.name)} ${m.width}×${m.height}`).join(", ")}.`
+            : "No monitors on this canvas's GPU (or this isn't Windows)."}
+      </small>
+      <div className="row buttons">
+        <button disabled={!monitors.length} onClick={() => assign(true)} title="Row by row, to the monitors left to right, top to bottom">
+          Send to monitors in order
+        </button>
+        <button disabled={!onMonitors} onClick={() => assign(false)}>
+          Back to NDI
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function WallPanel({
   layout,
   wall,
@@ -160,6 +218,7 @@ export function WallPanel({
         </label>
       </div>
 
+      {wall && <GroupMonitors layout={layout} wall={wall} onChanged={onChanged} onError={onError} />}
       <div className="group">
         <h3>Grid</h3>
         <NumberField label="Columns" value={w.cols} min={1} onCommit={(cols) => set({ cols: Math.min(16, cols) })} />

@@ -33,6 +33,12 @@ public:
     // Renders one canvas (canvasId: see LayoutStore), following its layout.
     Engine(Renderer& renderer, LayoutStore& store, NdiSystem* ndi, std::string canvasId = "canvas-1");
     const std::string& canvasId() const { return canvasId_; }
+    // The render thread stopped on an error (GPU device lost, a GPU call failed): why. The canvas
+    // is then started again (Canvases::sync).
+    bool failed() const { return failed_; }
+    // Tests: the next frame fails as if the GPU device was lost.
+    void simulateFailure() { simulateFailure_ = true; }
+    std::string failure() const;
     ~Engine();
 
     void start();
@@ -103,6 +109,10 @@ private:
     };
 
     void loop();
+    void run();
+    void fail(const std::string& why);
+    std::atomic<bool> failed_{false}, simulateFailure_{false};
+    std::string failure_;  // statusMutex_
     void reconcile(const Layout& layout);
     void renderFrame(const Layout& layout, uint64_t frameId, Clock::time_point tick, double seconds);
     void updateSources(const Layout& layout, const std::set<std::string>& needed, uint64_t frameId, double seconds);
@@ -185,7 +195,7 @@ private:
     Rect transitionRequestRect_;
     bool transitionCaptured_ = false;
 
-    std::mutex statusMutex_;
+    mutable std::mutex statusMutex_;
     nlohmann::json sourceStatus_ = nlohmann::json::array();
 
     // Metrics

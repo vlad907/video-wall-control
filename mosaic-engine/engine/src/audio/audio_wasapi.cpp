@@ -204,18 +204,132 @@ private:
     std::string error_ = "starting…", name_;
 };
 
-}  // namespace
+// Records a sound input (capture card audio, line in) into a ring, in shared mode.
+class WasapiInput final : public AudioInputStream {
+public:
+    WasapiInput(std::string id, std::shared_ptr<AudioRing> ring) : id_(std::move(id)), ring_(std::move(ring)) {
+        thread_ = std::thread([this] { run(); });
+    }
+    ~WasapiInput() override {
+        stop_ = true;
+        thread_.join();
+    }
+    std::string error() const override {
+        std::lock_guard l(m_);
+        return error_;
+    }
+    std::string deviceName() const override {
+        std::lock_guard l(m_);
+        return name_;
+    }
+    int channels() const override { return channels_; }
 
-std::vector<AudioDevice> listAudioDevices(std::string& error) {
+private:
+    void setError(const std::string& e) {
+        std::lock_guard l(m_);
+        error_ = e;
+    }
+    void run() {
+        ComScope com;
+        DWORD task = 0;
+        HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &task);
+        HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        while (!stop_) {
+            std::string err = record(event);
+            if (stop_) break;
+            setError(err.empty() ? "the sound input stopped" : err);
+            channels_ = 0;
+            for (int i = 0; i < 20 && !stop_; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        CloseHandle(event);
+        if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
+    }
+    std::string record(HANDLE event) {
+        std::string err;
+        auto e = enumerator(err);
+        if (!e) return err;
+        ComPtr<IMMDevice> dev;
+        HRESULT h = id_.empty() ? e->GetDefaultAudioEndpoint(eCapture, eConsole, &dev) : e->GetDevice(widen(id_).c_str(), &dev);
+        if (FAILED(h)) return "the sound input isn't connected";
+        {
+            std::lock_guard l(m_);
+            name_ = friendlyName(dev.Get());
+        }
+        ComPtr<IAudioClient> client;
+        if (FAILED(h = dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &client))) return hr("opening the input", h);
+        WAVEFORMATEX* fmt = nullptr;
+        if (FAILED(h = client->GetMixFormat(&fmt))) return hr("reading the input format", h);
+        std::unique_ptr<WAVEFORMATEX, decltype(&CoTaskMemFree)> fmtHold(fmt, CoTaskMemFree);
+        const bool fl = isFloat(fmt);
+        if (!fl && fmt->wBitsPerSample != 16) return "the input's format isn't supported (" + std::to_string(fmt->wBitsPerSample) + "-bit)";
+        h = client->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 200000 /* 20 ms */, 0, fmt, nullptr);
+        if (FAILED(h)) return hr("starting the input", h);
+        client->SetEventHandle(event);
+        ComPtr<IAudioCaptureClient> cap;
+        if (FAILED(h = client->GetService(IID_PPV_ARGS(&cap)))) return hr("opening the input's buffer", h);
+        const int ch = fmt->nChannels;
+        const int rate = static_cast<int>(fmt->nSamplesPerSec);
+        channels_ = ch;
+        std::vector<float> l, r;
+        if (FAILED(h = client->Start())) return hr("starting the recording", h);
+        setError("");
+        while (!stop_) {
+            WaitForSingleObject(event, 200);
+            UINT32 packet = 0;
+            while (SUCCEEDED(h = cap->GetNextPacketSize(&packet)) && packet > 0) {
+                BYTE* data = nullptr;
+                UINT32 frames = 0;
+                DWORD flags = 0;
+                UINT64 devPos = 0, qpcPos = 0;
+                if (FAILED(h = cap->GetBuffer(&data, &frames, &flags, &devPos, &qpcPos))) break;
+                l.assign(frames, 0.f);
+                r.assign(frames, 0.f);
+                if (!(flags & AUDCLNT_BUFFERFLAGS_SILENT) && data) {
+                    for (UINT32 i = 0; i < frames; ++i) {
+                        float a, b;
+                        if (fl) {
+                            const float* f = reinterpret_cast<const float*>(data) + static_cast<size_t>(i) * ch;
+                            a = f[0];
+                            b = ch > 1 ? f[1] : f[0];
+                        } else {
+                            const int16_t* s16 = reinterpret_cast<const int16_t*>(data) + static_cast<size_t>(i) * ch;
+                            a = s16[0] / 32768.f;
+                            b = (ch > 1 ? s16[1] : s16[0]) / 32768.f;
+                        }
+                        l[i] = a;
+                        r[i] = b;
+                    }
+                }
+                // When it was recorded (QPC, the steady clock's base on Windows), else now.
+                double at = qpcPos ? static_cast<double>(qpcPos) / 1e7 : steadySeconds();
+                ring_->push(l.data(), r.data(), static_cast<int>(frames), rate, at);
+                cap->ReleaseBuffer(frames);
+            }
+            if (FAILED(h)) return h == AUDCLNT_E_DEVICE_INVALIDATED ? "the sound input was unplugged or changed" : hr("recording", h);
+        }
+        client->Stop();
+        return "";
+    }
+
+    std::string id_;
+    std::shared_ptr<AudioRing> ring_;
+    std::thread thread_;
+    std::atomic<bool> stop_{false};
+    std::atomic<int> channels_{0};
+    mutable std::mutex m_;
+    std::string error_ = "starting…", name_;
+};
+
+std::vector<AudioDevice> listEndpoints(EDataFlow flow, std::string& error) {
     ComScope com;
     std::vector<AudioDevice> list;
     auto e = enumerator(error);
     if (!e) return list;
     std::string def;
     ComPtr<IMMDevice> d;
-    if (SUCCEEDED(e->GetDefaultAudioEndpoint(eRender, eConsole, &d))) def = deviceId(d.Get());
+    if (SUCCEEDED(e->GetDefaultAudioEndpoint(flow, eConsole, &d))) def = deviceId(d.Get());
     ComPtr<IMMDeviceCollection> all;
-    HRESULT h = e->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &all);
+    HRESULT h = e->EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE, &all);
     if (FAILED(h)) {
         error = hr("listing sound devices", h);
         return list;
@@ -239,6 +353,15 @@ std::vector<AudioDevice> listAudioDevices(std::string& error) {
         list.push_back(a);
     }
     return list;
+}
+
+}  // namespace
+
+std::vector<AudioDevice> listAudioDevices(std::string& error) { return listEndpoints(eRender, error); }
+std::vector<AudioDevice> listAudioInputs(std::string& error) { return listEndpoints(eCapture, error); }
+
+std::unique_ptr<AudioInputStream> openAudioInput(const std::string& deviceId, std::shared_ptr<AudioRing> ring) {
+    return std::make_unique<WasapiInput>(deviceId, std::move(ring));
 }
 
 std::unique_ptr<AudioDeviceStream> openAudioDevice(const std::string& deviceId, AudioRender render) {

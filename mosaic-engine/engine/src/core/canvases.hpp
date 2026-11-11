@@ -24,6 +24,8 @@ struct CanvasRun {
     std::unique_ptr<Engine> engine;
     std::string error;  // why it couldn't start (no engine then)
     int gpu = -1;       // the GPU it was started on (RendererOptions::gpu)
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    int restarts = 0;   // times it was started again after failing
     ~CanvasRun();
 };
 
@@ -56,6 +58,7 @@ private:
     std::filesystem::path mediaDir_;
     mutable std::mutex m_;
     std::map<std::string, std::shared_ptr<CanvasRun>> runs_;
+    std::map<std::string, int> restarts_;  // by canvas: restarts after failures (for the back-off)
     mutable std::mutex gpuMutex_;
     mutable std::vector<GpuInfo> gpus_;
     mutable std::chrono::steady_clock::time_point gpusAt_{};
