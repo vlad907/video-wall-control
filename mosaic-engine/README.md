@@ -114,6 +114,35 @@ on the canvas), `crop` (part of the source shown; `w`/`h` 0 = all of it), `opaci
 
 Rotation is clockwise. A display physically mounted 90° counter-clockwise needs `rotation: 90`.
 
+## Canvases (several walls at once)
+
+A **canvas** is a layout that runs at the same time as the others, on its own render thread:
+one per separate video wall or group of receiving PCs. For example:
+
+| Canvas | Shown on |
+|---|---|
+| Mosaic 1 | one receiving PC, four displays |
+| Mosaic 2 | four receiving PCs |
+
+- The editor's top bar picks the canvas you're editing (**Canvas**), adds one (**+ Canvas**: a new
+  layout with a test pattern; add a wall group to give it displays) or stops one (**Stop canvas**:
+  its streams stop, the layout stays saved). The first canvas is the primary one and can't be stopped.
+- Everything in the editor (displays, groups, presets, sources, endpoints, audio, buffer) is per
+  canvas: each is its own layout. **Layout** switches the layout on this canvas in place, as before.
+- A receiving PC follows the canvas whose layout lists it under Endpoints (a receiver group per
+  canvas). PCs set up on other canvases are listed under "On other canvases", not as new.
+- Each canvas's NDI streams are named after it (`ndiPrefix`: "Mosaic 2" sends `Mosaic_2_01`, ...).
+  Two canvases sending the same name are flagged (⚠ next to Canvas).
+- The canvases are kept in `data/state.json`; before canvases it held only the active layout, which
+  becomes `canvas-1`.
+
+For now every canvas renders on the same GPU (the first). Next: a GPU per canvas, outputs straight to
+a monitor connector (DisplayPort), and a capture card source.
+
+Keeping the PCs of one canvas in step with each other needs the Mosaic Receiver with a buffer
+(each PC shows each frame at the engine's time plus the buffer): within one refresh, since separate
+PCs' monitors can't be locked to one refresh.
+
 ## Video walls, layering and scenes
 
 **Wall groups** (Outputs → *+ Group*, or `POST /api/walls`). A layout can hold several groups,
@@ -282,7 +311,10 @@ Across the whole source there's also:
 | GET | `/api/outputs/:id/snapshot.jpg` | full-res frame (header `X-Frame-Id`) |
 | GET | `/api/outputs/:id/frame.bgra` | the same frame as raw BGRA (UYVY decoded); headers `X-Width`, `X-Height`, `X-Frame-Id` |
 | GET | `/api/preview/:target.jpg` | low-res live preview, `target` = `canvas` or an output id |
-| GET / PUT | `/api/layout` | the whole active layout |
+| GET / PUT | `/api/layout` | the whole active layout (the canvas the request names, see below) |
+| GET | `/api/canvases` | running canvases (primary first): layout, GPU, frame rate, which one this request is about, problems |
+| POST | `/api/canvases` | `{"name"}`: a new canvas with a new layout, or `{"layout"}`: run a saved layout as another canvas |
+| DELETE | `/api/canvases/:id` | stop a canvas (its layout stays saved; not the last one) |
 | GET | `/api/layouts` | saved layouts |
 | GET / DELETE | `/api/layouts/:id` | |
 | POST | `/api/layouts` | save a layout (full body), or `{"fromActive":true,"name":"..."}` to save a copy |
@@ -314,6 +346,10 @@ Across the whole source there's also:
 | DELETE | `/api/scenes/:id` | |
 | GET | `/api/metrics` | engine, per-output and sync metrics |
 | GET | `/api/events` | server-sent events: metrics + layout version every 500 ms |
+
+Requests are about the primary canvas unless they name another: `X-Mosaic-Canvas: canvas-2`
+(header), or `?canvas=canvas-2` where a header can't be sent (event streams, images). A change
+naming a canvas that's been stopped is refused (`409`).
 
 Examples:
 

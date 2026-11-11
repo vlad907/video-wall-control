@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, storedKey, type Layout, type Output, type Rect } from "./api";
+import { api, currentCanvas, storedKey, type Layout, type Output, type Rect } from "./api";
 import { toast } from "./Dialogs";
 
 const PATTERN_NAME = "Alignment (temporary)";
@@ -128,7 +128,9 @@ export function BezelPanel({ layout, ids, onClose, onError }: { layout: Layout; 
     const onHide = () => {
       if (!patternRef.current) return;
       const key = storedKey();
-      fetch(`/api/sources/${patternRef.current}`, { method: "DELETE", keepalive: true, body: "{}", headers: key ? { "X-Api-Key": key } : {} });
+      const headers: Record<string, string> = key ? { "X-Api-Key": key } : {};
+      if (currentCanvas()) headers["X-Mosaic-Canvas"] = currentCanvas();
+      fetch(`/api/sources/${patternRef.current}`, { method: "DELETE", keepalive: true, body: "{}", headers });
     };
     window.addEventListener("pagehide", onHide);
     return () => {

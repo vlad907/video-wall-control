@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DialogHost, dialog, toast } from "./Dialogs";
-import { api, LockedError, type EndpointsInfo, type Layout, type Metrics, type Output, type Rect, type Screen, type Source } from "./api";
+import { api, LockedError, withCanvas, type EndpointsInfo, type Layout, type Metrics, type Output, type Rect, type Screen, type Source } from "./api";
 import { BezelPanel } from "./Bezel";
 import { CanvasEditor, type EditMode } from "./CanvasEditor";
 import { EndpointList, EndpointPanel } from "./Endpoints";
@@ -106,7 +106,7 @@ export function App() {
 
   // Live metrics; a layout version change (from any client) triggers a reload.
   useEffect(() => {
-    const es = new EventSource("/api/events");
+    const es = new EventSource(withCanvas("/api/events"));
     es.onmessage = (ev) => {
       const data = JSON.parse(ev.data) as { metrics: Metrics; layoutVersion: number };
       setMetrics(data.metrics);

@@ -1,9 +1,81 @@
 import { useEffect, useState } from "react";
 import { dialog, toast } from "./Dialogs";
-import { api, type Layout, type LayoutSummary, type Output, type Source } from "./api";
+import { api, currentCanvas, switchCanvas, type CanvasInfo, type Layout, type LayoutSummary, type Output, type Source } from "./api";
 import { COLORS } from "./CanvasEditor";
 
 const fmt = (v: number, d = 1) => (Number.isFinite(v) ? v.toFixed(d) : "–");
+
+// The canvases running on the media server (each a layout on its own render thread): pick the
+// one to edit, add one, or stop one.
+function CanvasPick({ onError }: { onError: (e: unknown) => void }) {
+  const [list, setList] = useState<CanvasInfo[]>([]);
+  const [problems, setProblems] = useState<string[]>([]);
+  const load = () =>
+    api
+      .canvases()
+      .then((r) => {
+        setList(r.canvases);
+        setProblems(r.problems);
+        // The canvas this browser remembered was stopped (here or elsewhere): go to the primary.
+        if (currentCanvas() && !r.canvases.some((c) => c.id === currentCanvas())) switchCanvas("");
+      })
+      .catch(() => {});
+  useEffect(() => {
+    load();
+    const t = window.setInterval(load, 5000);
+    return () => window.clearInterval(t);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const current = list.find((c) => c.current);
+  const add = async () => {
+    const name = await dialog.prompt("New canvas", {
+      message:
+        "A canvas is a layout that runs at the same time as the others, on its own render thread: a separate video wall or group of receiving PCs. It starts with a test pattern; add a wall group to give it displays. Its NDI streams are named after it.",
+      value: `Mosaic ${list.length + 1}`,
+      okLabel: "Add canvas",
+    });
+    if (!name) return;
+    api
+      .addCanvas({ name })
+      .then((r) => {
+        toast(`Added "${name}"`);
+        switchCanvas(r.id);
+      })
+      .catch(onError);
+  };
+  const stop = async () => {
+    if (!current || current.primary) return;
+    const ok = await dialog.confirm(`Stop the canvas "${current.name}"?`, {
+      message: "Its NDI streams stop and its receiving PCs go blank. The layout stays saved: add it again as a canvas any time.",
+      okLabel: "Stop canvas",
+    });
+    if (ok) api.stopCanvas(current.id).then(() => switchCanvas("")).catch(onError);
+  };
+  if (!list.length) return null;
+  return (
+    <>
+      <label className="tb-field layout-pick" title={problems.length ? problems.join("\n") : "The canvas you're editing. Each canvas runs at the same time, with its own displays and receiving PCs."}>
+        <span>Canvas{problems.length ? " ⚠" : ""}</span>
+        <select value={current?.id ?? ""} onChange={(e) => switchCanvas(list.find((c) => c.id === e.target.value)?.primary ? "" : e.target.value)}>
+          {list.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+              {c.running ? "" : " (not running)"}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button className="ghost" title="Add a canvas: another wall or receiver group, running at the same time" onClick={add}>
+        + Canvas
+      </button>
+      {current && !current.primary && (
+        <button className="ghost" title="Stop this canvas (its layout stays saved)" onClick={stop}>
+          Stop canvas
+        </button>
+      )}
+    </>
+  );
+}
 
 export function LayoutBar({
   layout,
@@ -45,12 +117,14 @@ export function LayoutBar({
         <span className="logo" />
         Mosaic
       </div>
-      <label className="tb-field layout-pick" title="The active layout: displays, groups, sources and endpoints">
+      <CanvasPick onError={onError} />
+      <label className="tb-field layout-pick" title="The layout on this canvas: displays, groups, sources and endpoints">
         <span>Layout</span>
         <select value={layout.id} onChange={(e) => run(api.activate(e.target.value))}>
           {layouts.map((l) => (
-            <option key={l.id} value={l.id}>
+            <option key={l.id} value={l.id} disabled={l.running && !l.active}>
               {l.name}
+              {l.running && !l.active ? " (on another canvas)" : ""}
             </option>
           ))}
         </select>
@@ -68,10 +142,10 @@ export function LayoutBar({
         className="ghost"
         title="Delete a saved layout (not the active one)"
         onClick={async () => {
-          const others = layouts.filter((l) => !l.active);
-          if (!others.length) return dialog.alert("Nothing to delete", "The layout on air can't be deleted, and there are no others.");
+          const others = layouts.filter((l) => !l.active && !l.running);
+          if (!others.length) return dialog.alert("Nothing to delete", "Layouts on air (on any canvas) can't be deleted, and there are no others.");
           const id = await dialog.prompt("Delete a layout", {
-            message: "The layout on air can't be deleted. A deleted layout can still be restored from its history (Settings).",
+            message: "Layouts on air (on any canvas) can't be deleted. A deleted layout can still be restored from its history (Settings).",
             choices: others.map((l) => ({ value: l.id, label: l.name })),
             okLabel: "Delete",
           });

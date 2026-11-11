@@ -13,6 +13,7 @@
 #include <thread>
 
 #include "api/http_api.hpp"
+#include "core/canvases.hpp"
 #include "core/engine.hpp"
 #include "core/layout_store.hpp"
 #include "io/video_io.hpp"
@@ -86,15 +87,8 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
-    std::string err;
     RendererOptions ro;
     ro.softwareGpu = opt.softwareGpu;
-    auto renderer = createRenderer(ro, err);
-    if (!renderer) {
-        std::cerr << "GPU init failed: " << err << "\n";
-        return 1;
-    }
-    std::cerr << "[gpu] " << renderer->backendName() << " on " << renderer->deviceName() << "\n";
 
     std::string ndiWhyNot;
     auto ndi = createNdiSystem(ndiWhyNot);
@@ -108,14 +102,20 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    Engine engine(*renderer, store, ndi.get());
+    // One engine per canvas, each on its own GPU device and render thread.
     std::filesystem::create_directories(std::filesystem::path(opt.data) / "media");
-    engine.setMediaDir(std::filesystem::path(opt.data) / "media");
-    engine.start();
+    Canvases canvases(store, ndi.get(), ro, std::filesystem::path(opt.data) / "media");
+    canvases.sync();
+    auto first = canvases.primary();
+    if (!first || !first->engine) {
+        std::cerr << "GPU init failed: " << (first ? first->error : "no canvas") << "\n";
+        return 1;
+    }
+    std::cerr << "[gpu] " << first->renderer->backendName() << " on " << first->renderer->deviceName() << "\n";
 
     std::error_code binEc;
     auto binDir = std::filesystem::weakly_canonical(std::filesystem::absolute(argv[0]), binEc).parent_path();
-    HttpApi api(engine, store, opt.ui, binDir);
+    HttpApi api(canvases, store, opt.ui, binDir);
     std::thread http([&] {
         if (!api.listen(opt.host, opt.port)) {
             std::cerr << "cannot listen on " << opt.host << ":" << opt.port << "\n";
@@ -128,6 +128,10 @@ int main(int argc, char** argv) {
     bool snapped = false;
     while (!g_quit) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        canvases.sync();  // canvases added or removed in the editor
+        auto primary = canvases.primary();
+        if (!primary || !primary->engine) continue;
+        Engine& engine = *primary->engine;
         double elapsed = std::chrono::duration<double>(Clock::now() - started).count();
         if (!opt.snapshotDir.empty() && !snapped && elapsed > 2.0) {
             // Full-resolution snapshot of every output, for checking the mapping.
@@ -149,9 +153,8 @@ int main(int argc, char** argv) {
         if (opt.runSeconds > 0 && elapsed >= opt.runSeconds) break;
     }
 
-    if (opt.runSeconds > 0) std::cout << engine.metrics().dump(2) << std::endl;
+    if (auto p = canvases.primary(); opt.runSeconds > 0 && p && p->engine) std::cout << p->engine->metrics().dump(2) << std::endl;
     api.stop();
     if (http.joinable()) http.join();
-    engine.stop();
-    return 0;
+    return 0;  // the canvases' engines stop as `canvases` goes
 }

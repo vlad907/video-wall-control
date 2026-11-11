@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { withCanvas } from "./api";
 
 // Polls a JPEG preview from the engine. The engine only renders previews
 // that are being requested, so this also keeps the preview alive.
@@ -11,7 +12,7 @@ export function LivePreview({ target, intervalMs = 150, className }: { target: s
     let timer: number | undefined;
     const tick = async () => {
       try {
-        const res = await fetch(`/api/preview/${target}.jpg?t=${Date.now()}`, { cache: "no-store" });
+        const res = await fetch(withCanvas(`/api/preview/${target}.jpg?t=${Date.now()}`), { cache: "no-store" });
         if (res.status === 200) {
           const url = URL.createObjectURL(await res.blob());
           if (urlRef.current) URL.revokeObjectURL(urlRef.current);

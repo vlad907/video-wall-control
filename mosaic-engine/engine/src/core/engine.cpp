@@ -71,8 +71,8 @@ Uniforms makeUniforms(float dx, float dy, float dw, float dh) {
 }
 }  // namespace
 
-Engine::Engine(Renderer& renderer, LayoutStore& store, NdiSystem* ndi)
-    : renderer_(renderer), store_(store), ndi_(ndi), audio_(std::make_unique<AudioOutputs>(ndi)) {
+Engine::Engine(Renderer& renderer, LayoutStore& store, NdiSystem* ndi, std::string canvasId)
+    : renderer_(renderer), store_(store), ndi_(ndi), canvasId_(std::move(canvasId)), audio_(std::make_unique<AudioOutputs>(ndi)) {
     renderer_.onReadback = [this](ReadbackId rb, int slot, const ReadbackView& view, uint64_t) {
         std::shared_ptr<OutputChannel> ch;
         std::shared_ptr<PreviewState> pv;
@@ -158,9 +158,13 @@ void Engine::loop() {
     PreciseSleeper sleeper;
     auto next = Clock::now();
     while (running_) {
-        auto layout = store_.active();
-        if (store_.version() != appliedVersion_) {
-            appliedVersion_ = store_.version();
+        auto layout = store_.snapshot(canvasId_);
+        if (!layout) {  // the canvas is being stopped
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
+        if (layout != applied_) {
+            applied_ = layout;
             reconcile(*layout);
         }
         targetFps_ = layout->frameRate;
@@ -827,7 +831,8 @@ void Engine::reconcile(const Layout& layout) {
 // ---------------------------------------------------------------------------
 
 json Engine::metrics() {
-    auto layout = store_.active();
+    auto layout = store_.snapshot(canvasId_);
+    if (!layout) return json::object();
     json outputs = json::array();
     std::vector<std::pair<std::string, std::shared_ptr<OutputChannel>>> chans;
     {

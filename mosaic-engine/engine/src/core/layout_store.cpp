@@ -16,6 +16,23 @@ namespace mosaic {
 LayoutStore::LayoutStore(fs::path dataDir)
     : dir_(std::move(dataDir)), layoutsDir_(dir_ / "layouts"), historyDir_(dir_ / "history") {}
 
+namespace {
+thread_local std::string tlCanvas;
+}
+
+void LayoutStore::setRequestCanvas(const std::string& canvasId) { tlCanvas = canvasId; }
+const std::string& LayoutStore::requestCanvas() { return tlCanvas; }
+
+const CanvasSlot& LayoutStore::current() const {
+    for (auto& c : canvases_)
+        if (c.id == tlCanvas) return c;
+    return canvases_.front();
+}
+
+bool LayoutStore::layoutRunning(const std::string& layoutId) const {
+    return std::any_of(canvases_.begin(), canvases_.end(), [&](auto& c) { return c.layout == layoutId; });
+}
+
 constexpr size_t kHistoryKeep = 50;
 constexpr auto kHistoryGap = std::chrono::seconds(30);
 
@@ -52,32 +69,91 @@ void LayoutStore::load(const fs::path& examplesDir) {
     }
     std::sort(layouts_.begin(), layouts_.end(), [](auto& a, auto& b) { return a.id < b.id; });
 
+    // state.json: {"canvases": [{id, layout}], "active": the primary's layout}. Before canvases
+    // it only had "active": that layout becomes canvas-1.
+    std::vector<CanvasSlot> wanted;
     try {
         std::ifstream in(dir_ / "state.json");
-        if (in) activeId_ = json::parse(in).value("active", "");
+        if (in) {
+            json st = json::parse(in);
+            if (st.contains("canvases") && st["canvases"].is_array())
+                for (auto& c : st["canvases"])
+                    if (c.is_object()) wanted.push_back({c.value("id", ""), c.value("layout", "")});
+            if (wanted.empty() && st.value("active", "") != "") wanted.push_back({"canvas-1", st.value("active", "")});
+        }
     } catch (...) {
     }
-    auto it = std::find_if(layouts_.begin(), layouts_.end(), [&](auto& l) { return l.id == activeId_; });
-    if (it == layouts_.end()) {
+    for (auto& c : wanted) {
+        bool knownLayout = std::any_of(layouts_.begin(), layouts_.end(), [&](auto& l) { return l.id == c.layout; });
+        bool dupId = std::any_of(canvases_.begin(), canvases_.end(), [&](auto& x) { return x.id == c.id; });
+        if (knownLayout && !layoutRunning(c.layout) && !c.id.empty() && !dupId && sanitizeId(c.id) == c.id) canvases_.push_back(c);
+    }
+    if (canvases_.empty()) {
         // Prefer the 1080p test layout on first run, since it renders on any GPU.
         auto def = std::find_if(layouts_.begin(), layouts_.end(), [](auto& l) { return l.id == "quad-1080p"; });
-        it = def != layouts_.end() ? def : layouts_.begin();
+        canvases_.push_back({"canvas-1", (def != layouts_.end() ? def : layouts_.begin())->id});
     }
-    activeId_ = it->id;
-    activeSnapshot_ = std::make_shared<const Layout>(*it);
+    for (auto& l : layouts_) publish(l);
     version_++;
     writeState();
 }
 
 std::shared_ptr<const Layout> LayoutStore::active() const {
     std::lock_guard lock(mutex_);
-    return activeSnapshot_;
+    return snapshots_.at(current().id);
+}
+
+std::vector<CanvasSlot> LayoutStore::canvases() const {
+    std::lock_guard lock(mutex_);
+    return canvases_;
+}
+
+std::string LayoutStore::currentCanvas() const {
+    std::lock_guard lock(mutex_);
+    return current().id;
+}
+
+std::shared_ptr<const Layout> LayoutStore::snapshot(const std::string& canvasId) const {
+    std::lock_guard lock(mutex_);
+    auto it = snapshots_.find(canvasId);
+    return it == snapshots_.end() ? nullptr : it->second;
+}
+
+std::vector<std::shared_ptr<const Layout>> LayoutStore::running() const {
+    std::lock_guard lock(mutex_);
+    std::vector<std::shared_ptr<const Layout>> out;
+    for (auto& c : canvases_) out.push_back(snapshots_.at(c.id));
+    return out;
+}
+
+std::string LayoutStore::startCanvas(const std::string& layoutId) {
+    std::lock_guard lock(mutex_);
+    auto it = std::find_if(layouts_.begin(), layouts_.end(), [&](auto& l) { return l.id == layoutId; });
+    if (it == layouts_.end() || layoutRunning(layoutId)) return "";
+    std::string id;
+    for (int n = 1; id.empty() || std::any_of(canvases_.begin(), canvases_.end(), [&](auto& c) { return c.id == id; }); ++n) id = "canvas-" + std::to_string(n);
+    canvases_.push_back({id, layoutId});
+    publish(*it);
+    writeState();
+    return id;
+}
+
+bool LayoutStore::stopCanvas(const std::string& canvasId) {
+    std::lock_guard lock(mutex_);
+    auto it = std::find_if(canvases_.begin(), canvases_.end(), [&](auto& c) { return c.id == canvasId; });
+    if (it == canvases_.end() || canvases_.size() < 2) return false;
+    canvases_.erase(it);
+    snapshots_.erase(canvasId);
+    version_++;
+    writeState();
+    return true;
 }
 
 std::vector<LayoutSummary> LayoutStore::list() const {
     std::lock_guard lock(mutex_);
     std::vector<LayoutSummary> out;
-    for (auto& l : layouts_) out.push_back({l.id, l.name, static_cast<int>(l.outputs.size()), l.id == activeId_});
+    const std::string& cur = current().layout;
+    for (auto& l : layouts_) out.push_back({l.id, l.name, static_cast<int>(l.outputs.size()), l.id == cur, layoutRunning(l.id)});
     return out;
 }
 
@@ -96,26 +172,30 @@ std::vector<std::string> LayoutStore::save(Layout layout) {
     else layouts_.push_back(layout);
     snapshot(layout.id, false);
     writeFile(layout);
-    if (layout.id == activeId_) publish(layout);
+    publish(layout);
     return problems;
 }
 
-bool LayoutStore::activate(const std::string& id) {
+bool LayoutStore::activate(const std::string& id, bool* alreadyRunning) {
     std::lock_guard lock(mutex_);
-    for (auto& l : layouts_) {
-        if (l.id == id) {
-            activeId_ = id;
-            publish(l);
-            writeState();
-            return true;
-        }
+    if (alreadyRunning) *alreadyRunning = false;
+    auto l = std::find_if(layouts_.begin(), layouts_.end(), [&](auto& x) { return x.id == id; });
+    if (l == layouts_.end()) return false;
+    auto& cur = const_cast<CanvasSlot&>(current());
+    if (id == cur.layout) return true;
+    if (layoutRunning(id)) {
+        if (alreadyRunning) *alreadyRunning = true;
+        return false;
     }
-    return false;
+    cur.layout = id;  // the canvas (and its engine) stays; it shows the other layout
+    publish(*l);
+    writeState();
+    return true;
 }
 
 bool LayoutStore::remove(const std::string& id) {
     std::lock_guard lock(mutex_);
-    if (id == activeId_) return false;  // can't delete the layout on air
+    if (layoutRunning(id)) return false;  // can't delete a layout on air
     auto it = std::find_if(layouts_.begin(), layouts_.end(), [&](auto& l) { return l.id == id; });
     if (it == layouts_.end()) return false;
     layouts_.erase(it);
@@ -127,17 +207,18 @@ bool LayoutStore::remove(const std::string& id) {
 
 bool LayoutStore::mutateActive(const std::function<bool(Layout&)>& fn, std::vector<std::string>* problems) {
     std::lock_guard lock(mutex_);
-    auto it = std::find_if(layouts_.begin(), layouts_.end(), [&](auto& l) { return l.id == activeId_; });
+    const std::string cur = current().layout;
+    auto it = std::find_if(layouts_.begin(), layouts_.end(), [&](auto& l) { return l.id == cur; });
     if (it == layouts_.end()) return false;
     Layout copy = *it;
     if (!fn(copy)) return false;
-    copy.id = activeId_;  // the active layout keeps its id
+    copy.id = cur;  // the active layout keeps its id
     auto p = normalize(copy);
     if (problems) *problems = std::move(p);
     *it = copy;
     snapshot(copy.id, false);
     writeFile(copy);
-    publish(std::move(copy));
+    publish(copy);
     return true;
 }
 
@@ -215,7 +296,7 @@ bool LayoutStore::restore(const std::string& id, const std::string& version, std
     if (it != layouts_.end()) *it = *old;
     else layouts_.push_back(*old);  // a deleted layout comes back
     writeFile(*old);
-    if (id == activeId_) publish(*old);
+    publish(*old);
     return true;
 }
 
@@ -237,12 +318,17 @@ void LayoutStore::writeFile(const Layout& l) const {
 
 void LayoutStore::writeState() const {
     std::ofstream out(dir_ / "state.json", std::ios::trunc);
-    out << json{{"active", activeId_}}.dump(2) << "\n";
+    json list = json::array();
+    for (auto& c : canvases_) list.push_back({{"id", c.id}, {"layout", c.layout}});
+    out << json{{"active", canvases_.front().layout}, {"canvases", list}}.dump(2) << "\n";
 }
 
-void LayoutStore::publish(Layout l) {
-    activeSnapshot_ = std::make_shared<const Layout>(std::move(l));
-    version_++;
+void LayoutStore::publish(const Layout& l) {
+    for (auto& c : canvases_)
+        if (c.layout == l.id) {
+            snapshots_[c.id] = std::make_shared<const Layout>(l);
+            version_++;
+        }
 }
 
 }  // namespace mosaic

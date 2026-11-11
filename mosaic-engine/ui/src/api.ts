@@ -241,6 +241,7 @@ export interface UpdateInfo {
 export interface EndpointsInfo {
   endpoints: EndpointView[];
   unassigned: { host: string; address: string; screens: Screen[]; online: boolean }[];
+  elsewhere?: { host: string; name: string; layout: string }[]; // PCs set up on other canvases
   engineHost: string;
   receiverVersion?: string; // the receiver the engine hands out
 }
@@ -283,8 +284,50 @@ export interface LayoutSummary {
   id: string;
   name: string;
   outputs: number;
-  active: boolean;
+  active: boolean; // on the canvas being edited
+  running?: boolean; // on any canvas
 }
+
+// A canvas: a layout running on its own render thread (several can run at once).
+export interface CanvasInfo {
+  id: string;
+  layout: string;
+  name: string;
+  primary: boolean;
+  current: boolean;
+  running: boolean;
+  gpu: string;
+  error: string;
+  outputs: number;
+  endpoints: number;
+  frameRate: number;
+  renderFps?: number;
+  canvas: { width: number; height: number };
+}
+
+// The canvas this editor window works on ("" = the primary). Sent with every request
+// (X-Mosaic-Canvas, or ?canvas= where a header can't go); remembered in this browser.
+const CANVAS = "mosaic.canvas";
+let canvasId = (() => {
+  try {
+    return localStorage.getItem(CANVAS) ?? "";
+  } catch {
+    return "";
+  }
+})();
+export const currentCanvas = () => canvasId;
+// Switches the editor to another canvas: everything is loaded again for it.
+export function switchCanvas(id: string) {
+  canvasId = id;
+  try {
+    if (id) localStorage.setItem(CANVAS, id);
+    else localStorage.removeItem(CANVAS);
+  } catch {
+    /* private window */
+  }
+  window.location.reload();
+}
+export const withCanvas = (url: string) => (canvasId ? `${url}${url.includes("?") ? "&" : "?"}canvas=${encodeURIComponent(canvasId)}` : url);
 
 export interface OutputMetrics {
   id: string;
@@ -359,6 +402,7 @@ async function call<T>(method: string, path: string, body?: unknown, raw?: Blob)
   if (raw) headers["Content-Type"] = raw.type || "application/octet-stream";
   const key = storedKey();
   if (key) headers["X-Api-Key"] = key;
+  if (canvasId) headers["X-Mosaic-Canvas"] = canvasId;
   const res = await fetch(path, {
     method,
     headers,
@@ -391,6 +435,7 @@ export const api = {
       x.setRequestHeader("Content-Type", file.type || "application/octet-stream");
       const key = storedKey();
       if (key) x.setRequestHeader("X-Api-Key", key);
+      if (canvasId) x.setRequestHeader("X-Mosaic-Canvas", canvasId);
       x.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
       x.onload = () => {
         let data: { error?: string } = {};
@@ -414,6 +459,9 @@ export const api = {
   layout: () => call<Layout>("GET", "/api/layout"),
   putLayout: (patch: Partial<Layout>) => call<Layout>("PUT", "/api/layout", patch),
   layouts: () => call<{ layouts: LayoutSummary[] }>("GET", "/api/layouts").then((r) => r.layouts),
+  canvases: () => call<{ canvases: CanvasInfo[]; current: string; problems: string[] }>("GET", "/api/canvases"),
+  addCanvas: (body: { name: string } | { layout: string }) => call<{ id: string; layout: string; problems: string[] }>("POST", "/api/canvases", body),
+  stopCanvas: (id: string) => call("DELETE", `/api/canvases/${id}`),
   activate: (id: string, transitionMs = 0) => call("POST", `/api/layouts/${id}/activate`, { transitionMs }),
   saveAs: (name: string) => call<Layout>("POST", "/api/layouts", { fromActive: true, name }),
   deleteLayout: (id: string) => call("DELETE", `/api/layouts/${id}`),

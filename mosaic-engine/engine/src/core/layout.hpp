@@ -140,6 +140,9 @@ struct Layout {
     // Mosaic Receivers show each frame this long after it was made, so network stalls shorter
     // than this never reach the screens. 0 = lowest delay (live feeds); ~300 for playback.
     int receiverBufferMs = 0;
+    // New outputs' NDI streams are named <ndiPrefix>_01, _02, ... Each canvas has its own, so
+    // two canvases running at once don't send streams with the same name.
+    std::string ndiPrefix = "Mosaic_Output";
 
     const SourceConfig* findSource(const std::string& sid) const;
     const OutputConfig* findOutput(const std::string& oid) const;

@@ -48,6 +48,12 @@ a new fade while one is running ends the running fade immediately.
 
 Every change is saved on the media server and is still there after a restart.
 
+**Canvases**: the media server can run several canvases at once (separate walls or groups of
+receiving PCs, each its own layout). Requests are about the primary canvas, so control setups for a
+single wall need nothing new. To control another canvas, add `X-Mosaic-Canvas: <canvas id>` to the
+request (or `?canvas=<canvas id>`); `GET /api/canvases` lists them (`canvas-1`, `canvas-2`, ...) with
+their names.
+
 ## Quick reference
 
 | What | Request |

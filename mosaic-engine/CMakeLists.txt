@@ -74,6 +74,7 @@ set(ENGINE_SOURCES
   engine/src/main.cpp
   engine/src/core/layout.cpp
   engine/src/core/layout_store.cpp
+  engine/src/core/canvases.cpp
   engine/src/core/engine.cpp
   engine/src/core/output_channel.cpp
   engine/src/io/null_sink.cpp

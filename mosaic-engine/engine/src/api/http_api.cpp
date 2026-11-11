@@ -22,6 +22,7 @@
 #endif
 
 #include "audio/audio_device.hpp"
+#include "core/canvases.hpp"
 #include "core/engine.hpp"
 #include "core/layout_store.hpp"
 #include "util/paths.hpp"
@@ -215,9 +216,19 @@ const char* mediaType(const std::string& name) {
 
 }  // namespace
 
+// The canvas a request is about (LayoutStore::setRequestCanvas) and its engine, held for the
+// request so a canvas stopped meanwhile finishes it safely. Set in the pre-routing handler.
+thread_local std::shared_ptr<CanvasRun> tlRun;
+
 struct HttpApi::Impl {
-    Engine& engine;
+    Canvases& canvases;
     LayoutStore& store;
+    // This request's canvas's engine.
+    Engine& eng() {
+        if (!tlRun) tlRun = canvases.current();
+        if (!tlRun || !tlRun->engine) throw std::runtime_error("this canvas isn't running" + (tlRun ? ": " + tlRun->error : std::string()));
+        return *tlRun->engine;
+    }
     httplib::Server server;
     std::atomic<bool> running{true};
     const std::string machine = machineName();
@@ -227,7 +238,7 @@ struct HttpApi::Impl {
     std::mutex securityMutex;
     std::string editorPin, apiKey;
 
-    std::filesystem::path securityFile() const { return engine.mediaDir().parent_path() / "security.json"; }
+    std::filesystem::path securityFile() const { return canvases.mediaDir().parent_path() / "security.json"; }
 
     void loadSecurity() {
         try {
@@ -378,7 +389,7 @@ struct HttpApi::Impl {
         return j;
     }
 
-    Impl(Engine& e, LayoutStore& s) : engine(e), store(s) {}
+    Impl(Canvases& c, LayoutStore& s) : canvases(c), store(s) {}
 
     // ---- the Mosaic Receiver, handed out to receiving PCs (their dashboards update themselves) ----
     std::filesystem::path binDir;
@@ -387,7 +398,7 @@ struct HttpApi::Impl {
     std::filesystem::path appDir;
     std::mutex updateMutex;
     json updateRequest = json::object();  // {id, requestedAt, target: all | receivers | server, serverError}
-    std::filesystem::path updateFile() const { return engine.mediaDir().parent_path() / "update.json"; }
+    std::filesystem::path updateFile() const { return canvases.mediaDir().parent_path() / "update.json"; }
     void loadUpdateRequest() {
         std::ifstream f(updateFile());
         json j = json::parse(f, nullptr, false);
@@ -459,7 +470,17 @@ struct HttpApi::Impl {
         // ---- access: optional editor PIN and API key ----
         loadSecurity();
         s.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
+            // Which canvas this request is about: the editor sends X-Mosaic-Canvas (?canvas= for
+            // event streams, which can't set headers). None = the primary canvas.
+            std::string canvas = req.has_header("X-Mosaic-Canvas") ? req.get_header_value("X-Mosaic-Canvas") : req.get_param_value("canvas");
+            LayoutStore::setRequestCanvas(canvas);
+            tlRun.reset();
             bool changes = req.method != "GET" && req.method != "HEAD" && req.method != "OPTIONS";
+            if (changes && !canvas.empty() && !store.snapshot(canvas) && req.path.rfind("/api/", 0) == 0) {
+                // Never let a change meant for a stopped canvas land on the primary one.
+                sendError(res, 409, "canvas '" + canvas + "' isn't running any more: reload the editor");
+                return httplib::Server::HandlerResponse::Handled;
+            }
             // Receiving PCs check in without a key; that only reports their status and reads their assignment.
             if (!changes || req.path.rfind("/api/", 0) != 0 || req.path == "/api/endpoints/checkin" || allowed(req))
                 return httplib::Server::HandlerResponse::Unhandled;
@@ -488,7 +509,7 @@ struct HttpApi::Impl {
         // ---- sources ----
         s.Get("/api/sources", guard([this](const httplib::Request&, httplib::Response& res) {
             auto layout = store.active();
-            json status = engine.sourceStatus();
+            json status = eng().sourceStatus();
             json configured = json::array();
             for (auto& src : layout->sources) {
                 json j = src;
@@ -497,7 +518,7 @@ struct HttpApi::Impl {
                 configured.push_back(j);
             }
             sendJson(res, {{"sources", configured},
-                           {"ndi", {{"available", engine.ndiAvailable()}, {"discovered", engine.discoveredNdiSources()}}}});
+                           {"ndi", {{"available", eng().ndiAvailable()}, {"discovered", eng().discoveredNdiSources()}}}});
         }));
         s.Post("/api/sources", guard([this](const httplib::Request& req, httplib::Response& res) {
             json body = parseBody(req);
@@ -540,7 +561,7 @@ struct HttpApi::Impl {
             const SourceConfig* src = store.active()->findSource(id);
             if (!src) return sendError(res, 404, "no such source");
             if (src->type != SourceType::Video) return sendError(res, 400, "not a video source");
-            engine.restartVideo(id);
+            eng().restartVideo(id);
             sendJson(res, {{"restarted", id}});
         }));
         s.Delete(R"(/api/sources/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
@@ -606,7 +627,7 @@ struct HttpApi::Impl {
         s.Get(R"(/api/outputs/([A-Za-z0-9_\-]+)/snapshot\.jpg)", guard([this](const httplib::Request& req, httplib::Response& res) {
             std::string jpeg;
             uint64_t frameId = 0;
-            if (!engine.snapshotJpeg(req.matches[1], jpeg, frameId))
+            if (!eng().snapshotJpeg(req.matches[1], jpeg, frameId))
                 return sendError(res, 503, "no frame (output missing, disabled or not sending)");
             res.set_header("X-Frame-Id", std::to_string(frameId));
             res.set_header("Cache-Control", "no-store");
@@ -617,7 +638,7 @@ struct HttpApi::Impl {
             std::vector<uint8_t> bgra;
             int w = 0, h = 0;
             uint64_t frameId = 0;
-            if (!engine.snapshotBgra(req.matches[1], bgra, w, h, frameId))
+            if (!eng().snapshotBgra(req.matches[1], bgra, w, h, frameId))
                 return sendError(res, 503, "no frame (output missing, disabled or not sending)");
             res.set_header("X-Width", std::to_string(w));
             res.set_header("X-Height", std::to_string(h));
@@ -629,7 +650,7 @@ struct HttpApi::Impl {
         // ---- previews (low-res, ~10 fps while requested) ----
         s.Get(R"(/api/preview/([A-Za-z0-9_\-]+)\.jpg)", guard([this](const httplib::Request& req, httplib::Response& res) {
             std::string jpeg;
-            if (!engine.previewJpeg(req.matches[1], jpeg)) {
+            if (!eng().previewJpeg(req.matches[1], jpeg)) {
                 res.status = 202;  // first request starts the preview; try again shortly
                 return;
             }
@@ -745,7 +766,7 @@ struct HttpApi::Impl {
             if (std::none_of(w->presets.begin(), w->presets.end(), [&](auto& p) { return p.id == pid; }))
                 return sendError(res, 404, "no such preset in group '" + id + "'");
             int ms = body.value("transitionMs", 0);
-            if (ms > 0) engine.captureForTransition(ms, wallBounds(*w));
+            if (ms > 0) eng().captureForTransition(ms, wallBounds(*w));
             std::vector<std::string> problems;
             store.mutateActive([&](Layout& lay) { return recallGroupPreset(lay, id, pid); }, &problems);
             sendJson(res, withProblems({{"group", id}, {"recalled", pid}, {"transitionMs", ms}}, problems));
@@ -765,7 +786,7 @@ struct HttpApi::Impl {
             const WallConfig* w = store.active()->findWall(id);
             if (!w) return sendError(res, 404, "no such wall group");
             int ms = body.value("transitionMs", 0);
-            if (ms > 0) engine.captureForTransition(ms, wallBounds(*w));
+            if (ms > 0) eng().captureForTransition(ms, wallBounds(*w));
             store.mutateActive([&](Layout& l) { return showOnGroup(l, id, ndiName); });
             sendJson(res, {{"group", id}, {"showing", ndiName}, {"transitionMs", ms}});
         }));
@@ -776,7 +797,7 @@ struct HttpApi::Impl {
             if (!l->findWall(id)) return sendError(res, 404, "no such wall group");
             json restarted = json::array();
             for (auto& src : l->sources)
-                if (src.group == id && src.type == SourceType::Video) engine.restartVideo(src.id), restarted.push_back(src.id);
+                if (src.group == id && src.type == SourceType::Video) eng().restartVideo(src.id), restarted.push_back(src.id);
             sendJson(res, {{"group", id}, {"restarted", restarted}});
         }));
         // Removes the group's content (it then shows whatever lies under it, usually the background).
@@ -786,7 +807,7 @@ struct HttpApi::Impl {
             const WallConfig* w = store.active()->findWall(id);
             if (!w) return sendError(res, 404, "no such wall group");
             int ms = body.value("transitionMs", 0);
-            if (ms > 0) engine.captureForTransition(ms, wallBounds(*w));
+            if (ms > 0) eng().captureForTransition(ms, wallBounds(*w));
             store.mutateActive([&](Layout& l) { return showOnGroup(l, id, ""); });
             sendJson(res, {{"group", id}, {"cleared", true}, {"transitionMs", ms}});
         }));
@@ -814,20 +835,20 @@ struct HttpApi::Impl {
         s.Get("/api/media", guard([this](const httplib::Request&, httplib::Response& res) {
             json files = json::array();
             std::error_code ec;
-            for (auto& e : std::filesystem::directory_iterator(engine.mediaDir(), ec)) {
+            for (auto& e : std::filesystem::directory_iterator(canvases.mediaDir(), ec)) {
                 std::string name = utf8(e.path().filename());
                 if (e.is_regular_file(ec) && !mediaKind(name).empty())
                     files.push_back({{"name", name}, {"bytes", e.file_size(ec)}, {"kind", mediaKind(name)}});
             }
             std::sort(files.begin(), files.end(), [](auto& a, auto& b) { return a["name"] < b["name"]; });
-            sendJson(res, {{"files", files}, {"folder", utf8(std::filesystem::absolute(engine.mediaDir()))}});
+            sendJson(res, {{"files", files}, {"folder", utf8(std::filesystem::absolute(canvases.mediaDir()))}});
         }));
         // Upload: the raw file as the body, ?name=clip.mp4. Written to disk as it arrives, so
         // multi-gigabyte (8K) videos don't need the memory. The same name replaces the file.
         s.Post("/api/media", [this](const httplib::Request& req, httplib::Response& res, const httplib::ContentReader& content) {
             std::string name = mediaName(req.get_param_value("name"));
             if (name.empty()) return sendError(res, 400, "name must be an image (.png .jpg .bmp .gif) or video (.mp4 .mov .m4v) file name");
-            auto path = engine.mediaDir() / name;
+            auto path = canvases.mediaDir() / name;
             auto tmp = path;
             tmp += ".part";
             uint64_t bytes = 0;
@@ -857,7 +878,7 @@ struct HttpApi::Impl {
         s.Get(R"(/api/media/([^/]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
             std::string name = req.matches[1];
             if (!safeMediaName(name)) return sendError(res, 404, "no such file");
-            auto path = engine.mediaDir() / pathFromUtf8(name);
+            auto path = canvases.mediaDir() / pathFromUtf8(name);
             std::error_code ec;
             auto size = std::filesystem::file_size(path, ec);
             if (name.empty() || ec) return sendError(res, 404, "no such file");
@@ -872,19 +893,26 @@ struct HttpApi::Impl {
         s.Delete(R"(/api/media/([^/]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
             std::string name = req.matches[1];
             std::error_code ec;
-            if (!safeMediaName(name) || !std::filesystem::remove(engine.mediaDir() / pathFromUtf8(name), ec)) return sendError(res, 404, "no such file");
+            if (!safeMediaName(name) || !std::filesystem::remove(canvases.mediaDir() / pathFromUtf8(name), ec)) return sendError(res, 404, "no such file");
             sendJson(res, {{"deleted", name}});
         }));
 
         // ---- endpoints: receiving PCs and which output goes on each of their screens ----
         s.Get("/api/endpoints", guard([this](const httplib::Request&, httplib::Response& res) {
             auto l = store.active();
-            auto discovered = engine.discoveredNdiSources();
+            auto discovered = eng().discoveredNdiSources();
             json list = json::array(), unassigned = json::array();
             std::set<std::string> known;
             for (auto& e : l->endpoints) {
                 list.push_back(endpointView(*l, e, discovered));
                 known.insert(hostKey(e.host));
+            }
+            // PCs set up on other canvases: theirs, so not offered here as new.
+            json elsewhere = json::array();
+            for (auto& other : store.running()) {
+                if (other->id == l->id) continue;
+                for (auto& e : other->endpoints)
+                    if (known.insert(hostKey(e.host)).second) elsewhere.push_back({{"host", e.host}, {"name", e.name}, {"layout", other->name.empty() ? other->id : other->name}});
             }
             {
                 // PCs that checked in recently but aren't set up as endpoints yet.
@@ -897,7 +925,7 @@ struct HttpApi::Impl {
                                               {"screens", c.value("screens", json::array())},
                                               {"online", now - c.value("time", 0.0) < kEndpointOnlineSeconds}});
             }
-            sendJson(res, {{"endpoints", list}, {"unassigned", unassigned}, {"engineHost", machine}, {"receiverVersion", receiverPackage()["version"]}});
+            sendJson(res, {{"endpoints", list}, {"unassigned", unassigned}, {"elsewhere", elsewhere}, {"engineHost", machine}, {"receiverVersion", receiverPackage()["version"]}});
         }));
         s.Post("/api/endpoints", guard([this](const httplib::Request& req, httplib::Response& res) {
             json body = parseBody(req);
@@ -919,7 +947,7 @@ struct HttpApi::Impl {
                 &problems);
             auto l = store.active();
             for (auto& e : l->endpoints)
-                if (e.id == newId) return sendJson(res, withProblems(endpointView(*l, e, engine.discoveredNdiSources()), problems), 201);
+                if (e.id == newId) return sendJson(res, withProblems(endpointView(*l, e, eng().discoveredNdiSources()), problems), 201);
             sendError(res, 500, "endpoint not saved");
         }));
         // Partial update: {name, host, displays}.
@@ -938,7 +966,7 @@ struct HttpApi::Impl {
             if (!ok) return sendError(res, 404, "no such endpoint");
             auto l = store.active();
             for (auto& e : l->endpoints)
-                if (e.id == id) return sendJson(res, endpointView(*l, e, engine.discoveredNdiSources()));
+                if (e.id == id) return sendJson(res, endpointView(*l, e, eng().discoveredNdiSources()));
             sendError(res, 404, "no such endpoint");
         }));
         s.Delete(R"(/api/endpoints/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
@@ -964,16 +992,18 @@ struct HttpApi::Impl {
                 std::lock_guard lock(checkinMutex);
                 checkins[hostKey(host)] = body;
             }
-            auto l = store.active();
-            for (auto& e : l->endpoints)
-                if (hostKey(e.host) == hostKey(host))
-                    return sendJson(res, {{"endpoint", {{"id", e.id}, {"name", e.name}, {"player", e.player}, {"flashTest", e.flashTest}, {"bufferMs", l->receiverBufferMs}}},
-                                          {"layout", l->id},
-                                          {"engineHost", machine},
-                                          {"receiverPackage", receiverPackage()},
-                                          {"update", updateForEndpoints()},
-                                          {"displays", endpointDisplays(*l, e, engine.discoveredNdiSources())}});
-            sendJson(res, {{"endpoint", nullptr}, {"layout", l->id}, {"engineHost", machine}, {"displays", json::array()},
+            // The PC belongs to the first canvas whose layout lists it (receiver groups per canvas).
+            auto running = store.running();
+            for (auto& l : running)
+                for (auto& e : l->endpoints)
+                    if (hostKey(e.host) == hostKey(host))
+                        return sendJson(res, {{"endpoint", {{"id", e.id}, {"name", e.name}, {"player", e.player}, {"flashTest", e.flashTest}, {"bufferMs", l->receiverBufferMs}}},
+                                              {"layout", l->id},
+                                              {"engineHost", machine},
+                                              {"receiverPackage", receiverPackage()},
+                                              {"update", updateForEndpoints()},
+                                              {"displays", endpointDisplays(*l, e, eng().discoveredNdiSources())}});
+            sendJson(res, {{"endpoint", nullptr}, {"layout", running.front()->id}, {"engineHost", machine}, {"displays", json::array()},
                            {"receiverPackage", receiverPackage()}, {"update", updateForEndpoints()}});
         }));
 
@@ -989,9 +1019,9 @@ struct HttpApi::Impl {
                 request = updateRequest;
             }
             json pcs = json::array();
-            auto l = store.active();
             std::map<std::string, std::string> names;
-            for (auto& e : l->endpoints) names[hostKey(e.host)] = e.name;
+            for (auto& l : store.running())
+                for (auto& e : l->endpoints) names.emplace(hostKey(e.host), e.name);
             {
                 std::lock_guard lock(checkinMutex);
                 double now = nowSeconds();
@@ -1047,7 +1077,7 @@ struct HttpApi::Impl {
         s.Get("/api/control", guard([this](const httplib::Request&, httplib::Response& res) {
             auto l = store.active();
             std::set<std::string> lost;  // source ids whose NDI stream has no signal
-            for (auto& st : engine.sourceStatus())
+            for (auto& st : eng().sourceStatus())
                 if (st.value("signal", "") == "lost") lost.insert(st.value("id", ""));
             json groups = json::array();
             for (auto& w : l->walls) {
@@ -1070,7 +1100,7 @@ struct HttpApi::Impl {
             for (auto& sc : l->scenes) scenes.push_back({{"id", sc.id}, {"name", sc.name}});
             for (auto& x : store.list()) layouts.push_back({{"id", x.id}, {"name", x.name}, {"active", x.active}});
             json endpoints = json::array();
-            auto discovered = engine.discoveredNdiSources();
+            auto discovered = eng().discoveredNdiSources();
             for (auto& e : l->endpoints) {
                 json v = endpointView(*l, e, discovered);
                 int ok = 0;
@@ -1087,7 +1117,7 @@ struct HttpApi::Impl {
                            {"endpoints", endpoints},
                            {"scenes", scenes},
                            {"layouts", layouts},
-                           {"ndi", {{"available", engine.ndiAvailable()}, {"streams", engine.discoveredNdiSources()}}}});
+                           {"ndi", {{"available", eng().ndiAvailable()}, {"streams", eng().discoveredNdiSources()}}}});
         }));
 
         // The single-wall API from before groups: the group "wall".
@@ -1138,7 +1168,7 @@ struct HttpApi::Impl {
             if (std::none_of(l->scenes.begin(), l->scenes.end(), [&](auto& sc) { return sc.id == id; }))
                 return sendError(res, 404, "no such scene");
             int ms = body.value("transitionMs", 0);
-            if (ms > 0) engine.captureForTransition(ms);
+            if (ms > 0) eng().captureForTransition(ms);
             std::vector<std::string> problems;
             store.mutateActive([&](Layout& lay) { return recallScene(lay, id); }, &problems);
             sendJson(res, withProblems({{"recalled", id}, {"transitionMs", ms}}, problems));
@@ -1170,11 +1200,75 @@ struct HttpApi::Impl {
             sendJson(res, withProblems(*store.active(), problems));
         }));
 
+        // ---- canvases: layouts running at once, each on its own render thread ----
+        // GET: every canvas (primary first) with its layout, GPU and frame rate, and which one this
+        // request is about. POST {name}: a new canvas with a new, empty layout (its own NDI names),
+        // or {layout}: run a saved layout as another canvas. DELETE: stop a canvas (its layout stays).
+        s.Get("/api/canvases", guard([this](const httplib::Request&, httplib::Response& res) {
+            json list = json::array();
+            std::string current = store.currentCanvas();
+            bool first = true;
+            for (auto& [id, run] : canvases.all()) {
+                auto l = store.snapshot(id);
+                if (!l) continue;
+                json c = {{"id", id}, {"layout", l->id}, {"name", l->name}, {"primary", first}, {"current", id == current},
+                          {"outputs", l->outputs.size()}, {"endpoints", l->endpoints.size()}, {"frameRate", l->frameRate},
+                          {"canvas", {{"width", l->canvas.width}, {"height", l->canvas.height}}}};
+                c["running"] = run && run->engine;
+                c["gpu"] = run && run->renderer ? run->renderer->deviceName() : "";
+                c["error"] = run ? run->error : "starting";
+                if (run && run->engine) c["renderFps"] = run->engine->metrics()["engine"].value("renderFps", 0.0);
+                list.push_back(c);
+                first = false;
+            }
+            sendJson(res, {{"canvases", list}, {"current", current}, {"problems", canvases.problems()}});
+        }));
+        s.Post("/api/canvases", guard([this](const httplib::Request& req, httplib::Response& res) {
+            json body = parseBody(req);
+            std::string layoutId = body.value("layout", "");
+            if (layoutId.empty()) {
+                std::string name = body.value("name", "");
+                if (name.empty()) return sendError(res, 400, "a new canvas needs a name (or the layout to run)");
+                Layout l;
+                l.name = name;
+                std::string base = idFromName(name);
+                if (base.empty()) base = "canvas";
+                l.id = base;
+                for (int k = 2; store.get(l.id); ++k) l.id = base + "-" + std::to_string(k);
+                // Its own NDI names: "Mosaic 2" sends Mosaic_2_01, Mosaic_2_02, ...
+                l.ndiPrefix = name;
+                auto cur = store.active();
+                l.frameRate = cur->frameRate;
+                l.canvas = cur->canvas;
+                SourceConfig pattern;
+                pattern.id = "pattern";
+                pattern.name = "Test pattern";
+                pattern.rect = {0, 0, l.canvas.width, l.canvas.height};
+                l.sources.push_back(pattern);
+                store.save(l);
+                layoutId = l.id;
+            } else if (!store.get(layoutId)) {
+                return sendError(res, 404, "no such layout");
+            }
+            std::string id = store.startCanvas(layoutId);
+            if (id.empty()) return sendError(res, 409, "that layout is already on a canvas");
+            canvases.sync();
+            sendJson(res, {{"id", id}, {"layout", layoutId}, {"problems", canvases.problems()}}, 201);
+        }));
+        s.Delete(R"(/api/canvases/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            if (!store.snapshot(id)) return sendError(res, 404, "no such canvas");
+            if (!store.stopCanvas(id)) return sendError(res, 409, "the last canvas can't be stopped");
+            tlRun.reset();
+            canvases.sync();
+            sendJson(res, {{"stopped", id}});
+        }));
+
         // ---- saved layouts ----
         s.Get("/api/layouts", guard([this](const httplib::Request&, httplib::Response& res) {
             json list = json::array();
             for (auto& l : store.list())
-                list.push_back({{"id", l.id}, {"name", l.name}, {"outputs", l.outputs}, {"active", l.active}});
+                list.push_back({{"id", l.id}, {"name", l.name}, {"outputs", l.outputs}, {"active", l.active}, {"running", l.running}});
             sendJson(res, {{"layouts", list}});
         }));
         // ?download=1 sends it as a file (export); POST /api/layouts with the file imports it.
@@ -1217,8 +1311,12 @@ struct HttpApi::Impl {
         s.Post(R"(/api/layouts/([A-Za-z0-9_\-]+)/activate)", guard([this](const httplib::Request& req, httplib::Response& res) {
             if (!store.get(req.matches[1])) return sendError(res, 404, "no such layout");
             int ms = parseBody(req).value("transitionMs", 0);
-            if (ms > 0) engine.captureForTransition(ms);
-            if (!store.activate(req.matches[1])) return sendError(res, 404, "no such layout");
+            bool elsewhere = false;
+            for (auto& x : store.list())
+                if (x.id == std::string(req.matches[1]) && x.running && !x.active) elsewhere = true;
+            if (elsewhere) return sendError(res, 409, "that layout is on another canvas: switch to that canvas instead");
+            if (ms > 0) eng().captureForTransition(ms);
+            if (!store.activate(req.matches[1], &elsewhere)) return sendError(res, elsewhere ? 409 : 404, elsewhere ? "that layout is on another canvas" : "no such layout");
             sendJson(res, {{"active", std::string(req.matches[1])}});
         }));
         s.Delete(R"(/api/layouts/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
@@ -1227,7 +1325,7 @@ struct HttpApi::Impl {
         }));
 
         // ---- metrics ----
-        s.Get("/api/metrics", guard([this](const httplib::Request&, httplib::Response& res) { sendJson(res, engine.metrics()); }));
+        s.Get("/api/metrics", guard([this](const httplib::Request&, httplib::Response& res) { sendJson(res, eng().metrics()); }));
         // Sound outputs: the PC's sound devices, and each output's level, delay and problems.
         // The outputs themselves are the layout's `audioOutputs` (PUT /api/layout).
         s.Get("/api/audio", guard([this](const httplib::Request&, httplib::Response& res) {
@@ -1235,19 +1333,21 @@ struct HttpApi::Impl {
             json devices = json::array();
             for (auto& d : listAudioDevices(error))
                 devices.push_back({{"id", d.id}, {"name", d.name}, {"channels", d.channels}, {"rate", d.rate}, {"default", d.isDefault}});
-            json out = engine.audioStatus();
+            json out = eng().audioStatus();
             out["devices"] = devices;
             out["devicesError"] = error;
-            out["ndiSources"] = engine.discoveredNdiSources();
+            out["ndiSources"] = eng().discoveredNdiSources();
             sendJson(res, out);
         }));
 
         // Server-sent events: metrics + layout version every 500 ms.
         s.Get("/api/events", [this](const httplib::Request&, httplib::Response& res) {
             res.set_header("Cache-Control", "no-store");
-            res.set_chunked_content_provider("text/event-stream", [this](size_t, httplib::DataSink& sink) {
+            std::string canvas = store.currentCanvas();
+            res.set_chunked_content_provider("text/event-stream", [this, canvas](size_t, httplib::DataSink& sink) {
                 while (running && sink.is_writable()) {
-                    json ev = {{"metrics", engine.metrics()}, {"layoutVersion", store.version()}};
+                    auto run = canvases.get(canvas);
+                    json ev = {{"metrics", run && run->engine ? run->engine->metrics() : json::object()}, {"layoutVersion", store.version()}, {"canvas", canvas}};
                     std::string msg = "data: " + ev.dump() + "\n\n";
                     if (!sink.write(msg.data(), msg.size())) break;
                     std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -1259,8 +1359,8 @@ struct HttpApi::Impl {
     }
 };
 
-HttpApi::HttpApi(Engine& engine, LayoutStore& store, std::filesystem::path uiDir, std::filesystem::path binDir)
-    : impl_(std::make_unique<Impl>(engine, store)) {
+HttpApi::HttpApi(Canvases& canvases, LayoutStore& store, std::filesystem::path uiDir, std::filesystem::path binDir)
+    : impl_(std::make_unique<Impl>(canvases, store)) {
     impl_->binDir = std::move(binDir);
     impl_->appDir = findAppDir(impl_->binDir.empty() ? std::filesystem::current_path() : impl_->binDir);
     impl_->loadUpdateRequest();

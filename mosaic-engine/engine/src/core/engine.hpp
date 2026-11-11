@@ -30,7 +30,9 @@ namespace mosaic {
 
 class Engine {
 public:
-    Engine(Renderer& renderer, LayoutStore& store, NdiSystem* ndi);
+    // Renders one canvas (canvasId: see LayoutStore), following its layout.
+    Engine(Renderer& renderer, LayoutStore& store, NdiSystem* ndi, std::string canvasId = "canvas-1");
+    const std::string& canvasId() const { return canvasId_; }
     ~Engine();
 
     void start();
@@ -113,12 +115,13 @@ private:
     Renderer& renderer_;
     LayoutStore& store_;
     NdiSystem* ndi_;
+    std::string canvasId_;
     std::unique_ptr<AudioOutputs> audio_;
 
     std::thread thread_;
     std::atomic<bool> running_{false};
     Clock::time_point start_;
-    uint64_t appliedVersion_ = 0;
+    std::shared_ptr<const Layout> applied_;  // the layout reconciled last
 
     TexId canvas_ = 0;
     int canvasW_ = 0, canvasH_ = 0;

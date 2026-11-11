@@ -269,7 +269,7 @@ void to_json(json& j, const Layout& l) {
     j = json{{"id", l.id},         {"name", l.name},       {"frameRate", l.frameRate},
              {"canvas", l.canvas}, {"sources", l.sources}, {"outputs", l.outputs}, {"walls", l.walls},
              {"scenes", l.scenes}, {"endpoints", l.endpoints}, {"fallbackImage", l.fallbackImage},
-             {"receiverBufferMs", l.receiverBufferMs}, {"audioOutputs", l.audioOutputs}};
+             {"receiverBufferMs", l.receiverBufferMs}, {"audioOutputs", l.audioOutputs}, {"ndiPrefix", l.ndiPrefix}};
 }
 
 void from_json(const json& j, Layout& l) {
@@ -290,6 +290,7 @@ void from_json(const json& j, Layout& l) {
     if (j.contains("endpoints")) l.endpoints = j.at("endpoints").get<std::vector<Endpoint>>();
     l.fallbackImage = j.value("fallbackImage", l.fallbackImage);
     l.receiverBufferMs = j.value("receiverBufferMs", l.receiverBufferMs);
+    l.ndiPrefix = j.value("ndiPrefix", l.ndiPrefix);
     if (j.contains("audioOutputs")) l.audioOutputs = j.at("audioOutputs").get<std::vector<AudioOutputConfig>>();
 }
 
@@ -302,6 +303,13 @@ std::vector<std::string> normalize(Layout& l) {
     if (l.name.empty()) l.name = l.id;
     l.frameRate = std::clamp(l.frameRate, 1.0, 240.0);
     l.receiverBufferMs = std::clamp(l.receiverBufferMs, 0, 1000);
+    {
+        std::string p;
+        for (char c : l.ndiPrefix)
+            if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-') p += c;
+            else if (c == ' ') p += '_';
+        l.ndiPrefix = p.empty() ? "Mosaic_Output" : p.substr(0, 40);
+    }
     l.canvas.width = clampDim(l.canvas.width);
     l.canvas.height = clampDim(l.canvas.height);
 
@@ -333,8 +341,8 @@ std::vector<std::string> normalize(Layout& l) {
         ids.insert(o.id);
         if (o.name.empty()) o.name = "Display " + std::to_string(n);
         if (o.ndiName.empty() || ndiNames.count(o.ndiName)) {
-            char buf[32];
-            std::snprintf(buf, sizeof buf, "Mosaic_Output_%02d", n);
+            char buf[64];
+            std::snprintf(buf, sizeof buf, "%s_%02d", l.ndiPrefix.c_str(), n);
             o.ndiName = buf;
         }
         ndiNames.insert(o.ndiName);
@@ -508,8 +516,8 @@ void applyWall(Layout& l, WallConfig w) {
     for (auto& o : panels) taken.insert(o.ndiName);
     auto freeNdiName = [&]() {
         for (int k = 1;; ++k) {
-            char buf[32];
-            std::snprintf(buf, sizeof buf, "Mosaic_Output_%02d", k);
+            char buf[64];
+            std::snprintf(buf, sizeof buf, "%s_%02d", l.ndiPrefix.c_str(), k);
             if (!taken.count(buf)) return taken.insert(buf), std::string(buf);
         }
     };

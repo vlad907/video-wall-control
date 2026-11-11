@@ -37,7 +37,7 @@ export function EndpointList({
   return (
     <section className="list">
       <div className="list-head">
-        <h3 title="Receiving PCs: set up here which output goes on each of their screens">Endpoints</h3>
+        <h3 title="Receiving PCs of this canvas: set up here which output goes on each of their screens">Endpoints</h3>
         <button onClick={() => onSetUp("", [])}>+ Add</button>
       </div>
       {!info?.endpoints.length && !info?.unassigned.length && (
@@ -72,6 +72,11 @@ export function EndpointList({
           <button onClick={() => onSetUp(u.host, u.screens)}>Set up</button>
         </div>
       ))}
+      {!!info?.elsewhere?.length && (
+        <small className="muted" title="A PC follows the canvas it's set up on. To move one here, remove it on that canvas first.">
+          On other canvases: {info.elsewhere.map((x) => `${x.name || x.host} (${x.layout})`).join(", ")}
+        </small>
+      )}
     </section>
   );
 }
