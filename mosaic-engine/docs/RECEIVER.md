@@ -26,7 +26,12 @@ and each endpoint chooses its player, so a PC can switch back at any time.
    - brings it back after a reboot (the setup is saved in `config.json`)
 
    The PC's dashboard shows *Endpoint: … (Mosaic Receiver)*. The receiver's log is `logs\mosaic-receiver.log`.
-4. **The endpoint panel shows:**
+4. **One stream across a 2×2.** Four screens on the PC can show the four quarters of one stream
+   (Endpoints → **+ 2×2 from one output…**), with **Bezel gap** fields for bezel correction. The
+   receiver decodes one stream and draws each window's part of it (`crop` per display in its
+   config, as fractions of the picture), so the four always show the same frame. Both the media
+   server and the PC's dashboard need to be up to date. See the README, "One stream across several screens".
+5. **The endpoint panel shows:**
    - how often the PC's displays were in step, and the most frames they were apart in the last 10 s
    - **how many refreshes per second it really presents** (if this is well under the monitors' Hz, the PC can't keep up)
    - **the upload time per refresh**

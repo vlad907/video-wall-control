@@ -56,10 +56,32 @@ expected, the fix stays inside `ndi_sdk.cpp`.
 - **Timing:** `clock_video = false`, so the engine paces frames itself. Every
   output of a frame gets the same `timecode`, plus metadata
   `<mosaic frame_id="N"/>` so tools can check frame alignment.
-- **Receive:** one thread per source calls `NDIlib_recv_capture_v3` with
-  `NDIlib_recv_color_format_BGRX_BGRA`. Only the newest frame is kept; the render
-  thread uploads it into one of three rotating textures and frees it. When frames
-  stop, the source shows "no signal (holding last frame)".
+- **Receive:** one connection and one thread per stream, shared by every canvas and source that
+  shows it. It calls `NDIlib_recv_capture_v3` with `NDIlib_recv_color_format_UYVY_BGRA`: streams
+  without transparency arrive as UYVY (NDI's native format, no conversion on the CPU) and are
+  unpacked to RGB on the GPU (`ps_unpack_uyvy`, BT.709); streams with transparency arrive as BGRA.
+  Only the newest frame is kept; each canvas's render thread uploads it into one of three rotating
+  textures. When frames stop, the source shows "no signal (holding last frame)". The source's
+  status has `inputFps`, `sentFps` (the sender's stated rate) and `framesDropped`.
+
+## Network setup on the media server
+
+NDI's settings are in `C:\ProgramData\NDI\ndi-config.v1.json` (and `%APPDATA%\NDI\`); NDI Access
+Manager edits the same file. The engine reads them when it starts, so restart it after a change.
+
+- **A PC with two network adapters.** Limit NDI to the one on the video network, or it may announce
+  and send on the other: `"adapters": {"allowed": ["<that adapter's IP>"]}`. Set that adapter's
+  network profile to **Private** in Windows; on a Public network NDI's discovery is blocked.
+- **Streams discovery doesn't find** (encoders on another subnet, or mDNS filtered by a switch): list
+  their addresses under `"networks": {"ips": "192.168.1.31,192.168.1.201"}` (Access Manager →
+  *Remote Sources*). A receiving PC that can't see the media server's streams gets the media
+  server's IP there in the same way.
+- **Fixed addresses.** Those lists hold IP addresses, so give the media server and the encoders
+  DHCP reservations.
+- **Boot.** `run-engine.ps1` waits up to 2 minutes for the allowed adapter's address (or any real
+  IPv4 address) before starting the engine, and notes it in `logs\mosaic-engine-watchdog.log`.
+  Started before the network is up, NDI finds no streams until the engine is restarted.
+- **Firewall.** `install-engine.bat` adds rules for the engine's NDI streams and port 8090.
 
 ## Bandwidth and UYVY
 

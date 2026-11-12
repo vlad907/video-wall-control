@@ -20,7 +20,7 @@ in the style of Resolume's Advanced Output drives the running engine through a R
 |---|---|
 | Render engine, test pattern, crop / scale / rotation, bounded readback, metrics | **Working, measured** on macOS (Metal, Apple M4) |
 | GPU UYVY 4:2:2 output (BT.709), default wire format | **Working, verified** (`tools/check_uyvy.py`); halves readback |
-| Precise frame pacing + real-time thread priority | **Working** on macOS (tick lateness about 0.001 ms); Windows path (high-resolution timer, MMCSS) compiled, not run |
+| Precise frame pacing + real-time thread priority | **Working** on macOS (tick lateness about 0.001 ms) and on the Windows media server (high-resolution timer, MMCSS) |
 | Web editor (drag / resize regions, inspector, live previews, layouts, metrics) | **Working**, verified against the running engine |
 | REST API + server-sent events | **Working**, exercised with curl |
 | Layout persistence across restarts | **Working**, verified |
@@ -31,12 +31,18 @@ in the style of Resolume's Advanced Output drives the running engine through a R
 | Endpoints: receiving PCs set up from the editor (which output on which screen), with online / playing status | **Working**, tested with the dashboard and mock Studio Monitors on macOS |
 | Layout history (restore any of the last 50 versions), export / import | **Working, checked** (`tools/ci_check.py`) |
 | Image sources (PNG / JPEG / BMP / GIF, with transparency), signal-loss fallback image per group | **Working, pixel-checked** |
-| Video file sources (MP4 / MOV: H.264, HEVC, AV1), up to 8K, with loop / pause / restart | **Working on macOS, pixel-checked** (8K HEVC at 30 fps); Windows hardware decoding written, checked in CI where Media Foundation exists, **not yet run on the media server** |
+| Video file sources (MP4 / MOV: H.264, HEVC, AV1), up to 8K, with loop / pause / restart | **Working, pixel-checked** on macOS (8K HEVC at 30 fps) and by CI on Windows; plays 8K AV1 on the media server. Falls back to CPU decoding when the GPU can't convert the frames; skips late frames instead of slowing down |
 | Optional editor PIN and API key for changes | **Working**, tested in the browser |
 | Presets per wall group, one-call "show this NDI stream on this group", control API ([docs/CONTROL_API.md](docs/CONTROL_API.md)) | **Working, pixel-checked** (with colour sources; NDI switching not yet tried on Windows) |
 | Free-form mosaics: any position, gap and tilt angle per panel | **Working, pixel-checked**; rotate handle and `[` `]` keys in the editor |
 | Layered sources with opacity and source crop; scenes with crossfade | **Working, pixel-checked** on Metal; checked on Direct3D 11 by CI |
 | Starts at boot with the video-wall dashboard, restarted if it stops | **Working** (tested on macOS with mock Studio Monitors) |
+| Several canvases at once, a GPU per canvas, self-recovery after a GPU reset | **Working** on the media server; checked by CI |
+| Display outputs: an output full screen on a monitor of the media server's GPU, with its own resolution / refresh and a delay to line up with NDI walls | **Working** on the media server (Windows only); the settings are checked by CI |
+| NDI inputs: one connection per stream shared by all canvases, received as UYVY and unpacked on the GPU | **Pixel-checked** (CI, with the UYVY test capture device); **not yet measured against the venue's encoders** |
+| One stream across a 2×2 (or 2×1, 1×2, 3×3) of screens on one receiving PC, with bezel correction | **Checked by CI** on Direct3D 11 (each window shows its part); **not yet run on the receiving PCs** |
+| Audio outputs: NDI streams' and sound inputs' audio on the media server's sound devices, delayed to match the wall | **Working** on the media server; timing checked by `--audio-self-test` in CI |
+| Capture cards as sources, colour correction per output | **Working, pixel-checked** |
 | 24 outputs (6 × 4 wall of 1080p) | **Measured**: 60 fps, no drops, on Apple M4 with the null sink. Not yet measured with real NDI or on Windows. |
 
 Without the NDI SDK, outputs go to a *null sink* that reads the readback memory
@@ -101,14 +107,18 @@ Example layouts are in [layouts/](layouts):
 | `mixed-resolution.json` | 4K centre plus 1080p sides, using `fit`, `fill` and a 1:1 pixel crop |
 | `rotated-portrait.json` | Portrait displays (`rotation` 90 / 270) beside a landscape pair |
 | `wall-6x4-1080p.json` | 24 × 1080p panels in a 6×4 wall with 40 px bezels (11720×4440 canvas), made with the wall tool |
+| `inside-bar.json` | The inside bar wall from its measurements (323 × 142 in): a 2×2 of 98" panels sent as **one** 3840×2160 stream, and five tilted / portrait 40" and 24" screens a side at 1280×720. 30 fps. Made by `tools/make_inside_bar.py`: change the positions there and run it again |
 
 Output fields: `id`, `name`, `ndiName`, `width`/`height` (output resolution), `pixelFormat` (`uyvy`, the default, or `bgra`), `crop`
 (region in canvas pixels, or in source pixels when `source` is a source id),
 `rotation` (0/90/180/270, clockwise: how the panel is mounted), `angle` (free tilt in degrees,
 clockwise, of the crop about its centre: for panels hung at an angle), `scaleMode` (`stretch` | `fit` | `fill`),
 `source` (`"canvas"` or a source id), `enabled`, and `group` (the id of the wall group that made it, if any).
+A display output also has `display` (the monitor, `\\.\DISPLAY2`; empty = send as NDI), `displayMode`
+(`{"width", "height", "refreshHz"}`, absent = leave the monitor as Windows has it) and `delayMs` (0–1000).
+`color` holds its colour correction.
 
-Source fields: `id`, `name`, `type` (`test_pattern`, `ndi`, `solid`), `ndiName`, `rect` (where it sits
+Source fields: `id`, `name`, `type` (`test_pattern`, `ndi`, `solid`, `image`, `video`, `capture`), `ndiName`, `rect` (where it sits
 on the canvas), `crop` (part of the source shown; `w`/`h` 0 = all of it), `opacity` (0–1), `color`
 (solid), `animated` (test pattern), `enabled`. Sources are drawn in order: the last one is on top.
 
@@ -151,6 +161,17 @@ output in `/api/metrics` (`presents`, `busy`, `repeats`, `error`). Windows only.
 *Displays* tab has **Send to monitors in order**: its displays, row by row, to the GPU's monitors
 left to right, top to bottom (as arranged in Windows' display settings), and **Back to NDI**.
 
+The output's **Monitor** section (inspector) has, for a display output:
+- **Resolution**: the monitor's own modes (resolution and refresh, from `GET /api/gpus` → `modes`).
+  Picking one switches the monitor (`displayMode`) and Windows remembers it; *As Windows has it*
+  leaves it alone. A mode the monitor refuses shows as `modeError`.
+- **Delay** (`delayMs`, 0–1000 ms): holds this screen's picture back on the GPU, to line a directly
+  cabled screen up with walls that go through NDI and a receiving PC (those arrive later). At most
+  120 frames are held (`heldFrames` in the metrics).
+- A monitor is used by **one canvas at a time**: a second canvas asking for it is refused, with the
+  canvas that has it in `error`. A display that's briefly busy is waited for (up to a quarter of a
+  refresh) rather than skipped.
+
 **If a GPU's driver resets** (or a GPU call fails), only that canvas stops: its render thread
 reports why and the canvas starts again by itself after 3 s (longer after repeated failures); the
 other canvases carry on. `GET /api/canvases` shows `error` and `restarts`.
@@ -161,6 +182,41 @@ estimate of the engine's clock, and the Endpoints panel shows how far apart the 
 (`groupSync` in `GET /api/endpoints`: median and worst spread, each PC's offset). With a Buffer set, every
 PC shows each frame at the engine's time plus the buffer: within one refresh of each other, since
 separate PCs' monitors can't be locked to one refresh.
+
+## NDI inputs
+
+- **One connection per stream.** A stream shown on several canvases (or several times on one) is
+  received and decoded once and shared, so adding it to another canvas costs no extra network or CPU.
+- **UYVY, unpacked on the GPU.** Frames are asked for in NDI's native 4:2:2 format and turned into
+  RGB by a shader: half the memory traffic of BGRA, and no colour conversion on the CPU. Streams
+  with transparency still arrive as BGRA.
+- **What arrives.** Each source's status (`GET /api/sources`, and the Inputs panel) shows `inputFps`
+  (frames received per second), `sentFps` (what the sender says it sends) and `framesDropped`
+  (frames NDI dropped on this PC). "45 of 60 sent" means the media server isn't keeping up with that
+  stream; a low `sentFps` means the encoder itself sends less.
+- **After a reboot.** NDI picks its network adapters when the engine starts, so `run-engine.ps1`
+  waits (up to 2 minutes) for the network before starting it. See [docs/NDI.md](docs/NDI.md) for
+  pinning NDI to one adapter and for streams discovery can't find.
+
+## One stream across several screens
+
+A 2×2 of screens on **one** receiving PC can be fed by one stream that the Mosaic Receiver cuts
+into four, instead of four streams: the screens always show pieces of the same frame, so they
+can't drift apart, and the media server renders, reads back and encodes a quarter as much.
+
+- Give the canvas one output covering the whole 2×2 (for four 4K panels: 3840×2160, a 1080p
+  picture per panel).
+- Endpoints → the PC → **+ 2×2 from one output…**, then set each row's **Screen**. Each row's
+  *Shows* picker has the other cuts too (2 side by side, 2 stacked, 3×3).
+- **Bezel gap across / down (px)** on those rows is bezel correction: the gap from the edge of one
+  picture to the edge of the next (both bezels), in pixels of the stream. That much of the picture
+  is left out between the screens, so lines run straight across them. Setting it on one row sets
+  it for the whole grid.
+- The player must be **Mosaic Receiver**; Studio Monitor can't show part of a stream, and the row says so.
+- In a layout: `"displays": [{"output": "centre-1", "screen": "", "part": {"cols": 2, "rows": 2, "index": 1, "gapX": 9, "gapY": 9}}, ...]`
+  (index 1–4, row by row).
+
+Bezel correction for screens that each have their own stream is the wall group's gap: see below.
 
 ## Capture cards
 
@@ -276,6 +332,9 @@ Settings → History.
   A group's *Content* tab has *Restart videos*, which starts all its videos together. Video layers belong to groups
   and presets like any other layer.
   - **Formats:** MP4 / MOV / M4V with H.264, HEVC (H.265) or AV1. Video only; audio is ignored.
+  - **Keeps time.** When the canvas renders slower than the video's frame rate, late frames are skipped, so the
+    video stays at its real speed. If the GPU can't convert the decoded frames, the engine switches that video to
+    CPU decoding by itself (the inspector then says "software decoding").
   - **Windows:** Media Foundation decodes on the graphics card, and frames stay there (NV12 → BGRA on the GPU's
     video processor), so 8K is practical.
   - **For 8K, use HEVC or AV1.** Most GPUs decode H.264 only up to 4K, and above that Windows falls back to software
@@ -304,7 +363,8 @@ no canvas pass. UYVY outputs are mapped and packed in one pass, without a full-s
 
 ## Audio outputs
 
-**Settings → Audio** plays NDI sources' sound on the media server's sound devices: a USB
+**Settings → Audio** plays NDI sources' sound, or a sound input's (a capture card's audio, a line
+in), on the media server's sound devices: a USB
 interface, the graphics card's HDMI audio, the onboard output, or one channel pair of a
 multi-channel interface. Each output has its own source, device, volume and mute, so the bar can
 play game 1 while the patio plays game 2.
@@ -320,6 +380,8 @@ play game 1 while the patio plays game 2.
   playback rate (at most 0.2 %, inaudible), never by skipping.
 - The meters show what each output plays; a problem (device unplugged, no audio from the source,
   wrong channel pair) shows under it. `GET /api/audio` has the same, plus the PC's sound devices.
+- **From a control system:** source, volume and mute per output over HTTP. See
+  [docs/CONTROL_API.md](docs/CONTROL_API.md#audio-sound-outputs).
 - `mosaic_engine --audio-self-test` checks the timing against a simulated network (stalls, jitter,
   44.1 kHz devices, clock drift); it runs in CI.
 
@@ -355,7 +417,7 @@ Across the whole source there's also:
 | GET | `/api/canvases` | running canvases (primary first): layout, GPU, frame rate, which one this request is about, problems |
 | POST | `/api/canvases` | `{"name"}`: a new canvas with a new layout, or `{"layout"}`: run a saved layout as another canvas |
 | DELETE | `/api/canvases/:id` | stop a canvas (its layout stays saved; not the last one) |
-| GET | `/api/gpus` | the media server's GPUs, the monitors on each, and the canvases on each |
+| GET | `/api/gpus` | the media server's GPUs, the monitors on each (with the `modes` each offers), and the canvases on each |
 | GET | `/api/capture` | capture devices, and the open ones (size, fps, viewers, error) |
 | GET | `/api/system/decoders` | Windows' video decoders per codec, and which are hardware (why a video decodes in software) |
 | GET | `/api/layouts` | saved layouts |
@@ -379,8 +441,9 @@ Across the whole source there's also:
 | POST | `/api/walls/:id/restart` | every video in a group, from the first frame, together |
 | PATCH | `/api/walls/:id` | change a group's `name` or `fallbackImage` without regenerating its outputs |
 | GET / PUT | `/api/security` | whether a PIN / API key is set / set them: `{"editorPin", "apiKey"}` (`""` removes one) |
-| GET / POST | `/api/endpoints` | list endpoints with live status, plus PCs that checked in but aren't set up (`unassigned`) / create one: `{"name", "host", "displays": [{"output", "screen"}]}` |
-| PUT / DELETE | `/api/endpoints/:id` | change `name`, `host` or `displays` / remove it (the PC keeps showing what it shows) |
+| GET / POST | `/api/endpoints` | list endpoints with live status, plus PCs that checked in but aren't set up (`unassigned`) / create one: `{"name", "host", "player", "displays": [{"output", "screen", "part"}]}` (`player`: `studio_monitor` or `mosaic`; `part`: `{"cols", "rows", "index", "gapX", "gapY"}`, one stream cut across several screens) |
+| PUT / DELETE | `/api/endpoints/:id` | change `name`, `host`, `player` or `displays` / remove it (the PC keeps showing what it shows) |
+| GET | `/api/audio` | sound outputs' live status, the PC's sound devices and inputs; the outputs themselves are the layout's `audioOutputs` (`PUT /api/layout {"audioOutputs": [...]}`) |
 | POST | `/api/endpoints/checkin` | used by the receiving PC's dashboard: `{host, screens, panels}`, reply is its assignment |
 | GET | `/api/control` | summary for control systems: groups with presets and what's on, scenes, layouts, NDI streams |
 | GET / PUT / DELETE | `/api/wall` | the group `wall` (the single-wall API from before groups) |
@@ -450,7 +513,8 @@ See [docs/SYNC.md](docs/SYNC.md). In short:
 
 - 24 outputs have not yet been measured with real NDI sending or on the Windows machine. See [docs/NEXT.md](docs/NEXT.md).
 - Small integrated GPUs (for example the Radeon 610M) can't render the animated test pattern over a 4K canvas at 60 fps. Use an NDI input, or set the pattern's `animated` to false.
-- Audio: NDI sources' sound only (not video files' audio tracks); Windows only. See "Audio outputs".
-- No video-file source.
+- Audio: NDI sources' and sound inputs' sound only (not video files' audio tracks); Windows only. See "Audio outputs".
+- Display outputs and capture cards are Windows only.
 - No edge blending or warping.
-- One canvas per layout.
+- The NDI input changes (shared connections, UYVY) and the one-stream 2×2 with bezel correction pass CI but
+  haven't been measured on the venue's hardware yet. [docs/TEST_PLAN.md](docs/TEST_PLAN.md) has the steps.

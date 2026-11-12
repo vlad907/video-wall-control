@@ -46,6 +46,18 @@ together needs hardware or driver features, which this project doesn't touch:
 - receivers that support PTP/timecode-locked presentation
 
 **Practical guidance:** for a tear-free wall, drive the displays from one receiving
-machine and GPU where possible. That's your current setup, with NDI Studio Monitor
-on one Mini PC. Use the frame-id strip in the test pattern, filmed with a phone in
-slow motion, to measure the real offset between screens.
+machine and GPU where possible. Use the frame-id strip in the test pattern, filmed with a
+phone in slow motion, to measure the real offset between screens.
+
+What the project now does about it, from the tightest to the loosest:
+
+| Setup | How close the screens are |
+|---|---|
+| One stream cut across a 2×2 by the Mosaic Receiver (README, "One stream across several screens") | Pieces of the same frame by construction; within one refresh on the glass |
+| Several streams on one PC, Mosaic Receiver ([RECEIVER.md](RECEIVER.md)) | Shown in step by frame id; measured on the glass and reported in the Endpoints panel |
+| Several PCs on one canvas, Mosaic Receiver with a Buffer | Each frame shown at the engine's time plus the buffer: within one refresh of each other |
+| Screens cabled to the media server's GPU (display outputs) | No network at all; earlier than NDI walls, so give them a **Delay** to line up |
+| NDI Studio Monitor | Not aligned: each window shows frames as they arrive |
+
+Screens next to each other should share a PC (and, for a 2×2, a stream). Differences between
+separate areas of a room are far less visible.

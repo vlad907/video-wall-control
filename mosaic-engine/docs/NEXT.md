@@ -62,6 +62,7 @@ Plan, phases and acceptance criteria: [RECEIVER.md](RECEIVER.md).
 - [x] Still image sources; video file sources (MP4 / MOV, up to 8K, hardware decoding on Windows)
 - Audio from video files
 - Edge blending and simple keystone / warping for projectors
-- Per-output colour adjustment (brightness / contrast) to match panels
 - Scene triggers over the REST API from a show controller (already possible with curl; a small OSC bridge would make it easier)
-- Audio passthrough from an NDI input to one output
+- [x] Audio: NDI streams' and sound inputs' audio on the media server's sound devices (README, "Audio outputs")
+- [x] Per-output colour adjustment; capture cards; display outputs; one stream across a 2×2 with bezel correction
+- A request that changes one sound output (volume, mute, source) without sending the whole list

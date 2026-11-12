@@ -51,6 +51,11 @@ On the PC that runs the mosaic engine and doesn't drive displays itself, build t
 - opens TCP 8090 and allows the engine's NDI streams in Windows Firewall
 - if this dashboard is installed on the same PC, turns off its *Run engine*, so the two don't both start one
 
+- waits for the network at boot (up to 2 minutes) before starting the engine, so NDI finds its streams
+
+A media server with two network adapters needs NDI limited to the video network's adapter:
+see `mosaic-engine/docs/NDI.md`, "Network setup on the media server".
+
 Logs: `logs/mosaic-engine.log` (the engine) and `logs/mosaic-engine-watchdog.log` (starts and restarts).
 `install-engine.bat -Uninstall` removes it. Turn on automatic sign-in here too.
 
@@ -129,6 +134,11 @@ Removing the endpoint in the editor hands the PC back to manual control.
 process shows all its displays in step, and reports how far apart they are. The PC downloads
 `mosaic_receiver.exe` from the media server by itself, and updates it whenever the media server has a
 newer one, so nothing is copied by hand. See [mosaic-engine/docs/RECEIVER.md](mosaic-engine/docs/RECEIVER.md).
+With the Mosaic Receiver, four screens in a 2×2 can also share **one** stream that the receiver cuts in
+four, with bezel correction (**+ 2×2 from one output…**).
+
+**Controlling what's on, and the sound.** Switching what each wall shows, and each sound output's
+source, volume and mute, from a control system: [mosaic-engine/docs/CONTROL_API.md](mosaic-engine/docs/CONTROL_API.md).
 
 ## config.json
 

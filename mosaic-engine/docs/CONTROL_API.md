@@ -1,8 +1,15 @@
 # Control API
 
 How a control system (Bitfocus Companion, Crestron, Q-SYS, AMX, a custom app or a script)
-switches what the video walls show, by sending HTTP requests to the mosaic engine on the
-media server.
+switches what every display shows and what every sound output plays, by sending HTTP requests to
+the mosaic engine on the media server.
+
+- **Video** is controlled per **group** (a wall or a single display) on a **canvas**. It makes no
+  difference how the display is fed: an NDI stream to a receiving PC, one stream cut across a 2×2
+  by the Mosaic Receiver, or a monitor cabled to the media server's own GPU. The same requests
+  switch all of them. See [Every display](#every-display-canvases-and-groups).
+- **Audio** is controlled per **sound output** of the media server (bar speakers, patio, ...):
+  its source, volume and mute. See [Audio](#audio-sound-outputs).
 
 Everything here is plain HTTP with JSON. There is no login.
 
@@ -11,10 +18,10 @@ Everything here is plain HTTP with JSON. There is no login.
 | | |
 |---|---|
 | Base URL | `http://<media-server>:8090` (for example `http://192.168.1.187:8090`) |
-| Method | `GET` to read, `POST` to change something |
+| Method | `GET` to read, `POST` to change something (`PUT` for audio) |
 | Body | JSON, or empty. Send `Content-Type: application/json` when there is a body |
 | Replies | JSON. `200` / `201` on success; `400`, `401`, `404` or `500` with `{"error": "..."}` |
-| Key | Only if an API key is set (editor → Settings → Access): send it as `X-Api-Key: <key>` on every `POST`. Without it, changes get `401`; `GET`s work either way |
+| Key | Only if an API key is set (editor → Settings → Access): send it as `X-Api-Key: <key>` on every `POST` and `PUT`. Without it, changes get `401`; `GET`s work either way |
 
 Every `POST` needs either a body or a `Content-Length: 0` header. A request with neither is refused with
 `400` before it reaches the engine. `curl` needs `-d` (`-d ""` for no body).
@@ -65,6 +72,11 @@ their names.
 | Restart the videos a group shows, together | `POST /api/walls/{group}/restart` |
 | Recall a scene (all groups) | `POST /api/scenes/{scene}/recall` |
 | Switch layout | `POST /api/layouts/{layout}/activate` |
+| The same, on another canvas (another wall) | add `?canvas=canvas-2` to any of the above |
+| List the canvases (every wall the media server runs) | `GET /api/canvases` |
+| Sound outputs: levels, delay, problems, devices | `GET /api/audio` |
+| Change a sound output's source, volume or mute | `PUT /api/layout` with `{"audioOutputs": [...]}` |
+| Is every display showing its picture? | `GET /api/control` (`endpoints`), `GET /api/metrics` (`outputs`) |
 | Is the engine up? | `GET /api/health` |
 
 ## Requests
@@ -198,10 +210,7 @@ a different room setup, not for changing content. Body optional: `{"transitionMs
 
 ### `GET /api/audio`
 
-The media server's sound outputs (set up in Settings → Audio; stored as the layout's
-`audioOutputs`): `wallDelayMs`, the PC's sound `devices`, discovered `ndiSources`, and per output
-its `levelDb` (left/right peak since the last read), `delayMs`, and `error` / `sourceError`. To change
-an output's volume from a control system, `PUT /api/layout` with the whole `audioOutputs` list.
+Live status of the sound outputs. See [Audio](#audio-sound-outputs).
 
 ### `GET /api/system/update` · `POST /api/system/update`
 
@@ -304,6 +313,109 @@ curl -X POST "http://192.168.1.187:8090/api/walls/main-wall/presets/camera-1-ful
 - **Raw TCP** (Crestron / Q-SYS / AMX): `POST /api/walls/main-wall/presets/camera-1-full/recall?canvas=canvas-2 HTTP/1.1`.
 - A canvas id stays the same when the layout on it changes. If a canvas is stopped, changes naming it
   get `409` (nothing is changed on another wall by mistake).
+
+## Every display: canvases and groups
+
+The media server runs one **canvas** per separate wall or area (for example *Inside bar*,
+*Bar tower*, *Ultrawide*, *Outside TV*). Each canvas has its own groups, presets, scenes and sound
+outputs. To build a controller that covers the whole venue:
+
+1. `GET /api/canvases` lists them: `id` (`canvas-1`, ...), `name`, `layout`, `running`, `renderFps`,
+   `error`.
+2. For each one, `GET /api/control?canvas=<id>` lists its groups, presets and what's on.
+3. Send the group requests above with the same `?canvas=<id>`.
+
+```bash
+B=http://192.168.1.187:8090
+for c in $(curl -s $B/api/canvases | python3 -c "import json,sys;print(' '.join(c['id'] for c in json.load(sys.stdin)['canvases']))"); do
+  echo "== $c"; curl -s "$B/api/control?canvas=$c" | python3 -c "
+import json,sys
+for g in json.load(sys.stdin)['groups']:
+    print(' ', g['id'], '| presets:', [p['id'] for p in g['presets']], '| on:', g['activePreset'] or [s['name'] for s in g['showing']])"
+done
+```
+
+How a display gets its picture doesn't change how it's controlled:
+
+| Display | Fed by | Controlled as |
+|---|---|---|
+| Wall of screens on a receiving PC | one NDI stream per screen | its group |
+| 2×2 on a receiving PC, one stream (Mosaic Receiver cuts it in four, with bezel correction) | one NDI stream for the four | its group (a 1 × 1 group covering the 2×2) |
+| Screen cabled to the media server's GPU (*Send to*: a monitor) | DisplayPort / HDMI, no NDI | its group |
+| Single TV on a receiving PC | one NDI stream | its group (1 × 1) |
+
+A single display that should be switchable on its own needs to be its own group: in the editor,
+Outputs → *+ Group* → 1 × 1. Outputs that aren't in a group follow the canvas (scenes and layouts).
+
+**Is every display up?**
+
+- `GET /api/control?canvas=<id>` → `endpoints`: each receiving PC, `online`, and `displaysOk` of
+  `displays` (how many screens play the stream they should).
+- `GET /api/metrics?canvas=<id>` → `outputs`: per output `sink` (`ndi` or `display`). An NDI output
+  has `connections` (receivers connected) and `fps`. A display output has `open`, `fps`, `refreshHz`,
+  `repeats`, `error` (why the monitor isn't showing, for example unplugged or used by another
+  canvas) and `modeError` (the monitor refused the resolution asked for).
+- `GET /api/canvases` → `problems`, and per canvas `error` and `restarts` (a canvas that lost its
+  GPU starts again by itself).
+
+## Audio: sound outputs
+
+A **sound output** plays one source's audio on one of the media server's sound devices (the
+onboard output, a USB interface, the graphics card's HDMI audio, or one channel pair of a
+multi-channel interface), delayed to match the picture. They're set up in the editor
+(Settings → Audio) and belong to a canvas's layout, as its `audioOutputs` list:
+
+| Field | Meaning |
+|---|---|
+| `id`, `name` | for example `bar`, "Bar speakers" |
+| `source` | whose sound it plays: an NDI stream's full name (`MACHINE (Stream)`), or `input:<device id>` for a sound input of the media server (a capture card's audio, a line in) |
+| `device` | the Windows sound device's id (`""` = the default device); ids are in `GET /api/audio` |
+| `channelPair` | 0 = channels 1–2, 1 = channels 3–4, ... |
+| `volumeDb` | −60 to +12 (0 = unchanged) |
+| `mute` | `true` / `false` |
+| `matchWall` | `true`: delayed as much as the picture, plus `delayMs` as a trim (may be negative). `false`: `delayMs` is the whole delay |
+| `enabled` | `false` stops the output without removing it |
+
+**Reading.** `GET /api/audio` (add `?canvas=<id>` for another canvas):
+
+- `outputs`: per output its `id`, `levelDb` (left / right peak since the last read; −100 = silence),
+  `delayMs` (what it's delayed by right now), `sourceConnected`, `error` (device problem: unplugged,
+  wrong channel pair) and `sourceError` (no such stream, no audio in it).
+- `devices`: the PC's sound outputs (`id`, `name`, channels); `inputs`: its sound inputs.
+- `ndiSources`: streams it can take sound from. `wallDelayMs`: the picture's delay.
+
+**Changing.** There is one request: `PUT /api/layout` with the **whole** `audioOutputs` list. An
+output left out of the list is removed, so read the list, change one value and send it all back.
+Nothing else in the layout is changed.
+
+```bash
+B=http://192.168.1.187:8090
+# Bar speakers to -10 dB (output id "bar")
+curl -s $B/api/layout | python3 -c "
+import json,sys
+outs = json.load(sys.stdin)['audioOutputs']
+for o in outs:
+    if o['id'] == 'bar': o['volumeDb'] = -10
+print(json.dumps({'audioOutputs': outs}))" | curl -s -X PUT $B/api/layout -H 'Content-Type: application/json' -d @- > /dev/null
+```
+
+```powershell
+$B = "http://192.168.1.187:8090"
+$outs = @((Invoke-RestMethod "$B/api/layout").audioOutputs)
+($outs | Where-Object id -eq "bar").mute = $true                                  # mute the bar
+($outs | Where-Object id -eq "patio").source = "ZOWIEBOXPRO-54447 (ZowieBox-54447)" # patio follows game 2
+Invoke-RestMethod -Method Put -Uri "$B/api/layout" -ContentType application/json `
+  -Body (ConvertTo-Json @{ audioOutputs = $outs } -Depth 5)
+```
+
+- A change of `volumeDb` or `mute` is heard at once. A new `source` takes a moment to connect.
+- **Audio doesn't follow video by itself.** Recalling a preset changes the picture only. For "this
+  zone's speakers follow this wall", send both requests from the same button: the preset recall,
+  and the `audioOutputs` list with that output's `source` set to the stream now on the wall.
+- Control systems that can't read-modify-write (a plain HTTP button) can send a fixed list: keep
+  one saved body per button with every output in it.
+- Sound outputs play NDI streams' and sound inputs' audio. Video files' sound tracks aren't played.
+- Windows only (on other systems `error` says so).
 
 ## Live status
 
