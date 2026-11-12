@@ -315,6 +315,9 @@ with tempfile.TemporaryDirectory() as tmp:
         else:
             check(st.get("video", {}).get("codec") == "H.264" and st["video"]["width"] == 320, "video opened (H.264, 320x180)")
             shows = lambda rgb: close(pixel(frame("out-1"), *spot), rgb, 40)
+            # A GPU that can't convert decoded frames makes the engine decode on the CPU instead.
+            wait_for(lambda: vstatus().get("status") in ("playing", "paused") and frame_id() and shows((255, 0, 0)) or shows((0, 0, 255)), timeout=20)
+            print(f"  ..   {vstatus().get('status')} · decoder: {vstatus().get('video', {}).get('decoder')}", flush=True)
             call("POST", f"/api/sources/{vid['id']}/restart", {})
             check(wait_for(lambda: shows((255, 0, 0)), timeout=0.9, every=0.05), f"plays the first second (red) {pixel(frame('out-1'), *spot)}")
             check(wait_for(lambda: shows((0, 0, 255)), timeout=6, every=0.05), f"then the next (blue) {pixel(frame('out-1'), *spot)}")

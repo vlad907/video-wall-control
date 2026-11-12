@@ -8,7 +8,7 @@ CXX=${CXX:-x86_64-w64-mingw32-g++}
 J=$(find build/_deps -path "*nlohmann/json.hpp" | head -1 | sed 's#/nlohmann/json.hpp##')
 H=$(dirname "$(find build/_deps -name httplib.h | head -1)")
 S=$(find build/_deps -name stb_image.h | head -1 | xargs dirname)
-FILES=${*:-"engine/src/render/d3d11/d3d11_renderer.cpp engine/src/io/video_mf.cpp engine/src/audio/audio_wasapi.cpp engine/src/io/capture_mf.cpp engine/src/core/canvases.cpp engine/src/api/http_api.cpp receiver/src/present_d3d11.cpp"}
+FILES=${*:-"engine/src/render/d3d11/d3d11_renderer.cpp engine/src/io/video_mf.cpp engine/src/audio/audio_wasapi.cpp engine/src/io/capture_mf.cpp engine/src/core/canvases.cpp engine/src/api/http_api.cpp receiver/src/present_d3d11.cpp receiver/src/main.cpp receiver/src/present_headless.cpp"}
 fail=0
 for f in $FILES; do
   [ -f "$f" ] || continue

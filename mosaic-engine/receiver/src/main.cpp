@@ -11,6 +11,11 @@
 #include <iostream>
 #include <thread>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <timeapi.h>
+#endif
+
 #include "receiver.hpp"
 #include "synthetic_input.hpp"
 
@@ -172,6 +177,10 @@ int selfTest(double seconds) {
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // Windows wakes sleeping threads every 15.6 ms by default: too coarse for 60 Hz timing.
+    timeBeginPeriod(1);
+#endif
     std::string host = "127.0.0.1", configFile;
     int port = 8095;
     bool headless = false, software = std::getenv("MOSAIC_SOFTWARE_GPU") != nullptr;

@@ -90,6 +90,7 @@ private:
         Clock::time_point playStart = Clock::now();
         double pausedAt = -1;   // seconds into the video while paused; -1 = playing
         bool gpuFrames = false; // its texture takes hardware-decoded frames (render target) rather than uploads
+        bool wantSoftwareVideo = false, softwareVideo = false;  // the GPU can't convert its frames: decoded on the CPU instead
     };
     std::mutex videoRestartMutex_;
     std::vector<std::string> videoRestarts_;

@@ -684,7 +684,23 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
                     if (needed.count(id)) {
                         bool ok = gpu ? renderer_.blitVideoFrame(s.tex[0], f->gpuTexture, f->arraySlice, f->colorSpace) : (renderer_.uploadBGRA(s.tex[0], f->bgra, f->stride), true);
                         if (ok) s.hasFrame = true;
+                        else if (gpu && !s.softwareVideo) s.wantSoftwareVideo = true;
                         else s.error = "the GPU couldn't convert the video frame";
+                    }
+                }
+                if (s.wantSoftwareVideo && !s.softwareVideo) {
+                    // This GPU has no video processor for decoded frames (a software renderer, an old
+                    // card): open the file again decoding on the CPU, which hands over BGRA.
+                    s.softwareVideo = true;
+                    std::string err;
+                    auto sw = openVideoFile(utf8(mediaDir_ / pathFromUtf8(s.cfg.video)), nullptr, s.cfg.loop, err);
+                    if (sw) {
+                        s.video = std::move(sw);
+                        s.playStart = now;
+                        if (s.pausedAt >= 0) s.pausedAt = 0;
+                        std::cerr << "[engine] video '" << s.cfg.video << "': the GPU can't convert its frames, decoding on the CPU\n";
+                    } else {
+                        s.error = "the GPU couldn't convert the video frame, and it can't be decoded on the CPU: " + err;
                     }
                 }
                 VideoInfo vi = s.video->info();

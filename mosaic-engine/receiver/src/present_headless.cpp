@@ -8,6 +8,14 @@ namespace mosaic::rx {
 
 namespace {
 
+// Sleeps until `t` to within a fraction of a millisecond: sleeps most of the way, then spins
+// (a plain sleep is only as fine as the system's timer).
+void preciseSleepUntil(Clock::time_point t) {
+    auto coarse = t - std::chrono::milliseconds(2);
+    if (Clock::now() < coarse) std::this_thread::sleep_until(coarse);
+    while (Clock::now() < t) std::this_thread::yield();
+}
+
 class HeadlessPresenter final : public Presenter {
 public:
     HeadlessPresenter(double hz, std::vector<int> extraLatency, double msPerWindow)
@@ -29,7 +37,7 @@ public:
             auto& t = timings_[w];
             t.presented = false;
             if (w >= which.size() || !which[w]) continue;
-            if (cost_ > 0) std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(cost_));
+            if (cost_ > 0) preciseSleepUntil(Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double, std::milli>(cost_)));
             int64_t now = micros(Clock::now());
             int64_t tick = refreshAfter(now) + (w < extra_.size() ? extra_[w] : 0);
             t = {true, ++counts_[w], counts_[w], static_cast<uint32_t>(tick), micros(start_) + static_cast<int64_t>(tick * 1e6 / hz_), lastRefresh_, now, true};
@@ -39,7 +47,7 @@ public:
     void waitForRefresh() override {
         // Until the next refresh; a late caller waits for the one after it, like a real monitor.
         int64_t tick = refreshAfter(micros(Clock::now()));
-        std::this_thread::sleep_until(start_ + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(tick / hz_)));
+        preciseSleepUntil(start_ + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(tick / hz_)));
         lastRefresh_ = micros(start_) + static_cast<int64_t>(tick * 1e6 / hz_);
     }
     double refreshHz() const override { return hz_; }
