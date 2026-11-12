@@ -378,6 +378,21 @@ with tempfile.TemporaryDirectory() as tmp:
               f"each screen gets its quarter of the one stream ({crops[1]})")
         check(len({d["stream"] for d in r["displays"]}) == 1 and r["displays"][0]["width"] == 960 and not any(d.get("error") for d in r["displays"]),
               "all four show the same stream, at a quarter of its size each")
+        # Bezel correction: 40 px across and 20 px down are left out between the cells (out-1 is 1920 x 1080).
+        gap = {"gapX": 40, "gapY": 20}
+        call("PUT", "/api/endpoints/quad-pc", {"displays": [{"output": "out-1", "part": {"cols": 2, "rows": 2, "index": k, **gap}} for k in (1, 2, 3, 4)]})
+        r = call("POST", "/api/endpoints/checkin", {"host": "quad-pc", "screens": [], "panels": []})
+        c = [d["crop"] for d in r["displays"]]
+        near = lambda a, b: abs(a - b) < 1e-9
+        check(near(c[0]["w"], 940 / 1920) and near(c[0]["h"], 530 / 1080) and near(c[1]["x"], 980 / 1920) and near(c[2]["y"], 550 / 1080)
+              and c[0]["x"] == 0 and c[1]["y"] == 0 and near(c[3]["x"] + c[3]["w"], 1) and near(c[3]["y"] + c[3]["h"], 1),
+              f"bezel correction leaves the gap out between the cells and keeps the outer edges ({c[1]})")
+        check(r["displays"][0]["width"] == 940 and r["displays"][0]["height"] == 530 and r["displays"][0]["part"]["gapX"] == 40, "and each cell is that much smaller")
+        ep = next(e for e in json.loads(get("/api/endpoints")[1])["endpoints"] if e["id"] == "quad-pc")
+        check(ep["displays"][3]["part"] == {"cols": 2, "rows": 2, "index": 4, "gapX": 40, "gapY": 20}, "the editor sees the gap")
+        call("PUT", "/api/endpoints/quad-pc", {"displays": [{"output": "out-1", "part": {"cols": 2, "rows": 2, "index": k, "gapX": 5000}} for k in (1, 2, 3, 4)]})
+        r = call("POST", "/api/endpoints/checkin", {"host": "quad-pc", "screens": [], "panels": []})
+        check(r["displays"][0]["crop"]["w"] >= 0.25 - 1e-9, f"an oversized gap still leaves half the picture on the screens ({r['displays'][0]['crop']['w']:.3f})")
         call("PUT", "/api/endpoints/quad-pc", {"player": "studio_monitor"})
         r = call("POST", "/api/endpoints/checkin", {"host": "quad-pc", "screens": [], "panels": []})
         check("Mosaic Receiver" in (r["displays"][0].get("error") or ""), "Studio Monitor can't show part of a stream, and says so")

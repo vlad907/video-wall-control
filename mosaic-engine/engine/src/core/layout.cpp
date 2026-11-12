@@ -234,7 +234,11 @@ void from_json(const json& j, WallConfig& w) {
 
 void to_json(json& j, const EndpointDisplay& d) {
     j = json{{"screen", d.screen}, {"output", d.output}};
-    if (d.part > 0) j["part"] = {{"cols", d.partCols}, {"rows", d.partRows}, {"index", d.part}};
+    if (d.part > 0) {
+        j["part"] = {{"cols", d.partCols}, {"rows", d.partRows}, {"index", d.part}};
+        if (d.partGapX) j["part"]["gapX"] = d.partGapX;
+        if (d.partGapY) j["part"]["gapY"] = d.partGapY;
+    }
 }
 
 void from_json(const json& j, EndpointDisplay& d) {
@@ -242,12 +246,18 @@ void from_json(const json& j, EndpointDisplay& d) {
     d.output = j.value("output", d.output);
     d.partCols = d.partRows = 1;
     d.part = 0;
+    d.partGapX = d.partGapY = 0;
     if (j.contains("part") && j.at("part").is_object()) {
         const auto& p = j.at("part");
         d.partCols = std::clamp(p.value("cols", 1), 1, 8);
         d.partRows = std::clamp(p.value("rows", 1), 1, 8);
         d.part = std::clamp(p.value("index", 0), 0, d.partCols * d.partRows);
         if (d.partCols * d.partRows == 1) d.part = 0;
+        if (d.part > 0) {
+            // Only between cells: a single column has no gap across, a single row none down.
+            d.partGapX = d.partCols > 1 ? std::clamp(p.value("gapX", 0), 0, 2000) : 0;
+            d.partGapY = d.partRows > 1 ? std::clamp(p.value("gapY", 0), 0, 2000) : 0;
+        }
     }
 }
 

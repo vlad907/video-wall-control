@@ -178,7 +178,9 @@ export interface EndpointDisplay {
   output: string; // output id
   // The screen shows one cell of the output's picture cut into cols x rows (index 1..N, row by
   // row): a 2 x 2 of screens fed by one stream. Absent = the whole picture. Mosaic Receiver only.
-  part?: { cols: number; rows: number; index: number };
+  // gapX / gapY: bezel correction, the gap between neighbouring pictures in pixels of the stream;
+  // that much of the picture is left out between the cells.
+  part?: { cols: number; rows: number; index: number; gapX?: number; gapY?: number };
 }
 
 export interface Endpoint {

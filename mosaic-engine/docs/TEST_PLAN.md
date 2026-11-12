@@ -106,6 +106,12 @@ back and encodes one stream instead of four.
 4. Player must be **Mosaic Receiver** (Studio Monitor can't show part of a stream; the row says so).
 5. Expect on the PC's panel: 4 displays playing the same stream, *apart* ≈ 0 ms, and on the media
    server one `Inside_Bar_01` stream with 1 connection instead of four streams.
+6. **Bezel correction:** each of those display rows has **Bezel gap across / down (px)**: the gap
+   from the edge of one picture to the edge of the next (both bezels), in pixels of the stream.
+   Setting it on one row sets it for the whole 2×2. That much of the picture is left out between
+   the screens, so a diagonal line or a ticker runs straight from one screen onto the next. On
+   the Inside bar layout 1 mm is about 0.9 px (10 mm of bezel between pictures = 9 px). Show the
+   test pattern and raise the gap until its diagonals line up across the seams.
 
 ## 11. Inside bar layout
 

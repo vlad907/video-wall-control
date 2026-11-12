@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { dialog } from "./Dialogs";
 import { api, type EndpointDisplay, type EndpointsInfo, type EndpointView, type Layout, type Screen } from "./api";
-import { TextField } from "./Inspector";
+import { NumberField, TextField } from "./Inspector";
 
 const screenLabel = (s: Screen) => `${s.short}${s.primary ? " (main)" : ""} · ${s.width}×${s.height}${s.monitor ? ` · ${s.monitor}` : ""}`;
 
@@ -126,6 +126,9 @@ export function EndpointPanel({
   };
   const save = (displays: EndpointDisplay[]) => api.putEndpoint(endpoint.id, { displays }).then(onChanged).catch(onError);
   const setSlot = (i: number, p: Partial<EndpointDisplay>) => save(slots.map((d, j) => (j === i ? { ...d, ...p } : d)));
+  // Bezel correction belongs to the whole grid: set it on every screen showing a cell of the same cut of the same output.
+  const setGap = (of: EndpointDisplay, gap: { gapX?: number; gapY?: number }) =>
+    save(slots.map((d) => (d.part && of.part && d.output === of.output && d.part.cols === of.part.cols && d.part.rows === of.part.rows ? { ...d, part: { ...d.part, ...gap } } : d)));
   const used = new Set(slots.map((d) => d.output));
   const nextFree = () => layout.outputs.find((o) => !used.has(o.id))?.id ?? layout.outputs[0]?.id ?? "";
 
@@ -348,7 +351,9 @@ export function EndpointPanel({
                 title="One stream cut across several screens: each screen shows its piece of the same frame, so they can't drift apart, and the media server sends one stream instead of one per screen. Needs the Mosaic Receiver."
                 onChange={(e) => {
                   const m = /^(\d+)x(\d+):(\d+)$/.exec(e.target.value);
-                  setSlot(i, { part: m ? { cols: +m[1], rows: +m[2], index: +m[3] } : undefined });
+                  // Keeps the grid's bezel correction when only the cell changes.
+                  const same = m && d.part && d.part.cols === +m[1] && d.part.rows === +m[2];
+                  setSlot(i, { part: m ? { cols: +m[1], rows: +m[2], index: +m[3], ...(same ? { gapX: d.part!.gapX, gapY: d.part!.gapY } : {}) } : undefined });
                 }}
               >
                 <option value="">Shows: the whole picture</option>
@@ -371,6 +376,15 @@ export function EndpointPanel({
                 ))}
                 {d.screen && !endpoint.screens.some((s) => s.device === d.screen) && <option value={d.screen}>Screen: {d.screen} (not on this PC)</option>}
               </select>
+              {d.part && (
+                <div
+                  className="row"
+                  title="Bezel correction: the gap from the edge of one picture to the edge of the next (both bezels), in pixels of the stream. That much of the picture is left out between the screens, so lines run straight across them. Applies to every screen of this grid."
+                >
+                  {d.part.cols > 1 && <NumberField label="Bezel gap across (px)" value={d.part.gapX ?? 0} onCommit={(gapX) => setGap(d, { gapX })} />}
+                  {d.part.rows > 1 && <NumberField label="Bezel gap down (px)" value={d.part.gapY ?? 0} onCommit={(gapY) => setGap(d, { gapY })} />}
+                </div>
+              )}
             </div>
           );
         })}

@@ -316,10 +316,17 @@ struct HttpApi::Impl {
                 if (d.part > 0) {
                     // The cell of the picture this screen shows, as fractions of it (for the receiver).
                     int col = (d.part - 1) % d.partCols, row = (d.part - 1) / d.partCols;
-                    j["part"] = {{"cols", d.partCols}, {"rows", d.partRows}, {"index", d.part}};
-                    j["crop"] = {{"x", double(col) / d.partCols}, {"y", double(row) / d.partRows}, {"w", 1.0 / d.partCols}, {"h", 1.0 / d.partRows}};
-                    j["width"] = o->width / d.partCols;
-                    j["height"] = o->height / d.partRows;
+                    // Bezel correction: the gaps between the cells are cut out of the picture, so
+                    // each cell is a little smaller. At least half the picture stays on the screens.
+                    int gapX = std::min(d.partGapX, o->width / 2 / std::max(1, d.partCols - 1));
+                    int gapY = std::min(d.partGapY, o->height / 2 / std::max(1, d.partRows - 1));
+                    double cellW = double(o->width - (d.partCols - 1) * gapX) / d.partCols;
+                    double cellH = double(o->height - (d.partRows - 1) * gapY) / d.partRows;
+                    j["part"] = {{"cols", d.partCols}, {"rows", d.partRows}, {"index", d.part}, {"gapX", gapX}, {"gapY", gapY}};
+                    j["crop"] = {{"x", col * (cellW + gapX) / o->width}, {"y", row * (cellH + gapY) / o->height},
+                                 {"w", cellW / o->width}, {"h", cellH / o->height}};
+                    j["width"] = int(cellW);
+                    j["height"] = int(cellH);
                     j["label"] = o->name + " (part " + std::to_string(d.part) + " of " + std::to_string(d.partCols) + "x" + std::to_string(d.partRows) + ")";
                     if (e.player != "mosaic") j["error"] = "showing part of a stream needs the Mosaic Receiver as the player";
                 }
