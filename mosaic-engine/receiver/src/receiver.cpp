@@ -45,6 +45,7 @@ void from_json(const json& j, ReceiverConfig& c) {
     c.lagFrames = std::clamp(j.value("lagFrames", c.lagFrames), 0, 30);
     c.lostAfterMs = std::clamp(j.value("lostAfterMs", c.lostAfterMs), 50, 10000);
     c.flashTest = j.value("flashTest", c.flashTest);
+    c.probe = j.value("probe", c.probe);
     c.compensate = j.value("compensate", c.compensate);
     c.bufferMs = std::clamp(j.value("bufferMs", c.bufferMs), 0, 1000);
     c.displays.clear();
@@ -56,6 +57,13 @@ void from_json(const json& j, ReceiverConfig& c) {
         dc.label = d.value("label", "");
         dc.window = rectFrom(d.value("window", json::object()), dc.window);
         dc.tile = rectFrom(d.value("tile", json::object()), dc.tile);
+        if (d.contains("crop") && d.at("crop").is_object()) {
+            const auto& cr = d.at("crop");
+            dc.cropX = std::clamp(cr.value("x", 0.0), 0.0, 0.99);
+            dc.cropY = std::clamp(cr.value("y", 0.0), 0.0, 0.99);
+            dc.cropW = std::clamp(cr.value("w", 1.0), 0.01, 1.0 - dc.cropX);
+            dc.cropH = std::clamp(cr.value("h", 1.0), 0.01, 1.0 - dc.cropY);
+        }
         dc.synthetic = d.value("synthetic", json::object());
         c.displays.push_back(dc);
     }
@@ -69,6 +77,7 @@ json to_json(const ReceiverConfig& c) {
                             {"label", d.label},
                             {"window", {{"x", d.window.x}, {"y", d.window.y}, {"w", d.window.w}, {"h", d.window.h}}},
                             {"tile", {{"x", d.tile.x}, {"y", d.tile.y}, {"w", d.tile.w}, {"h", d.tile.h}}},
+                            {"crop", {{"x", d.cropX}, {"y", d.cropY}, {"w", d.cropW}, {"h", d.cropH}}},
                             {"synthetic", d.synthetic}});
     return {{"displays", displays}, {"lagFrames", c.lagFrames}, {"lostAfterMs", c.lostAfterMs}, {"flashTest", c.flashTest}, {"compensate", c.compensate}, {"bufferMs", c.bufferMs}};
 }
@@ -87,6 +96,7 @@ static std::unique_ptr<FrameInput> makeInput(const DisplayConfig& d, std::string
         s.stallForS = o.value("stallForS", s.stallForS);
         s.stallLate = o.value("stallLate", s.stallLate);
         s.colour = o.value("colour", s.colour);
+        s.quadrants = o.value("quadrants", s.quadrants);
         return std::make_unique<SyntheticInput>(s);
     }
     return createNdiInput(d.stream, error);
@@ -184,10 +194,15 @@ void Receiver::apply(const ReceiverConfig& c) {
         t.w = whole ? d.window.w : d.tile.w;
         t.h = whole ? d.window.h : d.tile.h;
         t.stream = displayStream_[i];
+        t.cx = d.cropX;
+        t.cy = d.cropY;
+        t.cw = d.cropW;
+        t.ch = d.cropH;
         tiles_.push_back(t);
     }
     std::string error;
     if (!presenter_->configure(windows, error)) std::cerr << "[receiver] " << error << "\n";
+    presenter_->setProbe(c.probe);
     windows_.assign(windows.size(), {});
     windowStream_.assign(windows.size(), -1);
     drawn_.assign(windows.size(), UINT64_MAX);  // every window is drawn once
@@ -490,6 +505,7 @@ void Receiver::frame() {
                {"freezesTotal", hiccupTotal_},
                {"freezes", hiccups},
                {"displays", displays}};
+    if (active_.probe) status_["probe"] = presenter_->probe();
 }
 
 // Matches each window's "this present reached the screen at T" with the present it was. How

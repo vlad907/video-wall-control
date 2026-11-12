@@ -24,6 +24,7 @@ struct SyntheticOptions {
     double stallForS = 0;    // ... for this long
     bool stallLate = false;  // the stall's frames come late, all at once at its end (like NDI over a congested network), instead of never
     uint32_t colour = 0xFF3060C0;  // BGRA
+    bool quadrants = false;  // red, green / blue, white quarters instead (checks which part of the picture a display shows)
 };
 
 class SyntheticInput : public FrameInput {
@@ -70,7 +71,14 @@ private:
 
     RxFrame make(uint64_t id) {
         auto pixels = std::make_shared<std::vector<uint32_t>>(static_cast<size_t>(o_.width) * o_.height, o_.colour);
-        int bar = static_cast<int>((id % 60) * o_.width / 60);
+        if (o_.quadrants) {
+            for (int y = 0; y < o_.height; ++y)
+                for (int x = 0; x < o_.width; ++x) {
+                    bool right = x >= o_.width / 2, bottom = y >= o_.height / 2;
+                    (*pixels)[static_cast<size_t>(y) * o_.width + x] = !bottom ? (right ? 0xFF00FF00 : 0xFFFF0000) : (right ? 0xFFFFFFFF : 0xFF0000FF);
+                }
+        }
+        int bar = o_.quadrants ? o_.width : static_cast<int>((id % 60) * o_.width / 60);
         for (int y = 0; y < o_.height; ++y)
             for (int x = bar; x < std::min(o_.width, bar + o_.width / 60 + 1); ++x) (*pixels)[static_cast<size_t>(y) * o_.width + x] = 0xFFFFFFFF;
         RxFrame f;

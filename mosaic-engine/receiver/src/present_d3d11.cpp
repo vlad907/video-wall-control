@@ -117,6 +117,14 @@ public:
         sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         sd.MaxLOD = D3D11_FLOAT32_MAX;
         device_->CreateSamplerState(&sd, &sampler_);
+        // Scissor on: a display showing part of a stream draws the whole picture over a larger
+        // rectangle, cut to its tile.
+        D3D11_RASTERIZER_DESC rd = {};
+        rd.FillMode = D3D11_FILL_SOLID;
+        rd.CullMode = D3D11_CULL_NONE;
+        rd.DepthClipEnable = TRUE;
+        rd.ScissorEnable = TRUE;
+        device_->CreateRasterizerState(&rd, &raster_);
 
         WNDCLASSW wc = {};
         wc.lpfnWndProc = wndProc;
@@ -236,6 +244,7 @@ public:
         ctx_->VSSetShader(vs_.Get(), nullptr, 0);
         ctx_->PSSetShader(ps_.Get(), nullptr, 0);
         ctx_->PSSetSamplers(0, 1, sampler_.GetAddressOf());
+        ctx_->RSSetState(raster_.Get());
         for (size_t i = 0; i < windows_.size(); ++i) {
             if (!go[i]) continue;
             auto& w = windows_[i];
@@ -253,8 +262,13 @@ public:
                 int back = std::clamp(t.back, 0, st.count - 1);
                 const Picture& pic = st.ring[static_cast<size_t>((st.gen - back) % kPictureHistory)];
                 if (!pic.srv) continue;
-                D3D11_VIEWPORT vp = {float(t.x), float(t.y), float(t.w), float(t.h), 0, 1};
+                // The whole picture is drawn over a rectangle sized so that the wanted part of it
+                // (t.cx, t.cy, t.cw, t.ch) lands exactly on the tile; the scissor cuts off the rest.
+                float fullW = float(t.w / t.cw), fullH = float(t.h / t.ch);
+                D3D11_VIEWPORT vp = {float(t.x) - float(t.cx) * fullW, float(t.y) - float(t.cy) * fullH, fullW, fullH, 0, 1};
                 ctx_->RSSetViewports(1, &vp);
+                D3D11_RECT sc = {t.x, t.y, t.x + t.w, t.y + t.h};
+                ctx_->RSSetScissorRects(1, &sc);
                 if (st.uyvy) {
                     D3D11_MAPPED_SUBRESOURCE m;
                     if (SUCCEEDED(ctx_->Map(picture_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
@@ -274,6 +288,7 @@ public:
         // Each flips on its own monitor's next refresh.
         for (size_t i = 0; i < windows_.size(); ++i) {
             if (!go[i]) continue;
+            if (probe_) readProbe(i);
             windows_[i].refreshMicros = refreshMicros_;
             windows_[i].submitMicros = qpcMicros();
             windows_[i].swap->Present(1, 0);
@@ -315,8 +330,38 @@ public:
     }
 
     double refreshHz() const override { return hz_; }
+    void setProbe(bool on) override { probe_ = on; }
+    std::vector<uint32_t> probe() override { return probes_; }
 
 private:
+    // Tests: the colour at the centre of window i's back buffer, as just drawn (0xRRGGBB).
+    void readProbe(size_t i) {
+        if (probes_.size() < windows_.size()) probes_.resize(windows_.size(), 0);
+        ComPtr<ID3D11Resource> back;
+        windows_[i].rtv->GetResource(&back);
+        if (!probeTex_) {
+            D3D11_TEXTURE2D_DESC d = {};
+            d.Width = d.Height = 1;
+            d.MipLevels = d.ArraySize = 1;
+            d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            d.SampleDesc.Count = 1;
+            d.Usage = D3D11_USAGE_STAGING;
+            d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            if (FAILED(device_->CreateTexture2D(&d, nullptr, &probeTex_))) return;
+        }
+        UINT cx = static_cast<UINT>(windows_[i].spec.w / 2), cy = static_cast<UINT>(windows_[i].spec.h / 2);
+        D3D11_BOX box = {cx, cy, 0, cx + 1, cy + 1, 1};
+        ctx_->CopySubresourceRegion(probeTex_.Get(), 0, 0, 0, 0, back.Get(), 0, &box);
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (FAILED(ctx_->Map(probeTex_.Get(), 0, D3D11_MAP_READ, 0, &m))) return;
+        const uint8_t* p = static_cast<const uint8_t*>(m.pData);  // B, G, R, A
+        probes_[i] = (uint32_t(p[2]) << 16) | (uint32_t(p[1]) << 8) | p[0];
+        ctx_->Unmap(probeTex_.Get(), 0);
+    }
+    bool probe_ = false;
+    std::vector<uint32_t> probes_;
+    ComPtr<ID3D11Texture2D> probeTex_;
+
     struct Win {
         WindowSpec spec;
         HWND hwnd = nullptr;
@@ -385,6 +430,7 @@ private:
     ComPtr<ID3D11PixelShader> ps_, psUyvy_;
     ComPtr<ID3D11Buffer> picture_;
     ComPtr<ID3D11SamplerState> sampler_;
+    ComPtr<ID3D11RasterizerState> raster_;
     std::vector<Win> windows_;
     std::vector<PresentTiming> timings_;
     int64_t qpcFreq_ = [] {

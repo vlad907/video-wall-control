@@ -1105,8 +1105,11 @@ def receiver_displays(displays):
         # No screen info (not Windows): side by side, for testing.
         rect = ({"x": screen["x"], "y": screen["y"], "w": screen["width"], "h": screen["height"]} if screen
                 else {"x": i * 1920, "y": 0, "w": 1920, "h": 1080})
-        out.append({"index": d.get("index", i + 1), "stream": d["stream"], "label": d.get("label") or "",
-                    "window": rect, "screen": screen["device"] if screen else ""})
+        slot = {"index": d.get("index", i + 1), "stream": d["stream"], "label": d.get("label") or "",
+                "window": rect, "screen": screen["device"] if screen else ""}
+        if d.get("crop"):  # this screen shows part of the stream (a 2 x 2 from one stream)
+            slot["crop"] = d["crop"]
+        out.append(slot)
     return out
 
 

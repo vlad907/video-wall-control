@@ -26,6 +26,9 @@ struct DisplayConfig {
     std::string label;       // for status only
     WindowSpec window;       // the monitor's desktop rectangle
     WindowSpec tile{0, 0, 0, 0};  // part of the window (w/h 0 = all of it); spanned monitors
+    // The part of the stream's picture this display shows, as fractions of it (x, y, w, h; all of
+    // it by default): several monitors showing cells of one stream (a 2 x 2 from a single stream).
+    double cropX = 0, cropY = 0, cropW = 1, cropH = 1;
     nlohmann::json synthetic;     // options for a synthetic stream
 };
 
@@ -34,6 +37,7 @@ struct ReceiverConfig {
     int lagFrames = 6;       // a stream this far behind the others stops holding them back (100 ms at 60 fps)
     int lostAfterMs = 500;   // no frame for this long = signal lost (stops being waited for)
     bool flashTest = false;  // every display flashes white on engine frames divisible by 30
+    bool probe = false;      // tests: status reports the colour drawn at each window's centre
     // Windows shows some displays a refresh later than others (it composites them: HDR on, an
     // overlay, a different setting). Measured, and the other displays are held back to match.
     bool compensate = true;

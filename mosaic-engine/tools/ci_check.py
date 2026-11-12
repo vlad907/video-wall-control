@@ -368,6 +368,24 @@ with tempfile.TemporaryDirectory() as tmp:
         e = next(x for x in json.loads(get("/api/endpoints")[1])["endpoints"] if x["id"] == "wall-pc")
         check(e["receiver"]["spreadMax10s"] == 0 and e["displays"][0]["shownFrameId"] == 1234, "the receiver's sync status reaches the editor")
 
+        print("one stream across a 2x2 of screens:", flush=True)
+        call("POST", "/api/endpoints", {"name": "Quad PC", "host": "quad-pc", "player": "mosaic",
+                                        "displays": [{"output": "out-1", "part": {"cols": 2, "rows": 2, "index": k}} for k in (1, 2, 3, 4)]})
+        r = call("POST", "/api/endpoints/checkin", {"host": "quad-pc", "screens": [], "panels": []})
+        crops = [d.get("crop") for d in r["displays"]]
+        check(crops == [{"x": 0.0, "y": 0.0, "w": 0.5, "h": 0.5}, {"x": 0.5, "y": 0.0, "w": 0.5, "h": 0.5},
+                        {"x": 0.0, "y": 0.5, "w": 0.5, "h": 0.5}, {"x": 0.5, "y": 0.5, "w": 0.5, "h": 0.5}],
+              f"each screen gets its quarter of the one stream ({crops[1]})")
+        check(len({d["stream"] for d in r["displays"]}) == 1 and r["displays"][0]["width"] == 960 and not any(d.get("error") for d in r["displays"]),
+              "all four show the same stream, at a quarter of its size each")
+        call("PUT", "/api/endpoints/quad-pc", {"player": "studio_monitor"})
+        r = call("POST", "/api/endpoints/checkin", {"host": "quad-pc", "screens": [], "panels": []})
+        check("Mosaic Receiver" in (r["displays"][0].get("error") or ""), "Studio Monitor can't show part of a stream, and says so")
+        call("PUT", "/api/endpoints/quad-pc", {"displays": [{"output": "out-1"}]})
+        ep = next(e for e in json.loads(get("/api/endpoints")[1])["endpoints"] if e["id"] == "quad-pc")
+        check("part" not in ep["displays"][0] and "crop" not in ep["displays"][0], "back to the whole picture")
+        call("DELETE", "/api/endpoints/quad-pc")
+
         print("colour correction:", flush=True)
         def mean_rgb(img):
             w, h, data = img

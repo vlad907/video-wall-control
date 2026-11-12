@@ -128,6 +128,28 @@ int selfTest(double seconds) {
         check(s4.value("screenSpreadNowMs", 99.0) < 8, "all displays show each frame together on the slow GPU");
         check(freezes4 == 0, "no freezes on the slow GPU once the hold-back is set (" + std::to_string(freezes4) + ")");
     }
+    // One stream across a 2 x 2 of screens: each display shows its quarter of the same picture
+    // (red, green / blue, white), and all four show the same frame.
+    {
+        json cfgQ = {{"probe", true}, {"displays", json::array()}};
+        json synth = {{"width", 64}, {"height", 36}, {"fps", 30}, {"quadrants", true}};
+        for (int i = 1; i <= 4; ++i)
+            cfgQ["displays"].push_back({{"index", i}, {"stream", "synthetic"}, {"synthetic", synth},
+                                        {"window", {{"x", (i - 1) * 1920}, {"y", 0}, {"w", 1920}, {"h", 1080}}},
+                                        {"crop", {{"x", ((i - 1) % 2) * 0.5}, {"y", ((i - 1) / 2) * 0.5}, {"w", 0.5}, {"h", 0.5}}}});
+        ReceiverConfig cq;
+        from_json(cfgQ, cq);
+        Receiver rxq([](std::string&) { return createHeadlessPresenter(60.0); });
+        rxq.setConfig(cq);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        json sq = rxq.status();
+        std::vector<uint32_t> got = sq.value("probe", std::vector<uint32_t>{});
+        const std::vector<uint32_t> want = {0xFF0000, 0x00FF00, 0x0000FF, 0xFFFFFF};
+        char buf[96] = "";
+        if (got.size() == 4) std::snprintf(buf, sizeof buf, "%06X %06X %06X %06X", got[0], got[1], got[2], got[3]);
+        check(got == want, std::string("four displays show the four quarters of one stream (") + buf + ")");
+        check(sq.value("spreadMax10s", 99) == 0, "and always the same frame");
+    }
     // Buffer: like the venue's congested network, one stream stalls for 150 ms and then its
     // frames arrive all at once. With a 250 ms buffer nobody sees it: every display stays on
     // the same frame and nothing counts as a freeze.

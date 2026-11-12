@@ -98,6 +98,28 @@ jobs:
           if ($s.presenter -ne "Direct3D 11") { Write-Error "presenter is $($s.presenter)" }
           if ($s.spreadMax10s -gt 1) { Write-Error "displays out of step: $($s.spreadMax10s)" }
 
+      # One stream cut across a 2 x 2 of windows, drawn by the real Direct3D 11 presenter: each
+      # window's centre is read back and must be its quarter of the picture (red, green / blue, white).
+      - name: Receiver on Direct3D 11 (WARP), one stream across a 2x2
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $d = @()
+          foreach ($i in 0..3) {
+            $d += @{ index = $i + 1; stream = "synthetic"; synthetic = @{ width = 320; height = 180; quadrants = $true }
+                     window = @{ x = ($i % 2) * 640; y = [math]::Floor($i / 2) * 360; w = 640; h = 360 }
+                     crop = @{ x = ($i % 2) * 0.5; y = [math]::Floor($i / 2) * 0.5; w = 0.5; h = 0.5 } }
+          }
+          @{ probe = $true; displays = $d } | ConvertTo-Json -Depth 5 | Set-Content -Path rx4.json
+          $p = Start-Process build/Release/mosaic_receiver.exe -ArgumentList "--software-gpu","--config","rx4.json","--port","8096" -PassThru
+          Start-Sleep -Seconds 6
+          $s = Invoke-RestMethod http://127.0.0.1:8096/status
+          Stop-Process -Id $p.Id
+          $got = ($s.probe | ForEach-Object { "{0:X6}" -f $_ }) -join " "
+          "presenter $($s.presenter), centres: $got"
+          if ($s.presenter -ne "Direct3D 11") { "::warning title=receiver 2x2::not checked: presenter is $($s.presenter)"; exit 0 }
+          if ($got -ne "FF0000 00FF00 0000FF FFFFFF") { "::error title=receiver 2x2::each window should show its quarter (FF0000 00FF00 0000FF FFFFFF), got $got"; exit 1 }
+
       - name: Upload snapshots and metrics
         if: always()
         uses: actions/upload-artifact@v4

@@ -313,6 +313,16 @@ struct HttpApi::Impl {
                 j["width"] = o->width;
                 j["height"] = o->height;
                 j["enabled"] = o->enabled;
+                if (d.part > 0) {
+                    // The cell of the picture this screen shows, as fractions of it (for the receiver).
+                    int col = (d.part - 1) % d.partCols, row = (d.part - 1) / d.partCols;
+                    j["part"] = {{"cols", d.partCols}, {"rows", d.partRows}, {"index", d.part}};
+                    j["crop"] = {{"x", double(col) / d.partCols}, {"y", double(row) / d.partRows}, {"w", 1.0 / d.partCols}, {"h", 1.0 / d.partRows}};
+                    j["width"] = o->width / d.partCols;
+                    j["height"] = o->height / d.partRows;
+                    j["label"] = o->name + " (part " + std::to_string(d.part) + " of " + std::to_string(d.partCols) + "x" + std::to_string(d.partRows) + ")";
+                    if (e.player != "mosaic") j["error"] = "showing part of a stream needs the Mosaic Receiver as the player";
+                }
             } else {
                 j["error"] = d.output.empty() ? "no output assigned" : "no such output '" + d.output + "'";
             }

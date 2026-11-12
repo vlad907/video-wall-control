@@ -92,6 +92,28 @@ a refresh (17 ms) with a Buffer set; hovering shows each PC's offset.
 `POST /api/canvases/canvas-N/simulate-gpu-loss` (not on the canvas that's on air): it stops and
 starts again within a few seconds (`GET /api/canvases` → `restarts`), the other canvases untouched.
 
+## 10. One stream across a 2×2 (inside bar centre)
+
+A 2×2 of screens on one receiving PC can be fed by **one** stream that the Mosaic Receiver cuts into
+quarters: the four screens always show pieces of the same frame, and the media server renders, reads
+back and encodes one stream instead of four.
+
+1. Update **both** PCs (Update everything): the receiving PC's dashboard has to pass the quarters on.
+2. The canvas needs one output covering the whole 2×2 (the layout **Inside bar** has it: *Centre 2x2*,
+   3840×2160).
+3. Endpoints → the PC → remove its four displays → **+ 2×2 from one output…** → that output. Each
+   display row now says *Shows: top left of 2×2* and so on; set each row's **Screen**.
+4. Player must be **Mosaic Receiver** (Studio Monitor can't show part of a stream; the row says so).
+5. Expect on the PC's panel: 4 displays playing the same stream, *apart* ≈ 0 ms, and on the media
+   server one `Inside_Bar_01` stream with 1 connection instead of four streams.
+
+## 11. Inside bar layout
+
+Layouts → **Inside bar - 2x2 of 98" with 40" and 24" side screens** (run it on the inside bar's
+canvas). 11 outputs: the centre 2×2 as one stream, and five screens a side placed from the wall's
+measurements (`tools/make_inside_bar.py`; change the inches there and run it again). A tilted or
+portrait screen whose picture is upside down: add 180 to its *angle* (or set rotation 270).
+
 ## Going back
 
 If something's wrong and the venue is about to open: tell me, I revert and push, then

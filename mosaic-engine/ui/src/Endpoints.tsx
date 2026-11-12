@@ -109,7 +109,21 @@ export function EndpointPanel({
   onClose: () => void;
 }) {
   const [groupPick, setGroupPick] = useState("");
-  const slots: EndpointDisplay[] = endpoint.displays.map(({ screen, output }) => ({ screen, output }));
+  const slots: EndpointDisplay[] = endpoint.displays.map(({ screen, output, part }) => (part ? { screen, output, part } : { screen, output }));
+  // Ways to cut one stream across several screens: [label, cols, rows].
+  const GRIDS: [string, number, number][] = [
+    ["2×2", 2, 2],
+    ["2 side by side", 2, 1],
+    ["2 stacked", 1, 2],
+    ["3×3", 3, 3],
+  ];
+  const cellName = (cols: number, rows: number, index: number) => {
+    const col = (index - 1) % cols;
+    const row = Math.floor((index - 1) / cols);
+    const v = rows === 1 ? "" : rows === 2 ? ["top", "bottom"][row] : `row ${row + 1}`;
+    const h = cols === 1 ? "" : cols === 2 ? ["left", "right"][col] : `column ${col + 1}`;
+    return [v, h].filter(Boolean).join(" ");
+  };
   const save = (displays: EndpointDisplay[]) => api.putEndpoint(endpoint.id, { displays }).then(onChanged).catch(onError);
   const setSlot = (i: number, p: Partial<EndpointDisplay>) => save(slots.map((d, j) => (j === i ? { ...d, ...p } : d)));
   const used = new Set(slots.map((d) => d.output));
@@ -329,6 +343,25 @@ export function EndpointPanel({
               <select value={d.output} onChange={(e) => setSlot(i, { output: e.target.value })}>
                 {outputOptions}
               </select>
+              <select
+                value={d.part ? `${d.part.cols}x${d.part.rows}:${d.part.index}` : ""}
+                title="One stream cut across several screens: each screen shows its piece of the same frame, so they can't drift apart, and the media server sends one stream instead of one per screen. Needs the Mosaic Receiver."
+                onChange={(e) => {
+                  const m = /^(\d+)x(\d+):(\d+)$/.exec(e.target.value);
+                  setSlot(i, { part: m ? { cols: +m[1], rows: +m[2], index: +m[3] } : undefined });
+                }}
+              >
+                <option value="">Shows: the whole picture</option>
+                {GRIDS.map(([label, cols, rows]) => (
+                  <optgroup key={label} label={`One stream across ${label}`}>
+                    {Array.from({ length: cols * rows }, (_, k) => (
+                      <option key={k} value={`${cols}x${rows}:${k + 1}`}>
+                        Shows: {cellName(cols, rows, k + 1)} of {label}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
               <select value={d.screen} onChange={(e) => setSlot(i, { screen: e.target.value })}>
                 <option value="">Screen: next free one</option>
                 {endpoint.screens.map((s) => (
@@ -343,6 +376,21 @@ export function EndpointPanel({
         })}
         <div className="row buttons">
           <button onClick={() => save([...slots, { screen: "", output: nextFree() }])}>+ Display</button>
+          <select
+            value=""
+            title="Four screens showing one output's picture as a 2×2: one stream, cut up by the receiver"
+            onChange={(e) => {
+              if (!e.target.value) return;
+              save([...slots, ...[1, 2, 3, 4].map((index) => ({ screen: "", output: e.target.value, part: { cols: 2, rows: 2, index } }))]);
+            }}
+          >
+            <option value="">+ 2×2 from one output…</option>
+            {layout.outputs.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.name} ({o.width}×{o.height})
+              </option>
+            ))}
+          </select>
           <select
             value={groupPick}
             onChange={(e) => {

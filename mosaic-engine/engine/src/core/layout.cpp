@@ -232,11 +232,23 @@ void from_json(const json& j, WallConfig& w) {
     w.fallbackImage = j.value("fallbackImage", w.fallbackImage);
 }
 
-void to_json(json& j, const EndpointDisplay& d) { j = json{{"screen", d.screen}, {"output", d.output}}; }
+void to_json(json& j, const EndpointDisplay& d) {
+    j = json{{"screen", d.screen}, {"output", d.output}};
+    if (d.part > 0) j["part"] = {{"cols", d.partCols}, {"rows", d.partRows}, {"index", d.part}};
+}
 
 void from_json(const json& j, EndpointDisplay& d) {
     d.screen = j.value("screen", d.screen);
     d.output = j.value("output", d.output);
+    d.partCols = d.partRows = 1;
+    d.part = 0;
+    if (j.contains("part") && j.at("part").is_object()) {
+        const auto& p = j.at("part");
+        d.partCols = std::clamp(p.value("cols", 1), 1, 8);
+        d.partRows = std::clamp(p.value("rows", 1), 1, 8);
+        d.part = std::clamp(p.value("index", 0), 0, d.partCols * d.partRows);
+        if (d.partCols * d.partRows == 1) d.part = 0;
+    }
 }
 
 void to_json(json& j, const AudioOutputConfig& a) {

@@ -1,0 +1,243 @@
+{
+  "id": "inside-bar",
+  "name": "Inside bar - 2x2 of 98\" with 40\" and 24\" side screens",
+  "frameRate": 30,
+  "ndiPrefix": "Inside_Bar",
+  "canvas": {
+    "width": 7260,
+    "height": 3192,
+    "background": [
+      0,
+      0,
+      0,
+      1
+    ]
+  },
+  "sources": [
+    {
+      "id": "pattern",
+      "name": "Test pattern",
+      "type": "test_pattern",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 7260,
+        "h": 3192
+      },
+      "enabled": true
+    }
+  ],
+  "walls": [
+    {
+      "id": "centre",
+      "name": "Centre 2x2",
+      "cols": 1,
+      "rows": 1,
+      "outputWidth": 3840,
+      "outputHeight": 2160,
+      "rotation": 0,
+      "gapX": 0,
+      "gapY": 0,
+      "x": 1710,
+      "y": 825,
+      "pixelFormat": "uyvy",
+      "fitCanvas": false
+    }
+  ],
+  "outputs": [
+    {
+      "id": "centre-1",
+      "name": "Centre 2x2",
+      "ndiName": "Inside_Bar_01",
+      "width": 3840,
+      "height": 2160,
+      "crop": {
+        "x": 1710,
+        "y": 825,
+        "w": 3840,
+        "h": 2160
+      },
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "group": "centre",
+      "enabled": true
+    },
+    {
+      "id": "left-tilted-top",
+      "name": "Left tilted top",
+      "ndiName": "Inside_Bar_02",
+      "width": 1280,
+      "height": 720,
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true,
+      "angle": -45,
+      "crop": {
+        "x": 777,
+        "y": 623,
+        "w": 784,
+        "h": 441
+      }
+    },
+    {
+      "id": "left-tilted-outer",
+      "name": "Left tilted outer",
+      "ndiName": "Inside_Bar_03",
+      "width": 1280,
+      "height": 720,
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true,
+      "angle": -45,
+      "crop": {
+        "x": 118,
+        "y": 1396,
+        "w": 784,
+        "h": 441
+      }
+    },
+    {
+      "id": "left-small-tilted",
+      "name": "Left small tilted",
+      "ndiName": "Inside_Bar_04",
+      "width": 1280,
+      "height": 720,
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true,
+      "angle": -45,
+      "crop": {
+        "x": 464,
+        "y": 2021,
+        "w": 470,
+        "h": 264
+      }
+    },
+    {
+      "id": "left-portrait-top",
+      "name": "Left portrait top",
+      "ndiName": "Inside_Bar_05",
+      "width": 1280,
+      "height": 720,
+      "rotation": 90,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true,
+      "crop": {
+        "x": 1137,
+        "y": 1424,
+        "w": 441,
+        "h": 784
+      }
+    },
+    {
+      "id": "left-portrait-bottom",
+      "name": "Left portrait bottom",
+      "ndiName": "Inside_Bar_06",
+      "width": 1280,
+      "height": 720,
+      "rotation": 90,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true,
+      "crop": {
+        "x": 1137,
+        "y": 2387,
+        "w": 441,
+        "h": 784
+      }
+    },
+    {
+      "id": "right-tilted-top",
+      "name": "Right tilted top",
+      "ndiName": "Inside_Bar_07",
+      "width": 1280,
+      "height": 720,
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true,
+      "angle": 45,
+      "crop": {
+        "x": 5700,
+        "y": 623,
+        "w": 784,
+        "h": 441
+      }
+    },
+    {
+      "id": "right-tilted-outer",
+      "name": "Right tilted outer",
+      "ndiName": "Inside_Bar_08",
+      "width": 1280,
+      "height": 720,
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true,
+      "angle": 45,
+      "crop": {
+        "x": 6359,
+        "y": 1396,
+        "w": 784,
+        "h": 441
+      }
+    },
+    {
+      "id": "right-small-tilted",
+      "name": "Right small tilted",
+      "ndiName": "Inside_Bar_09",
+      "width": 1280,
+      "height": 720,
+      "rotation": 0,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true,
+      "angle": 45,
+      "crop": {
+        "x": 6326,
+        "y": 2021,
+        "w": 470,
+        "h": 264
+      }
+    },
+    {
+      "id": "right-portrait-top",
+      "name": "Right portrait top",
+      "ndiName": "Inside_Bar_10",
+      "width": 1280,
+      "height": 720,
+      "rotation": 90,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true,
+      "crop": {
+        "x": 5682,
+        "y": 1424,
+        "w": 441,
+        "h": 784
+      }
+    },
+    {
+      "id": "right-portrait-bottom",
+      "name": "Right portrait bottom",
+      "ndiName": "Inside_Bar_11",
+      "width": 1280,
+      "height": 720,
+      "rotation": 90,
+      "scaleMode": "stretch",
+      "source": "canvas",
+      "enabled": true,
+      "crop": {
+        "x": 5682,
+        "y": 2387,
+        "w": 441,
+        "h": 784
+      }
+    }
+  ]
+}

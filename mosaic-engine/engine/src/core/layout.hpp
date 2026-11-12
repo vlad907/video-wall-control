@@ -115,6 +115,11 @@ struct Scene {
 struct EndpointDisplay {
     std::string screen;  // Windows display device ("\\.\DISPLAY2"); empty = the next free screen
     std::string output;  // output id
+    // The screen shows one cell of the output's picture cut into partCols x partRows (part 1..N,
+    // row by row; 0 = the whole picture). A 2 x 2 of screens on one PC then needs one stream
+    // instead of four, and its screens can't drift apart: they show pieces of the same frame.
+    // Mosaic Receiver only.
+    int partCols = 1, partRows = 1, part = 0;
 };
 
 // A sound output of the media server: one NDI source's audio, played on one of the PC's sound

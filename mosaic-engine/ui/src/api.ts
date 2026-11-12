@@ -176,6 +176,9 @@ export function wallBounds(w: Wall): Rect {
 export interface EndpointDisplay {
   screen: string; // Windows display device ("\\.\DISPLAY2"); "" = next free screen
   output: string; // output id
+  // The screen shows one cell of the output's picture cut into cols x rows (index 1..N, row by
+  // row): a 2 x 2 of screens fed by one stream. Absent = the whole picture. Mosaic Receiver only.
+  part?: { cols: number; rows: number; index: number };
 }
 
 export interface Endpoint {
