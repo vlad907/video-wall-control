@@ -29,12 +29,15 @@ public:
 
     std::optional<DecodedFrame> frameDue(double t) override {
         std::lock_guard lock(m_);
+        clock_ = t;
         std::optional<DecodedFrame> due;
         while (!queue_.empty() && queue_.front().pts <= t) {
             due = std::move(queue_.front());
             queue_.pop_front();
         }
-        if (due) cv_.notify_all();  // room for the decoder again
+        // Room for the decoder again; or everything it had ready was due already (the canvas renders
+        // slower than the video plays): it skips ahead to the present rather than fall behind.
+        if (due || behind()) cv_.notify_all();
         return due;
     }
 
@@ -68,11 +71,11 @@ private:
             {
                 std::unique_lock lock(m_);
                 cv_.wait_for(lock, std::chrono::milliseconds(20), [&] {
-                    return stop_ || restart_ || (queue_.size() < kQueueFrames && !finished_) || (finished_ && loop_);
+                    return stop_ || restart_ || ((queue_.size() < kQueueFrames || behind()) && !finished_) || (finished_ && loop_);
                 });
                 if (stop_) break;
                 if (finished_ && !loop_) continue;
-                if (queue_.size() >= kQueueFrames && !restart_) continue;
+                if (queue_.size() >= kQueueFrames && !restart_ && !behind()) continue;
             }
             std::string err;
             if (restart_.exchange(false)) {
@@ -110,11 +113,16 @@ private:
             }
             std::lock_guard lock(m_);
             if (restart_) continue;  // a restart came in while decoding: this frame is stale
+            while (queue_.size() >= kQueueFrames) queue_.pop_front();  // behind: the oldest is too late to show
             queue_.push_back(std::move(f));
             error_.clear();
             finished_ = false;  // looping was turned back on after the end
         }
     }
+
+    // With m_ held: the queue is full and even its newest frame is due, so playback has moved past
+    // everything decoded.
+    bool behind() const { return queue_.size() >= kQueueFrames && queue_.back().pts <= clock_; }
 
     void setError(const std::string& e) {
         std::lock_guard lock(m_);
@@ -126,6 +134,7 @@ private:
     mutable std::mutex m_;
     std::condition_variable cv_;
     std::deque<DecodedFrame> queue_;
+    double clock_ = 0;  // the playback time last asked for (guarded by m_)
     std::string error_;
     std::atomic<bool> loop_, stop_{false}, restart_{false}, finished_{false};
     std::atomic<double> decodeFps_{0};

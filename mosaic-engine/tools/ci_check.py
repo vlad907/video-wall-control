@@ -42,7 +42,7 @@ def out(i, crop, **kw):
     return o
 
 layout = {
-    "id": "ci", "name": "CI check", "frameRate": 60,
+    "id": "ci", "name": "CI check", "frameRate": float(os.environ.get("MOSAIC_CI_FPS", 60)),  # MOSAIC_CI_FPS=8: like the CI runner
     "canvas": {"width": 3840, "height": 2160, "background": [0, 0, 0, 1]},
     "sources": [{"id": "pattern", "type": "test_pattern", "animated": False,
                  "rect": {"x": 0, "y": 0, "w": 3840, "h": 2160}}],
@@ -61,6 +61,29 @@ def check(cond, msg):
     print(("  ok   " if cond else "  FAIL ") + msg, flush=True)
     if not cond:
         failures.append(msg)
+        if os.environ.get("GITHUB_ACTIONS"):  # an annotation on the run: readable without opening the log
+            print("::error title=ci_check::" + msg.replace("%", "%25").replace("\n", " "), flush=True)
+
+def frame_id(canvas=None):
+    return json.loads(get("/api/metrics", canvas=canvas)[1])["engine"]["frameId"]
+
+def pause(seconds, frames=12):
+    """Waits `seconds`, and until the engine has rendered `frames` more frames: a change made just
+    before has then reached the frames the checks look at, however slow the machine (the CI
+    runner renders in software at a few frames a second)."""
+    t0, f0 = time.time(), frame_id()
+    time.sleep(seconds)
+    while frame_id() < f0 + frames and time.time() - t0 < seconds + 30:
+        time.sleep(0.1)
+
+def wait_for(fn, timeout=20, every=0.25):
+    """Polls fn() until it returns something true (returned), or the last value after `timeout`."""
+    end = time.time() + timeout
+    while True:
+        v = fn()
+        if v or time.time() > end:
+            return v
+        time.sleep(every)
 
 def get(path, timeout=10, canvas=None):
     req = urllib.request.Request(BASE + path, headers={"X-Mosaic-Canvas": canvas} if canvas else {})
@@ -121,7 +144,7 @@ with tempfile.TemporaryDirectory() as tmp:
             except Exception:
                 time.sleep(0.5)
         print("engine:", flush=True)
-        time.sleep(3)
+        pause(3)
         m = json.loads(get("/api/metrics")[1])
         e = m["engine"]
         print(f"  {e['backend']} on {e['device']}, {e['renderFps']:.1f} fps", flush=True)
@@ -145,17 +168,17 @@ with tempfile.TemporaryDirectory() as tmp:
         centre = (960, 540)
         straight = pixel(frame("out-1"), *centre)
         call("PATCH", "/api/outputs/out-1", {"angle": 180})
-        time.sleep(1.0)
+        pause(1.0)
         c = corners(frame("out-1"))
         for k, want in {"TL": WHITE, "TR": BLUE, "BL": GREEN, "BR": RED}.items():
             check(close(c[k], want), f"angle 180: out-1 {k} marker {c[k]} ~ {want}")
         call("PATCH", "/api/outputs/out-1", {"angle": 12.5})
-        time.sleep(1.0)
+        pause(1.0)
         img = frame("out-1")
         check(close(pixel(img, *centre), straight, 30), f"angle 12.5: centre pixel stays {pixel(img, *centre)} ~ {straight}")
         check(not close(pixel(img, 60, 60), RED, 48), "angle 12.5: the corner marker moved away from the corner")
         call("PATCH", "/api/outputs/out-1", {"angle": 0})
-        time.sleep(1.0)
+        pause(1.0)
 
         print("live crop change over REST:", flush=True)
         probe = [(330, 330), (1500, 330), (330, 800), (1500, 800)]  # inside grid cells: the tile's own colour
@@ -166,7 +189,7 @@ with tempfile.TemporaryDirectory() as tmp:
                                      data=json.dumps({"crop": {"x": 1920, "y": 0}}).encode(),
                                      headers={"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=10).read()
-        time.sleep(1.5)
+        pause(1.5)
         after = [pixel(frame("out-1"), x, y) for x, y in probe]
         check(all(close(a, b, 10) for a, b in zip(after, target)), f"out-1 now matches out-2 {after} ~ {target}")
 
@@ -174,7 +197,7 @@ with tempfile.TemporaryDirectory() as tmp:
         spot = (330, 330)
         base = pixel(frame("out-1"), *spot)
         red = call("POST", "/api/sources", {"name": "red", "type": "solid", "color": [1, 0, 0, 1], "opacity": 0.5})
-        time.sleep(1.0)
+        pause(1.0)
         got = pixel(frame("out-1"), *spot)
         want = tuple(round(0.5 * a + 0.5 * b) for a, b in zip(base, (255, 0, 0)))
         check(close(got, want, 12), f"50% red over the pattern {got} ~ {want}")
@@ -184,17 +207,22 @@ with tempfile.TemporaryDirectory() as tmp:
         call("POST", "/api/scenes", {"name": "pattern only"})
         call("POST", "/api/sources", {"name": "blue", "type": "solid", "color": [0, 0, 1, 1]})
         call("POST", "/api/scenes", {"name": "all blue"})
-        time.sleep(1.0)
+        pause(1.0)
         check(close(pixel(frame("out-1"), *spot), (0, 0, 255), 12), "blue source covers the canvas")
         call("POST", "/api/scenes/pattern-only/recall")
-        time.sleep(1.0)
+        pause(1.0)
         check(close(pixel(frame("out-1"), *spot), base, 12), "recalling 'pattern only' restores the pattern")
+        def mix_seen(oid, a, b, seconds):
+            """True if, during the next `seconds`, the output shows a colour between a and b."""
+            last = [None]
+            def look():
+                last[0] = pixel(frame(oid), *spot)
+                return not close(last[0], a, 20) and not close(last[0], b, 20)
+            return wait_for(look, timeout=seconds, every=0.1), last[0]
         call("POST", "/api/scenes/all-blue/recall", {"transitionMs": 4000})
-        time.sleep(1.2)
-        mid = pixel(frame("out-1"), *spot)
-        check(not close(mid, base, 20) and not close(mid, (0, 0, 255), 20), f"mid-crossfade is a mix {mid}")
-        time.sleep(4.0)
-        check(close(pixel(frame("out-1"), *spot), (0, 0, 255), 12), "crossfade ends on the new scene")
+        seen, mid = mix_seen("out-1", base, (0, 0, 255), 4.0)
+        check(seen, f"mid-crossfade is a mix {mid}")
+        check(wait_for(lambda: close(pixel(frame("out-1"), *spot), (0, 0, 255), 12), timeout=15), "crossfade ends on the new scene")
         call("POST", "/api/scenes/pattern-only/recall")
 
         print("wall tool (bezel gaps):", flush=True)
@@ -206,7 +234,7 @@ with tempfile.TemporaryDirectory() as tmp:
         check(all(o["group"] == "wall" for o in lay["outputs"] if o["id"] in ("out-1", "out-2")), "wall outputs are grouped")
         check(len(lay["outputs"]) == 5, f"other outputs kept ({len(lay['outputs'])} outputs)")
         check(lay["sources"][0]["rect"]["w"] == 3940, "full-canvas source follows the new canvas")
-        time.sleep(1.5)
+        pause(1.5)
         img = frame("out-2")
         check(img[0] == 1920 and img[1] == 1080, "wall output renders")
 
@@ -229,22 +257,20 @@ with tempfile.TemporaryDirectory() as tmp:
 
         print("group presets:", flush=True)
         call("POST", "/api/walls", {"name": "Side", "cols": 1, "rows": 1, "x": 0, "y": 1080})
-        time.sleep(1.0)
+        pause(1.0)
         side0, other0 = pixel(frame("side-1"), *spot), pixel(frame("out-2"), *spot)
         call("POST", "/api/sources", {"name": "Blue", "type": "solid", "color": [0, 0, 1, 1], "group": "side",
                                       "rect": {"x": 0, "y": 1080, "w": 1920, "h": 1080}})
         saved = call("POST", "/api/walls/side/presets", {"name": "All blue"})
         check(saved["id"] == "all-blue" and saved["sources"][0]["rect"]["y"] == 0, "preset saved relative to the group")
         call("POST", "/api/walls/side/clear")
-        time.sleep(1.0)
+        pause(1.0)
         check(close(pixel(frame("side-1"), *spot), side0, 12), "clearing the group shows what's under it")
         call("POST", "/api/walls/side/presets/all-blue/recall", {"transitionMs": 4000})
-        time.sleep(1.2)
-        mid = pixel(frame("side-1"), *spot)
-        check(not close(mid, side0, 20) and not close(mid, (0, 0, 255), 20), f"the group crossfades {mid}")
+        seen, mid = mix_seen("side-1", side0, (0, 0, 255), 4.0)
+        check(seen, f"the group crossfades {mid}")
         check(close(pixel(frame("out-2"), *spot), other0, 12), "outputs outside the group don't fade")
-        time.sleep(3.5)
-        check(close(pixel(frame("side-1"), *spot), (0, 0, 255), 12), "recalled preset fills the group")
+        check(wait_for(lambda: close(pixel(frame("side-1"), *spot), (0, 0, 255), 12), timeout=15), "recalled preset fills the group")
         ctl = json.loads(get("/api/control")[1])
         g = next(x for x in ctl["groups"] if x["id"] == "side")
         check(g["activePreset"] == "all-blue" and [p["id"] for p in g["presets"]] == ["all-blue"], "control summary lists the group's presets")
@@ -260,12 +286,12 @@ with tempfile.TemporaryDirectory() as tmp:
             check(json.loads(r.read())["name"] == "slate.png", "image uploaded")
         check(any(f["name"] == "slate.png" for f in json.loads(get("/api/media")[1])["files"]), "image listed")
         img_src = call("POST", "/api/sources", {"name": "Slate", "type": "image", "image": "slate.png", "rect": {"x": 0, "y": 0, "w": 1920, "h": 1080}})
-        time.sleep(1.0)
+        pause(1.0)
         check(close(pixel(frame("out-1"), *spot), (255, 200, 0), 12), "image source draws")
         call("DELETE", f"/api/sources/{img_src['id']}")
         call("PUT", "/api/layout", {"fallbackImage": "slate.png"})
         ndi_src = call("POST", "/api/sources", {"name": "Gone", "type": "ndi", "ndiName": "NOWHERE (Nothing)", "rect": {"x": 0, "y": 0, "w": 1920, "h": 1080}})
-        time.sleep(4.5)
+        pause(4.5)
         check(close(pixel(frame("out-1"), *spot), (255, 200, 0), 12), "a stream with no signal shows the fallback image")
         st = next(x for x in json.loads(get("/api/sources")[1])["sources"] if x["id"] == ndi_src["id"])["status"]
         check(st.get("signal") == "lost" and st.get("showing") == "fallback image", f"status reports the lost signal ({st.get('signal')}, {st.get('showing')})")
@@ -281,29 +307,29 @@ with tempfile.TemporaryDirectory() as tmp:
                                             "rect": {"x": 0, "y": 0, "w": 1920, "h": 1080}})
         def vstatus():
             return next(x for x in json.loads(get("/api/sources")[1])["sources"] if x["id"] == vid["id"])["status"]
-        time.sleep(0.6)
-        st = vstatus()
+        # Its own status (not one left from an earlier source with the same id), once it's opened or failed.
+        st = wait_for(lambda: (lambda x: x if x.get("type") == "video" and (x.get("video") or x.get("status") not in (None, "", "ok")) else None)(vstatus()), timeout=30) or vstatus()
         print(f"  ..   {st.get('status')} · {st.get('video')}", flush=True)
         if "Media Foundation" in st.get("status", "") or "no decoder" in st.get("status", ""):
             print("  skip this machine can't decode H.264 (no Media Foundation): video checks skipped", flush=True)
         else:
             check(st.get("video", {}).get("codec") == "H.264" and st["video"]["width"] == 320, "video opened (H.264, 320x180)")
+            shows = lambda rgb: close(pixel(frame("out-1"), *spot), rgb, 40)
             call("POST", f"/api/sources/{vid['id']}/restart", {})
-            time.sleep(0.4)
-            check(close(pixel(frame("out-1"), *spot), (255, 0, 0), 40), f"plays the first second (red) {pixel(frame('out-1'), *spot)}")
-            time.sleep(1.0)
-            check(close(pixel(frame("out-1"), *spot), (0, 0, 255), 40), f"then the next (blue) {pixel(frame('out-1'), *spot)}")
+            check(wait_for(lambda: shows((255, 0, 0)), timeout=0.9, every=0.05), f"plays the first second (red) {pixel(frame('out-1'), *spot)}")
+            check(wait_for(lambda: shows((0, 0, 255)), timeout=6, every=0.05), f"then the next (blue) {pixel(frame('out-1'), *spot)}")
             call("PATCH", f"/api/sources/{vid['id']}", {"playing": False})
-            time.sleep(0.3)
+            wait_for(lambda: vstatus()["status"] == "paused", timeout=15)
+            pause(0.3)
             held = pixel(frame("out-1"), *spot)
-            time.sleep(1.2)
-            check(close(pixel(frame("out-1"), *spot), held, 12) and vstatus()["status"] == "paused", "pausing holds the picture")
+            pause(1.2)
+            after = pixel(frame("out-1"), *spot)
+            check(close(after, held, 12) and vstatus()["status"] == "paused", f"pausing holds the picture ({held} -> {after}, {vstatus()['status']})")
             call("PATCH", f"/api/sources/{vid['id']}", {"playing": True})
             call("POST", f"/api/sources/{vid['id']}/restart", {})
-            time.sleep(0.4)
-            check(close(pixel(frame("out-1"), *spot), (255, 0, 0), 40), "restart goes back to the first frame (red)")
+            check(wait_for(lambda: shows((255, 0, 0)), timeout=0.9, every=0.05), "restart goes back to the first frame (red)")
             time.sleep(2.2)
-            check(vstatus()["status"] == "playing", "it loops (still playing after the end)")
+            check(wait_for(lambda: vstatus()["status"] == "playing", timeout=10), "it loops (still playing after the end)")
         call("DELETE", f"/api/sources/{vid['id']}")
         call("DELETE", "/api/media/clip.mp4")
 
@@ -347,14 +373,15 @@ with tempfile.TemporaryDirectory() as tmp:
                 acc[0] += data[i + 2]; acc[1] += data[i + 1]; acc[2] += data[i]; n += 1
             return [a / n for a in acc]
         call("PATCH", "/api/outputs/out-1", {"color": None})
-        time.sleep(0.5)
+        pause(1.0)
         base_rgb = mean_rgb(frame("out-1"))
         call("PATCH", "/api/outputs/out-1", {"color": {"red": 0.5}})
-        time.sleep(0.5)
+        halved = lambda h: abs(h[0] - base_rgb[0] * 0.5) < 12 and abs(h[1] - base_rgb[1]) < 12
+        wait_for(lambda: halved(mean_rgb(frame("out-1"))), timeout=15)
         half = mean_rgb(frame("out-1"))
-        check(abs(half[0] - base_rgb[0] * 0.5) < 12 and abs(half[1] - base_rgb[1]) < 12, f"red gain 0.5 halves red only ({base_rgb[0]:.0f} -> {half[0]:.0f})")
+        check(halved(half) and base_rgb[0] > 30, f"red gain 0.5 halves red only ({base_rgb[0]:.0f} -> {half[0]:.0f})")
         call("PATCH", "/api/outputs/out-1", {"color": {"red": 1, "saturation": 0}})
-        time.sleep(0.5)
+        pause(0.5)
         g = mean_rgb(frame("out-1"))
         check(max(g) - min(g) < 3, f"saturation 0 makes it grey ({[round(x) for x in g]})")
         call("PATCH", "/api/outputs/out-1", {"color": None})
@@ -365,10 +392,15 @@ with tempfile.TemporaryDirectory() as tmp:
         check(any(d["kind"] == "test" for d in devs), f"capture devices listed ({[d['name'] for d in devs]})")
         call("POST", "/api/sources", {"id": "cap", "name": "Capture", "type": "capture", "device": "Mosaic test capture", "rect": {"x": 0, "y": 0, "w": 64, "h": 36}})
         call("POST", "/api/outputs", {"id": "cap-ndi", "name": "Capture (NDI)", "source": "cap", "crop": {"x": 0, "y": 0, "w": 1280, "h": 720}, "width": 1280, "height": 720, "pixelFormat": "bgra"})
-        time.sleep(1.5)
-        img = frame("cap-ndi")
-        bars = [pixel(img, x, 360) for x in range(80, 1280, 160)]
-        check(close(bars[0], (255, 255, 255), 30) and close(bars[1], (255, 255, 0), 30) and close(bars[6], (0, 0, 255), 30), f"a capture source sent as NDI carries its picture ({bars[:3]}...)")
+        pause(1.5)
+        want = [(255, 255, 255), (255, 255, 0), (0, 255, 255), (0, 255, 0), (255, 0, 255), (255, 0, 0), (0, 0, 255), (0, 0, 0)]
+        def bars_of(img):
+            # Two points in each bar: the device's moving white bar (24 px) can cover one, not both.
+            return [[pixel(img, x - 50, 360), pixel(img, x + 50, 360)] for x in range(80, 1280, 160)]
+        def bars_match(got, tol):
+            return all(any(close(g, w_, tol) for g in pair) for pair, w_ in zip(got, want))
+        bars = bars_of(frame("cap-ndi"))
+        check(bars_match(bars, 30), f"a capture source sent as NDI carries its picture ({[b[0] for b in bars[:3]]}...)")
         st = next(c for c in call("GET", "/api/capture")["open"] if c["name"] == "Mosaic test capture")
         check(st["width"] == 1280 and st["fps"] > 20, f"the device runs ({st['width']}x{st['height']}, {st['fps']:.0f} fps)")
         call("DELETE", "/api/outputs/cap-ndi")
@@ -376,31 +408,29 @@ with tempfile.TemporaryDirectory() as tmp:
         # The same bars arriving as UYVY (how NDI sources come in), unpacked to RGB on the GPU.
         call("POST", "/api/sources", {"id": "capu", "name": "Capture UYVY", "type": "capture", "device": "Mosaic test capture (UYVY)", "rect": {"x": 0, "y": 0, "w": 64, "h": 36}})
         call("POST", "/api/outputs", {"id": "capu-ndi", "name": "Capture UYVY (NDI)", "source": "capu", "crop": {"x": 0, "y": 0, "w": 1280, "h": 720}, "width": 1280, "height": 720, "pixelFormat": "bgra"})
-        time.sleep(1.5)
-        img = frame("capu-ndi")
-        want = [(255, 255, 255), (255, 255, 0), (0, 255, 255), (0, 255, 0), (255, 0, 255), (255, 0, 0), (0, 0, 255), (0, 0, 0)]
-        got = [pixel(img, x, 360) for x in range(80, 1280, 160)]
-        check(all(close(g, w_, 6) for g, w_ in zip(got, want)), f"a UYVY source is unpacked to the right colours ({got})")
+        pause(1.5)
+        got = bars_of(frame("capu-ndi"))
+        check(bars_match(got, 6), f"a UYVY source is unpacked to the right colours ({got})")
         call("DELETE", "/api/outputs/capu-ndi")
         call("DELETE", "/api/sources/capu")
 
         print("display outputs:", flush=True)
         call("PATCH", "/api/outputs/out-5", {"display": "\\\\.\\DISPLAY99"})
-        time.sleep(1)
+        pause(1)
         m5 = next(o for o in json.loads(get("/api/metrics")[1])["outputs"] if o["id"] == "out-5")
         check(m5["sink"] == "display" and m5.get("error"), f"an output on a monitor that isn't there says why ({m5.get('error')})")
         call("PATCH", "/api/outputs/out-5", {"delayMs": 250, "displayMode": {"width": 1920, "height": 1080, "refreshHz": 60}})
         o5 = next(o for o in json.loads(get("/api/layout")[1])["outputs"] if o["id"] == "out-5")
         check(o5.get("delayMs") == 250 and o5.get("displayMode") == {"width": 1920, "height": 1080, "refreshHz": 60},
               f"a display output keeps its delay and monitor mode ({o5.get('delayMs')}, {o5.get('displayMode')})")
-        time.sleep(0.5)
+        pause(0.5)
         call("PATCH", "/api/outputs/out-5", {"delayMs": 5000, "displayMode": None})
         o5 = next(o for o in json.loads(get("/api/layout")[1])["outputs"] if o["id"] == "out-5")
         check(o5.get("delayMs") == 1000 and "displayMode" not in o5, f"delay capped at 1 s, mode reset by null ({o5.get('delayMs')}, {o5.get('displayMode')})")
         call("PATCH", "/api/outputs/out-5", {"delayMs": 0})
-        time.sleep(1)
+        pause(1)
         call("PATCH", "/api/outputs/out-5", {"display": ""})
-        time.sleep(1)
+        pause(1)
         m5 = next(o for o in json.loads(get("/api/metrics")[1])["outputs"] if o["id"] == "out-5")
         check(m5["sink"] != "display", "back to an NDI stream")
         gpus = call("GET", "/api/gpus")["gpus"]
@@ -414,17 +444,17 @@ with tempfile.TemporaryDirectory() as tmp:
         names2 = [o["ndiName"] for o in l2["outputs"]]
         check(names2 == ["Wall_Two_01", "Wall_Two_02"], f"a new canvas names its streams after itself ({names2})")
         check(len(json.loads(get("/api/layout")[1])["outputs"]) == 5, "the first canvas is untouched")
-        time.sleep(1.5)
-        check(json.loads(get("/api/metrics", canvas=c2)[1])["engine"]["renderFps"] > 5, "the second canvas renders at the same time")
+        pause(1.5)
+        check(wait_for(lambda: frame_id(c2) > 5, timeout=30), "the second canvas renders at the same time")
         call("PATCH", "/api/outputs/out-5", {"display": "\\\\.\\DISPLAY98"})
-        time.sleep(0.5)
+        pause(0.5)
         call("PATCH", "/api/outputs/w2-1", {"display": "\\\\.\\DISPLAY98"}, canvas=c2)
-        time.sleep(1)
+        pause(1)
         e2 = next(o for o in json.loads(get("/api/metrics", canvas=c2)[1])["outputs"] if o["id"] == "w2-1").get("error", "")
         check("already used by" in e2, f"a monitor another canvas shows is refused ({e2})")
         call("PATCH", "/api/outputs/w2-1", {"display": ""}, canvas=c2)
         call("PATCH", "/api/outputs/out-5", {"display": ""})
-        time.sleep(1)
+        pause(1)
         call("POST", "/api/endpoints", {"name": "Two A", "host": "two-a", "player": "mosaic", "displays": [{"output": "w2-1"}]}, canvas=c2)
         call("POST", "/api/endpoints", {"name": "Two B", "host": "two-b", "player": "mosaic", "displays": [{"output": "w2-2"}]}, canvas=c2)
         r = call("POST", "/api/endpoints/checkin", {"host": "two-a", "screens": [], "panels": []})
@@ -436,15 +466,15 @@ with tempfile.TemporaryDirectory() as tmp:
         check(gs.get("pcs") == 2 and abs(gs.get("spreadMs", 0) - 6) < 0.5, f"the canvas's PCs are compared ({gs})")
         check(any(x["host"] == "two-a" for x in json.loads(get("/api/endpoints")[1]).get("elsewhere", [])), "the first canvas lists them as on another canvas")
         call("POST", f"/api/canvases/{c2}/simulate-gpu-loss", {})
-        back = False
-        for _ in range(40):
-            time.sleep(0.5)
-            c = next(x for x in call("GET", "/api/canvases")["canvases"] if x["id"] == c2)
-            if c["restarts"] >= 1 and c["running"] and not c["error"] and c.get("renderFps", 0) > 5:
-                back = True
-                break
-        check(back, "a canvas whose GPU device is lost starts again by itself")
-        check(json.loads(get("/api/metrics")[1])["engine"]["renderFps"] > 5, "the other canvas kept running")
+        f1 = frame_id()
+        def restarted():
+            try:
+                c = next(x for x in call("GET", "/api/canvases")["canvases"] if x["id"] == c2)
+                return c["restarts"] >= 1 and c["running"] and not c["error"] and frame_id(c2) > 3
+            except Exception:  # between stopping and starting again it doesn't answer
+                return False
+        check(wait_for(restarted, timeout=60, every=0.5), "a canvas whose GPU device is lost starts again by itself")
+        check(wait_for(lambda: frame_id() > f1 + 5, timeout=20), "the other canvas kept running")
         call("DELETE", f"/api/canvases/{c2}")
         try:
             call("PATCH", "/api/outputs/w2-1", {"name": "x"}, canvas=c2)
@@ -455,7 +485,7 @@ with tempfile.TemporaryDirectory() as tmp:
         check(len(call("GET", "/api/canvases")["canvases"]) == 1, "the canvas is stopped")
 
         print("frame delivery:", flush=True)
-        time.sleep(2)
+        pause(2)
         m = json.loads(get("/api/metrics")[1])
         json.dump(m, open(os.path.join(args.out, "metrics.json"), "w"), indent=2)
         s = m["sync"]

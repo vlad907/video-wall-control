@@ -50,18 +50,37 @@ jobs:
           MOSAIC_SOFTWARE_GPU: "1"
         run: python tools/ci_check.py --engine build/Release/mosaic_engine.exe --out ci-out
 
+      # Each check runs even if an earlier one failed, and reports its failed lines as annotations
+      # on the run (readable without opening the log).
       - name: UYVY accuracy on Direct3D 11 (WARP)
+        if: ${{ !cancelled() }}
         env:
           MOSAIC_SOFTWARE_GPU: "1"
+        shell: pwsh
         run: |
           python -m pip install --quiet numpy
-          python tools/check_uyvy.py build/Release/mosaic_engine.exe
+          $out = & python tools/check_uyvy.py build/Release/mosaic_engine.exe 2>&1
+          $code = $LASTEXITCODE
+          $out
+          if ($code) { $out | Select-Object -Last 6 | ForEach-Object { "::error title=check_uyvy::$_" }; exit $code }
 
       - name: Receiver self-test (frame alignment, synthetic streams)
-        run: build/Release/mosaic_receiver.exe --self-test 6
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $out = & build/Release/mosaic_receiver.exe --self-test 6 2>&1
+          $code = $LASTEXITCODE
+          $out
+          if ($code) { $out | Select-String 'FAIL' | ForEach-Object { "::error title=receiver self-test::$($_.Line)" }; exit $code }
 
       - name: Audio self-test (delay, stalls, drift; simulated network)
-        run: build/Release/mosaic_engine.exe --audio-self-test
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $out = & build/Release/mosaic_engine.exe --audio-self-test 2>&1
+          $code = $LASTEXITCODE
+          $out
+          if ($code) { $out | Select-String 'FAIL' | ForEach-Object { "::error title=audio self-test::$($_.Line)" }; exit $code }
 
       # The real Direct3D 11 presenter on WARP: windows + flip-model swap chains + present loop.
       # Informational: CI machines may not have a desktop session to put windows on.
