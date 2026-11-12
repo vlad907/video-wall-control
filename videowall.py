@@ -1628,6 +1628,37 @@ def enumerate_displays():
     except AttributeError:
         pass
 
+    # Each screen's real position and size, in pixels, from its display mode. GetMonitorInfo's
+    # numbers are scaled by Windows whenever the screens don't all use the same Scale (100 %,
+    # 150 %, ...), and a window placed by them lands on the wrong part of the wall.
+    class DEVMODEW(ctypes.Structure):
+        _fields_ = [("dmDeviceName", wintypes.WCHAR * 32), ("dmSpecVersion", wintypes.WORD),
+                    ("dmDriverVersion", wintypes.WORD), ("dmSize", wintypes.WORD),
+                    ("dmDriverExtra", wintypes.WORD), ("dmFields", wintypes.DWORD),
+                    ("dmPositionX", wintypes.LONG), ("dmPositionY", wintypes.LONG),
+                    ("dmDisplayOrientation", wintypes.DWORD), ("dmDisplayFixedOutput", wintypes.DWORD),
+                    ("dmColor", ctypes.c_short), ("dmDuplex", ctypes.c_short),
+                    ("dmYResolution", ctypes.c_short), ("dmTTOption", ctypes.c_short),
+                    ("dmCollate", ctypes.c_short), ("dmFormName", wintypes.WCHAR * 32),
+                    ("dmLogPixels", wintypes.WORD), ("dmBitsPerPel", wintypes.DWORD),
+                    ("dmPelsWidth", wintypes.DWORD), ("dmPelsHeight", wintypes.DWORD),
+                    ("dmDisplayFlags", wintypes.DWORD), ("dmDisplayFrequency", wintypes.DWORD),
+                    ("dmICMMethod", wintypes.DWORD), ("dmICMIntent", wintypes.DWORD),
+                    ("dmMediaType", wintypes.DWORD), ("dmDitherType", wintypes.DWORD),
+                    ("dmReserved1", wintypes.DWORD), ("dmReserved2", wintypes.DWORD),
+                    ("dmPanningWidth", wintypes.DWORD), ("dmPanningHeight", wintypes.DWORD)]
+
+    def real_rect(device):
+        mode = DEVMODEW()
+        mode.dmSize = ctypes.sizeof(DEVMODEW)
+        try:
+            user32.EnumDisplaySettingsW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(DEVMODEW)]
+            if user32.EnumDisplaySettingsW(device, 0xFFFFFFFF, ctypes.byref(mode)) and mode.dmPelsWidth and mode.dmPelsHeight:  # ENUM_CURRENT_SETTINGS
+                return mode.dmPositionX, mode.dmPositionY, int(mode.dmPelsWidth), int(mode.dmPelsHeight)
+        except Exception:
+            pass
+        return None
+
     class DISPLAY_DEVICEW(ctypes.Structure):
         _fields_ = [("cb", wintypes.DWORD), ("DeviceName", wintypes.WCHAR * 32),
                     ("DeviceString", wintypes.WCHAR * 128), ("StateFlags", wintypes.DWORD),
@@ -1669,14 +1700,15 @@ def enumerate_displays():
         info.cbSize = ctypes.sizeof(info)
         if user32.GetMonitorInfoW(hmonitor, ctypes.byref(info)):
             r = info.rcMonitor
+            x, y, w, h = real_rect(info.szDevice) or (r.left, r.top, r.right - r.left, r.bottom - r.top)
             monitor_name, adapter_name = friendly.get(info.szDevice, ("", ""))
             displays.append({
                 "device": info.szDevice,
                 "short": info.szDevice.replace("\\\\.\\", ""),
                 "monitor": monitor_name,
                 "adapter": adapter_name,
-                "x": r.left, "y": r.top,
-                "width": r.right - r.left, "height": r.bottom - r.top,
+                "x": x, "y": y,
+                "width": w, "height": h,
                 "primary": bool(info.dwFlags & 0x1),
             })
         return True
