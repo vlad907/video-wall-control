@@ -10,13 +10,15 @@
 // the output channel holds one slot back. NDI copies/encodes on its own
 // threads; there is no API for submitting GPU textures directly.
 //
-// Receiving: a thread per source captures frames as BGRX/BGRA and keeps only
-// the newest one; the render thread uploads it once and frees it.
+// Receiving: a thread per source (shared by every canvas showing it) captures frames as
+// BGRX/BGRA and keeps only the newest one; each canvas uploads it once, the last one frees it.
 #include <Processing.NDI.Lib.h>
 
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -75,9 +77,24 @@ private:
     int next_ = 0;
 };
 
-class NdiInput final : public NdiReceiver {
+// One NDI connection per source, shared by every canvas showing it: the source is received
+// (and, for NDI|HX, decoded) once, however many canvases use it.
+class NdiShared {
 public:
-    explicit NdiInput(const std::string& sourceName) : name_(sourceName) {
+    // Owns the receiver instance; frames hold it too, so it outlives the last frame in use.
+    struct Handle {
+        NDIlib_recv_instance_t recv = nullptr;
+        ~Handle() {
+            if (recv) NDIlib_recv_destroy(recv);
+        }
+    };
+    struct Frame {
+        std::shared_ptr<Handle> h;
+        NDIlib_video_frame_v2_t v{};
+        ~Frame() { NDIlib_recv_free_video_v2(h->recv, &v); }
+    };
+
+    explicit NdiShared(const std::string& sourceName) : name_(sourceName), h_(std::make_shared<Handle>()) {
         NDIlib_source_t src;
         src.p_ndi_name = name_.c_str();
         NDIlib_recv_create_v3_t desc;
@@ -86,85 +103,108 @@ public:
         desc.bandwidth = NDIlib_recv_bandwidth_highest;
         desc.allow_video_fields = false;
         desc.p_ndi_recv_name = "Mosaic Engine";
-        recv_ = NDIlib_recv_create_v3(&desc);
-        if (recv_) thread_ = std::thread([this] { run(); });
+        h_->recv = NDIlib_recv_create_v3(&desc);
+        if (h_->recv) thread_ = std::thread([this] { run(); });
     }
-
-    ~NdiInput() override {
+    ~NdiShared() {
         stop_ = true;
         if (thread_.joinable()) thread_.join();
         std::lock_guard l(m_);
-        if (hasLatest_) NDIlib_recv_free_video_v2(recv_, &latest_);
-        if (recv_) NDIlib_recv_destroy(recv_);
+        latest_.reset();
     }
 
-    bool ok() const { return recv_ != nullptr; }
-
-    bool acquireLatest(InputFrame& out) override {
+    bool ok() const { return h_->recv != nullptr; }
+    // The newest frame and its number (0 = none yet).
+    std::shared_ptr<Frame> latest(uint64_t& seq) {
         std::lock_guard l(m_);
-        if (!hasLatest_) return false;
-        auto* held = new NDIlib_video_frame_v2_t(latest_);
-        hasLatest_ = false;
-        out.data = held->p_data;
-        out.width = held->xres;
-        out.height = held->yres;
-        out.stride = held->line_stride_in_bytes;
-        out.sequence = ++sequence_;
-        out.opaque = held;
-        return true;
+        seq = seq_;
+        return latest_;
     }
-
-    void release(InputFrame& f) override {
-        auto* held = static_cast<NDIlib_video_frame_v2_t*>(f.opaque);
-        if (held) NDIlib_recv_free_video_v2(recv_, held);
-        delete held;
-        f.opaque = nullptr;
-    }
-
-    bool connected() const override {
-        return Clock::now() - lastFrame_.load() < std::chrono::seconds(1);
-    }
-    double inputFps() const override { return rate_.rate(); }
-    uint64_t framesReceived() const override { return received_; }
+    bool connected() const { return Clock::now() - lastFrame_.load() < std::chrono::seconds(1); }
+    double inputFps() const { return rate_.rate(); }
+    uint64_t framesReceived() const { return received_; }
+    double sentFps() const { return sentFps_; }
+    // Frames the NDI library dropped because they weren't taken in time (we're too slow), and all frames.
+    uint64_t dropped() const { return dropped_; }
 
 private:
     void run() {
+        auto lastPerf = Clock::now();
         while (!stop_) {
             NDIlib_video_frame_v2_t v;
-            switch (NDIlib_recv_capture_v3(recv_, &v, nullptr, nullptr, 100)) {
-                case NDIlib_frame_type_video: {
-                    bool bgra = v.FourCC == NDIlib_FourCC_video_type_BGRA || v.FourCC == NDIlib_FourCC_video_type_BGRX;
-                    if (!bgra) {  // should not happen with BGRX_BGRA requested
-                        NDIlib_recv_free_video_v2(recv_, &v);
-                        break;
-                    }
-                    received_++;
-                    rate_.tick();
-                    lastFrame_ = Clock::now();
-                    std::lock_guard l(m_);
-                    // Latest wins: an unconsumed older frame is dropped.
-                    if (hasLatest_) NDIlib_recv_free_video_v2(recv_, &latest_);
-                    latest_ = v;
-                    hasLatest_ = true;
-                    break;
+            if (NDIlib_recv_capture_v3(h_->recv, &v, nullptr, nullptr, 100) == NDIlib_frame_type_video) {
+                if (v.FourCC != NDIlib_FourCC_video_type_BGRA && v.FourCC != NDIlib_FourCC_video_type_BGRX) {  // not with BGRX_BGRA requested
+                    NDIlib_recv_free_video_v2(h_->recv, &v);
+                    continue;
                 }
-                default:
-                    break;
+                received_++;
+                rate_.tick();
+                lastFrame_ = Clock::now();
+                if (v.frame_rate_D > 0) sentFps_ = double(v.frame_rate_N) / v.frame_rate_D;
+                auto f = std::make_shared<Frame>();
+                f->h = h_;
+                f->v = v;
+                std::lock_guard l(m_);
+                latest_ = std::move(f);  // latest wins: an older frame nobody took is freed
+                ++seq_;
+            }
+            if (Clock::now() - lastPerf > std::chrono::seconds(1)) {
+                lastPerf = Clock::now();
+                NDIlib_recv_performance_t total{}, dropped{};
+                NDIlib_recv_get_performance(h_->recv, &total, &dropped);
+                dropped_ = static_cast<uint64_t>(dropped.video_frames);
             }
         }
     }
 
     std::string name_;
-    NDIlib_recv_instance_t recv_ = nullptr;
+    std::shared_ptr<Handle> h_;
     std::thread thread_;
     std::atomic<bool> stop_{false};
     std::mutex m_;
-    NDIlib_video_frame_v2_t latest_;
-    bool hasLatest_ = false;
-    uint64_t sequence_ = 0;
-    std::atomic<uint64_t> received_{0};
+    std::shared_ptr<Frame> latest_;
+    uint64_t seq_ = 0;
+    std::atomic<uint64_t> received_{0}, dropped_{0};
+    std::atomic<double> sentFps_{0};
     std::atomic<Clock::time_point> lastFrame_{Clock::time_point{}};
     RateMeter rate_;
+};
+
+// A canvas's view of a shared source: takes each new frame once.
+class NdiInput final : public NdiReceiver {
+public:
+    explicit NdiInput(std::shared_ptr<NdiShared> shared) : s_(std::move(shared)) {}
+
+    bool acquireLatest(InputFrame& out) override {
+        uint64_t seq = 0;
+        auto f = s_->latest(seq);
+        if (!f || seq == taken_) return false;
+        taken_ = seq;
+        auto* held = new std::shared_ptr<NdiShared::Frame>(std::move(f));
+        const auto& v = (*held)->v;
+        out.data = v.p_data;
+        out.width = v.xres;
+        out.height = v.yres;
+        out.stride = v.line_stride_in_bytes;
+        out.sequence = seq;
+        out.opaque = held;
+        return true;
+    }
+
+    void release(InputFrame& f) override {
+        delete static_cast<std::shared_ptr<NdiShared::Frame>*>(f.opaque);
+        f.opaque = nullptr;
+    }
+
+    bool connected() const override { return s_->connected(); }
+    double inputFps() const override { return s_->inputFps(); }
+    uint64_t framesReceived() const override { return s_->framesReceived(); }
+    double sentFps() const override { return s_->sentFps(); }
+    uint64_t framesDropped() const override { return s_->dropped(); }
+
+private:
+    std::shared_ptr<NdiShared> s_;
+    uint64_t taken_ = 0;
 };
 
 // Audio only: the source's audio, as float, into the ring with its arrival time.
@@ -251,9 +291,14 @@ public:
     }
 
     std::unique_ptr<NdiReceiver> createReceiver(const std::string& sourceName) override {
-        auto rx = std::make_unique<NdiInput>(sourceName);
-        if (!rx->ok()) return nullptr;
-        return rx;
+        std::lock_guard l(sharedMutex_);
+        auto shared = shared_[sourceName].lock();
+        if (!shared) {
+            shared = std::make_shared<NdiShared>(sourceName);
+            if (!shared->ok()) return nullptr;
+            shared_[sourceName] = shared;
+        }
+        return std::make_unique<NdiInput>(shared);
     }
 
     std::unique_ptr<NdiAudioInput> createAudioReceiver(const std::string& sourceName, std::shared_ptr<AudioRing> ring) override {
@@ -264,6 +309,8 @@ public:
 
 private:
     NDIlib_find_instance_t find_ = nullptr;
+    std::mutex sharedMutex_;
+    std::map<std::string, std::weak_ptr<NdiShared>> shared_;  // by source name
     std::mutex m_;
 };
 

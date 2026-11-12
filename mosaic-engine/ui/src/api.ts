@@ -101,7 +101,7 @@ export interface Source {
   color?: [number, number, number, number];
   animated?: boolean;
   enabled: boolean;
-  status?: { status: string; inputFps?: number; width: number; height: number; signal?: "ok" | "lost"; showing?: string; video?: VideoStatus };
+  status?: { status: string; inputFps?: number; sentFps?: number; framesDropped?: number; width: number; height: number; signal?: "ok" | "lost"; showing?: string; video?: VideoStatus };
   group?: string; // wall group whose content this is (set by the group's presets)
 }
 
@@ -422,7 +422,7 @@ export interface Metrics {
     ndi: string;
     layout: string;
   };
-  sources: { id: string; type: string; status: string; inputFps?: number; width: number; height: number; signal?: "ok" | "lost"; showing?: string; video?: VideoStatus }[];
+  sources: { id: string; type: string; status: string; inputFps?: number; sentFps?: number; framesDropped?: number; width: number; height: number; signal?: "ok" | "lost"; showing?: string; video?: VideoStatus }[];
   outputs: OutputMetrics[];
   sync: { framesComplete: number; framesPartial: number; completeRatio: number; lastFrameIdSpread: number };
 }

@@ -378,6 +378,8 @@ export function SourcesPanel({
                 {s.opacity < 1 ? `${Math.round(s.opacity * 100)}% · ` : ""}
                 {st?.signal === "lost" ? (st.showing ? "no signal · showing fallback image" : "no signal") : (st?.status ?? "…")}
                 {st?.inputFps ? ` · ${fmt(st.inputFps)} fps` : ""}
+                {st?.sentFps && st.inputFps && st.sentFps > st.inputFps * 1.15 ? ` of ${fmt(st.sentFps)} sent` : ""}
+                {st?.framesDropped ? ` · ${st.framesDropped} dropped here` : ""}
               </small>
             </div>
             <input

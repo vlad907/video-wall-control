@@ -646,6 +646,8 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
                 st["status"] = s.rx->connected() ? "ok" : (s.hasFrame ? "no signal (holding last frame)" : "waiting for source");
                 st["inputFps"] = s.rx->inputFps();
                 st["framesReceived"] = s.rx->framesReceived();
+                if (double sent = s.rx->sentFps(); sent > 0) st["sentFps"] = sent;
+                st["framesDropped"] = s.rx->framesDropped();
                 st["width"] = s.w;
                 st["height"] = s.h;
             }

@@ -57,6 +57,8 @@ public:
     virtual bool connected() const = 0;      // a frame arrived in the last second
     virtual double inputFps() const = 0;
     virtual uint64_t framesReceived() const = 0;
+    virtual double sentFps() const { return 0; }          // the frame rate the source says it sends (0 = unknown)
+    virtual uint64_t framesDropped() const { return 0; }  // frames dropped here because they weren't taken in time
 };
 
 class AudioRing;
