@@ -22,6 +22,8 @@ struct CaptureDevice {
 };
 
 constexpr const char* kTestCaptureName = "Mosaic test capture";
+// The same bars delivered as UYVY 4:2:2, the way NDI sources arrive (checks the GPU's unpacking).
+constexpr const char* kTestCaptureUyvyName = "Mosaic test capture (UYVY)";
 
 // The capture devices on this PC, the test device last. `error` set if listing failed.
 std::vector<CaptureDevice> listCaptureDevices(std::string& error);

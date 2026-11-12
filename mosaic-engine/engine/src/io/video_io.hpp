@@ -41,8 +41,9 @@ std::unique_ptr<VideoSink> createNullSink();
 
 // A received NDI frame. Valid until NdiReceiver::release().
 struct InputFrame {
-    const uint8_t* data = nullptr;  // BGRA/BGRX
+    const uint8_t* data = nullptr;  // BGRA/BGRX, or UYVY when `uyvy` (2 bytes a pixel)
     int width = 0, height = 0, stride = 0;
+    bool uyvy = false;
     uint64_t sequence = 0;
     void* opaque = nullptr;
 };

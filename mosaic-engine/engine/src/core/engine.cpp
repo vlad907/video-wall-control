@@ -624,18 +624,31 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
             } else {
                 InputFrame f;
                 if (s.rx->acquireLatest(f)) {
-                    if (f.width != s.w || f.height != s.h) {
-                        // New resolution: replace the upload textures (in-flight
+                    bool uyvy = f.uyvy && f.width % 2 == 0;
+                    if (f.width != s.w || f.height != s.h || uyvy != (s.packed[0] != 0)) {
+                        // New resolution or format: replace the textures (in-flight
                         // frames keep the old ones alive until they finish).
                         for (int i = 0; i < s.texCount; ++i) renderer_.destroyTexture(s.tex[i]);
+                        for (TexId& t : s.packed)
+                            if (t) renderer_.destroyTexture(t), t = 0;
                         s.texCount = 3;
-                        for (int i = 0; i < 3; ++i) s.tex[i] = renderer_.createTexture(f.width, f.height, TexUsage::Upload);
+                        for (int i = 0; i < 3; ++i) {
+                            s.tex[i] = renderer_.createTexture(f.width, f.height, uyvy ? TexUsage::RenderTarget : TexUsage::Upload);
+                            if (uyvy) s.packed[i] = renderer_.createTexture(f.width / 2, f.height, TexUsage::Upload);
+                        }
                         s.w = f.width;
                         s.h = f.height;
                     }
                     // Rotate through 3 textures so we never write one the GPU may still read.
                     s.current = (s.current + 1) % s.texCount;
-                    renderer_.uploadBGRA(s.tex[s.current], f.data, f.stride);
+                    if (uyvy) {
+                        renderer_.uploadBGRA(s.packed[s.current], f.data, f.stride);  // 4 bytes = 2 pixels
+                        renderer_.beginPass(s.tex[s.current], nullptr);
+                        renderer_.drawUnpackUYVY(s.packed[s.current]);
+                        renderer_.endPass();
+                    } else {
+                        renderer_.uploadBGRA(s.tex[s.current], f.data, f.stride);
+                    }
                     s.rx->release(f);
                     s.hasFrame = true;
                     s.lastFrameAt = now;
@@ -799,6 +812,8 @@ void Engine::destroySource(SourceState& s) {
     s.rx.reset();
     s.video.reset();  // before its textures: hardware decoders hold GPU surfaces
     for (int i = 0; i < s.texCount; ++i) renderer_.destroyTexture(s.tex[i]);
+    for (TexId& t : s.packed)
+        if (t) renderer_.destroyTexture(t), t = 0;
     s.texCount = 0;
     s.hasFrame = false;
 }

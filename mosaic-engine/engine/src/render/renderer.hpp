@@ -93,6 +93,9 @@ public:
     // Like drawTextured for an output of sizes[2] x sizes[3] pixels, but writes it
     // packed as UYVY 4:2:2 into the pass target, which is half as wide (one pass, no BGRA copy).
     virtual void drawTexturedUYVY(TexId src, const Uniforms&) = 0;
+    // Converts `packed`, a UYVY frame uploaded as a BGRA texture half its width, into the pass
+    // target (its full size) as RGB. Covers the whole target; no uniforms needed.
+    virtual void drawUnpackUYVY(TexId packed) = 0;
     virtual void endPass() = 0;
     virtual void copyToReadback(TexId src, ReadbackId dst, int slot) = 0;
     virtual void endFrame() = 0;

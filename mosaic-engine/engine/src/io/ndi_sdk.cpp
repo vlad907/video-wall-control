@@ -99,7 +99,10 @@ public:
         src.p_ndi_name = name_.c_str();
         NDIlib_recv_create_v3_t desc;
         desc.source_to_connect_to = src;
-        desc.color_format = NDIlib_recv_color_format_BGRX_BGRA;
+        // UYVY, as decoded: converted to RGB on the GPU. Asking NDI for BGRA converts every pixel on
+        // the CPU, which can't keep up with several 1080p60 NDI|HX sources (they arrived at ~40 fps).
+        // Sources with alpha still come as BGRA.
+        desc.color_format = NDIlib_recv_color_format_UYVY_BGRA;
         desc.bandwidth = NDIlib_recv_bandwidth_highest;
         desc.allow_video_fields = false;
         desc.p_ndi_recv_name = "Mosaic Engine";
@@ -133,7 +136,8 @@ private:
         while (!stop_) {
             NDIlib_video_frame_v2_t v;
             if (NDIlib_recv_capture_v3(h_->recv, &v, nullptr, nullptr, 100) == NDIlib_frame_type_video) {
-                if (v.FourCC != NDIlib_FourCC_video_type_BGRA && v.FourCC != NDIlib_FourCC_video_type_BGRX) {  // not with BGRX_BGRA requested
+                if (v.FourCC != NDIlib_FourCC_video_type_UYVY && v.FourCC != NDIlib_FourCC_video_type_BGRA &&
+                    v.FourCC != NDIlib_FourCC_video_type_BGRX) {  // not with UYVY_BGRA requested
                     NDIlib_recv_free_video_v2(h_->recv, &v);
                     continue;
                 }
@@ -186,6 +190,7 @@ public:
         out.width = v.xres;
         out.height = v.yres;
         out.stride = v.line_stride_in_bytes;
+        out.uyvy = v.FourCC == NDIlib_FourCC_video_type_UYVY;
         out.sequence = seq;
         out.opaque = held;
         return true;

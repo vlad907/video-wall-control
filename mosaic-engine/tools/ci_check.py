@@ -373,6 +373,16 @@ with tempfile.TemporaryDirectory() as tmp:
         check(st["width"] == 1280 and st["fps"] > 20, f"the device runs ({st['width']}x{st['height']}, {st['fps']:.0f} fps)")
         call("DELETE", "/api/outputs/cap-ndi")
         call("DELETE", "/api/sources/cap")
+        # The same bars arriving as UYVY (how NDI sources come in), unpacked to RGB on the GPU.
+        call("POST", "/api/sources", {"id": "capu", "name": "Capture UYVY", "type": "capture", "device": "Mosaic test capture (UYVY)", "rect": {"x": 0, "y": 0, "w": 64, "h": 36}})
+        call("POST", "/api/outputs", {"id": "capu-ndi", "name": "Capture UYVY (NDI)", "source": "capu", "crop": {"x": 0, "y": 0, "w": 1280, "h": 720}, "width": 1280, "height": 720, "pixelFormat": "bgra"})
+        time.sleep(1.5)
+        img = frame("capu-ndi")
+        want = [(255, 255, 255), (255, 255, 0), (0, 255, 255), (0, 255, 0), (255, 0, 255), (255, 0, 0), (0, 0, 255), (0, 0, 0)]
+        got = [pixel(img, x, 360) for x in range(80, 1280, 160)]
+        check(all(close(g, w_, 6) for g, w_ in zip(got, want)), f"a UYVY source is unpacked to the right colours ({got})")
+        call("DELETE", "/api/outputs/capu-ndi")
+        call("DELETE", "/api/sources/capu")
 
         print("display outputs:", flush=True)
         call("PATCH", "/api/outputs/out-5", {"display": "\\\\.\\DISPLAY99"})

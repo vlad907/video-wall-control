@@ -75,6 +75,7 @@ private:
         SourceConfig cfg;
         TexId tex[3] = {0, 0, 0};
         int texCount = 0, current = 0;
+        TexId packed[3] = {0, 0, 0};  // UYVY input: the frames as uploaded (half width), unpacked into tex[]
         int w = 0, h = 0;
         bool hasFrame = false;
         bool patternDrawn = false;  // test pattern: texture holds a drawn frame

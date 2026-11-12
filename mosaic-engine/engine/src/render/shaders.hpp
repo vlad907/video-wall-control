@@ -94,6 +94,15 @@ float4 packUYVY(float3 a, float3 b) {
     return float4(v, y0, u, y1);
 }
 
+// UYVY 4:2:2 (BT.709, limited range) to RGB: `t` is one BGRA8 texel of the packed frame as
+// sampled (r = V, g = Y0, b = U, a = Y1); `odd` picks its second pixel.
+float3 unpackUYVY(float4 t, bool odd) {
+    float y = ((odd ? t.a : t.g) * 255.0 - 16.0) / 219.0;
+    float cb = (t.b * 255.0 - 128.0) / 224.0;
+    float cr = (t.r * 255.0 - 128.0) / 224.0;
+    return saturate(float3(y + 1.5748 * cr, y - 0.1873 * cb - 0.4681 * cr, y + 1.8556 * cb));
+}
+
 // ---------------------------------------------------------------------------
 // Test pattern
 // ---------------------------------------------------------------------------
@@ -276,6 +285,12 @@ fragment float4 ps_textured_uyvy(VOut in [[stage_in]], constant Uniforms& u [[bu
     float3 b = outColor(float2(p.x * 2.0 + 1.5, p.y + 0.5) / u.sizes.zw, u, tex, smp);
     return packUYVY(a, b);
 }
+
+// An NDI frame received as UYVY (half as wide, packed) into an RGB texture of its full size.
+fragment float4 ps_unpack_uyvy(VOut in [[stage_in]], texture2d<float> tex [[texture(0)]]) {
+    uint2 p = uint2(in.pos.xy);
+    return float4(unpackUYVY(tex.read(uint2(p.x / 2u, p.y)), (p.x & 1u) != 0u), 1.0);
+}
 )SHADER";
 
 // ---------------------------------------------------------------------------
@@ -319,6 +334,11 @@ float4 ps_textured_uyvy(float4 pos : SV_Position) : SV_Target {
     float3 a = outColor(float2(p.x * 2.0 + 0.5, p.y + 0.5) / u.sizes.zw);
     float3 b = outColor(float2(p.x * 2.0 + 1.5, p.y + 0.5) / u.sizes.zw);
     return packUYVY(a, b);
+}
+
+float4 ps_unpack_uyvy(float4 pos : SV_Position) : SV_Target {
+    uint2 p = uint2(pos.xy);
+    return float4(unpackUYVY(tex.Load(int3(p.x / 2u, p.y, 0)), (p.x & 1u) != 0u), 1.0);
 }
 )SHADER";
 

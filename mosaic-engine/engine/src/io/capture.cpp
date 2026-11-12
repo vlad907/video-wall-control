@@ -20,7 +20,8 @@ namespace {
 struct Session {
     std::string name;
     std::mutex m;
-    std::shared_ptr<std::vector<uint8_t>> frame;  // BGRA, width * 4 per row
+    std::shared_ptr<std::vector<uint8_t>> frame;  // BGRA, width * 4 per row (UYVY, width * 2, if uyvy)
+    bool uyvy = false;
     int width = 0, height = 0;
     uint64_t sequence = 0;
     Clock::time_point lastFrame{};
@@ -31,9 +32,10 @@ struct Session {
     int viewers = 0;
 
     void deliver(const uint8_t* bgra, int w, int h, long stride) {
-        auto f = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(w) * h * 4);
+        const size_t row = static_cast<size_t>(w) * (uyvy ? 2 : 4);
+        auto f = std::make_shared<std::vector<uint8_t>>(row * h);
         for (int y = 0; y < h; ++y)
-            std::memcpy(f->data() + static_cast<size_t>(y) * w * 4, bgra + static_cast<std::ptrdiff_t>(y) * stride, static_cast<size_t>(w) * 4);
+            std::memcpy(f->data() + static_cast<size_t>(y) * row, bgra + static_cast<std::ptrdiff_t>(y) * stride, row);
         std::lock_guard l(m);
         frame = std::move(f);
         width = w;
@@ -73,7 +75,27 @@ void runTestDevice(Session* s) {
                 p[2] = bar || counter ? 255 : c[2];
                 p[3] = 255;
             }
-        s->deliver(px.data(), w, h, w * 4);
+        if (s->uyvy) {
+            // BT.709 limited range, chroma from each pair's average: what NDI hands a receiver.
+            std::vector<uint8_t> packed(static_cast<size_t>(w) * h * 2);
+            auto luma = [](const uint8_t* p) { return 0.2126 * p[2] + 0.7152 * p[1] + 0.0722 * p[0]; };
+            for (size_t i = 0; i < static_cast<size_t>(w) * h; i += 2) {
+                const uint8_t* a = px.data() + i * 4;
+                const uint8_t* b = a + 4;
+                double ya = luma(a), yb = luma(b);
+                double r = (a[2] + b[2]) / 2.0, g = (a[1] + b[1]) / 2.0, bl = (a[0] + b[0]) / 2.0;
+                double yc = 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+                auto q = [](double v) { return static_cast<uint8_t>(std::clamp(std::lround(v), 0L, 255L)); };
+                uint8_t* o = packed.data() + i * 2;
+                o[0] = q(128 + 224 * ((bl - yc) / 255.0) / 1.8556);
+                o[1] = q(16 + 219 * ya / 255.0);
+                o[2] = q(128 + 224 * ((r - yc) / 255.0) / 1.5748);
+                o[3] = q(16 + 219 * yb / 255.0);
+            }
+            s->deliver(packed.data(), w, h, w * 2);
+        } else {
+            s->deliver(px.data(), w, h, w * 4);
+        }
         next += std::chrono::microseconds(16667);
         std::this_thread::sleep_until(next);
     }
@@ -94,18 +116,21 @@ public:
         std::shared_ptr<std::vector<uint8_t>> f;
         int w, h;
         uint64_t seq;
+        bool uyvy;
         {
             std::lock_guard l(s_->m);
             if (!s_->frame || s_->sequence == seen_) return false;
             f = s_->frame;
             w = s_->width;
             h = s_->height;
+            uyvy = s_->uyvy;
             seq = seen_ = s_->sequence;
         }
         out.data = f->data();
         out.width = w;
         out.height = h;
-        out.stride = w * 4;
+        out.stride = w * (uyvy ? 2 : 4);
+        out.uyvy = uyvy;
         out.sequence = seq;
         out.opaque = new std::shared_ptr<std::vector<uint8_t>>(std::move(f));  // keeps the pixels until release()
         ++received_;
@@ -136,6 +161,7 @@ private:
 std::vector<CaptureDevice> listCaptureDevices(std::string& error) {
     auto list = platformCaptureDevices(error);
     list.push_back({kTestCaptureName, "test"});
+    list.push_back({kTestCaptureUyvyName, "test"});
     return list;
 }
 
@@ -146,7 +172,8 @@ std::unique_ptr<NdiReceiver> openCapture(const std::string& name, std::string& e
     if (!s) {
         s = std::make_shared<Session>();
         s->name = name;
-        if (name == kTestCaptureName) {
+        if (name == kTestCaptureName || name == kTestCaptureUyvyName) {
+            s->uyvy = name == kTestCaptureUyvyName;
             Session* raw = s.get();
             s->testThread = std::thread([raw] { runTestDevice(raw); });
         } else {
