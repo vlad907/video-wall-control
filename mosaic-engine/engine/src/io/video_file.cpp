@@ -53,7 +53,10 @@ public:
         loop_ = loop;
         cv_.notify_all();
     }
-    VideoInfo info() const override { return info_; }
+    VideoInfo info() const override {
+        std::lock_guard lock(m_);
+        return info_;
+    }
     bool finished() const override { return finished_; }
     std::string status() const override {
         std::lock_guard lock(m_);
@@ -64,7 +67,7 @@ public:
 private:
     void run() {
         double offset = 0, lastPts = 0;
-        const double frameTime = info_.fps > 0 ? 1.0 / info_.fps : 1.0 / 30.0;
+        const double frameTime = backend_->info().fps > 0 ? 1.0 / backend_->info().fps : 1.0 / 30.0;
         auto windowStart = std::chrono::steady_clock::now();
         int windowFrames = 0;
         while (!stop_) {
@@ -112,6 +115,8 @@ private:
                 windowStart = now;
             }
             std::lock_guard lock(m_);
+            // Which decoder it got (GPU or CPU, and why) is only known once a frame has come out.
+            info_ = backend_->info();
             if (restart_) continue;  // a restart came in while decoding: this frame is stale
             while (queue_.size() >= kQueueFrames) queue_.pop_front();  // behind: the oldest is too late to show
             queue_.push_back(std::move(f));
@@ -130,7 +135,7 @@ private:
     }
 
     std::unique_ptr<VideoBackend> backend_;
-    VideoInfo info_;
+    VideoInfo info_;  // guarded by m_
     mutable std::mutex m_;
     std::condition_variable cv_;
     std::deque<DecodedFrame> queue_;

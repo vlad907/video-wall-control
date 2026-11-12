@@ -594,6 +594,7 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
         it->second.video->restart();
         it->second.playStart = now;
         if (it->second.pausedAt >= 0) it->second.pausedAt = 0;
+        if (it->second.offAt >= 0) it->second.offAt = 0;
     }
     json status = json::array();
     for (auto& [id, s] : sources_) {
@@ -668,7 +669,15 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
             if (!s.video) {
                 st["status"] = s.error;
             } else {
-                double t = s.pausedAt >= 0 ? s.pausedAt : std::chrono::duration<double>(now - s.playStart).count();
+                // Switched off: its clock stops, so the decoder (which only works to keep up with the
+                // clock) idles. Switched back on: it carries on from where it was.
+                if (!s.cfg.enabled && s.offAt < 0) {
+                    s.offAt = s.pausedAt >= 0 ? s.pausedAt : std::chrono::duration<double>(now - s.playStart).count();
+                } else if (s.cfg.enabled && s.offAt >= 0) {
+                    s.playStart = now - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(s.offAt));
+                    s.offAt = -1;
+                }
+                double t = s.offAt >= 0 ? s.offAt : s.pausedAt >= 0 ? s.pausedAt : std::chrono::duration<double>(now - s.playStart).count();
                 if (auto f = s.video->frameDue(t)) {
                     bool gpu = f->gpuTexture != nullptr;
                     if (!s.texCount || s.w != f->width || s.h != f->height || s.gpuFrames != gpu) {
@@ -705,11 +714,12 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
                 }
                 VideoInfo vi = s.video->info();
                 std::string vs = s.video->status();
-                st["status"] = vs != "ok" ? vs : !s.error.empty() ? s.error : s.video->finished() ? "ended (holding the last frame)" : s.pausedAt >= 0 ? "paused" : "playing";
+                st["status"] = vs != "ok" ? vs : !s.error.empty() ? s.error : s.video->finished() ? "ended (holding the last frame)" : s.offAt >= 0 ? "off (not decoding)" : s.pausedAt >= 0 ? "paused" : "playing";
                 st["video"] = {{"width", vi.width},  {"height", vi.height},       {"fps", vi.fps},
                                {"codec", vi.codec},  {"hardware", vi.hardware}, {"decoder", vi.decoder},   {"durationS", vi.durationS},
                                {"positionS", vi.durationS > 0 ? std::fmod(t, vi.durationS) : t},
-                               {"decodeFps", s.video->decodeFps()}, {"playing", s.pausedAt < 0},
+                               // Paused or off, the decoder idles: its last rate says nothing about the file.
+                               {"decodeFps", s.pausedAt >= 0 || s.offAt >= 0 ? 0.0 : s.video->decodeFps()}, {"playing", s.pausedAt < 0},
                                {"hdr", vi.hdr},      {"bitDepth", vi.bitDepth}};
                 st["width"] = s.w;
                 st["height"] = s.h;
@@ -962,7 +972,7 @@ void Engine::reconcile(const Layout& layout) {
             SourceState& v = it->second;
             if (v.video) {
                 if (c->loop != v.cfg.loop) v.video->setLoop(c->loop);
-                double pos = std::chrono::duration<double>(Clock::now() - v.playStart).count();
+                double pos = v.offAt >= 0 ? v.offAt : std::chrono::duration<double>(Clock::now() - v.playStart).count();
                 if (!c->playing && v.pausedAt < 0) v.pausedAt = pos;  // pause: hold the position
                 if (c->playing && v.pausedAt >= 0) {                  // resume from it
                     v.playStart = Clock::now() - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(v.pausedAt));
@@ -1124,7 +1134,7 @@ json Engine::metrics() {
     for (auto& o : layout->outputs) {
         if (!o.display.empty()) {
             // A display output: the monitor it's on and what reached it.
-            json d = displays.contains(o.id) ? displays[o.id] : json{{"monitor", o.display}, {"error", "starting"}, {"open", false}};
+            json d = displays.contains(o.id) ? displays[o.id] : json{{"monitor", o.display}, {"error", o.enabled ? "starting" : "switched off"}, {"open", false}};
             json m = {{"id", o.id}, {"name", o.name}, {"sink", "display"}, {"display", o.display}, {"enabled", o.enabled}};
             for (auto& [k, v] : d.items()) m[k] = v;
             outputs.push_back(m);

@@ -333,6 +333,18 @@ with tempfile.TemporaryDirectory() as tmp:
             check(wait_for(lambda: shows((255, 0, 0)), timeout=0.9, every=0.05), "restart goes back to the first frame (red)")
             time.sleep(2.2)
             check(wait_for(lambda: vstatus()["status"] == "playing", timeout=10), "it loops (still playing after the end)")
+            # Switched off, a video isn't decoded (an 8K file would use the CPU for nothing): its position holds.
+            call("PATCH", f"/api/sources/{vid['id']}", {"enabled": False})
+            check(wait_for(lambda: vstatus()["status"] == "off (not decoding)", timeout=10), f"switched off, it stops decoding ({vstatus()['status']})")
+            pos = vstatus()["video"]["positionS"]
+            time.sleep(1.5)
+            st = vstatus()
+            check(abs(st["video"]["positionS"] - pos) < 0.01 and st["video"]["decodeFps"] == 0, f"and its position holds ({pos:.2f} -> {st['video']['positionS']:.2f} s)")
+            call("PATCH", f"/api/sources/{vid['id']}", {"enabled": True})
+            check(wait_for(lambda: vstatus()["status"] == "playing", timeout=10), "switched on again, it plays on")
+            if sys.platform == "win32":  # Media Foundation only knows which decoder it got once a frame is out
+                decoder = wait_for(lambda: vstatus()["video"].get("decoder"), timeout=10)
+                check(bool(decoder), f"the status names the decoder it got ({decoder})")
         call("DELETE", f"/api/sources/{vid['id']}")
         call("DELETE", "/api/media/clip.mp4")
 

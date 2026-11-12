@@ -89,6 +89,9 @@ private:
         std::unique_ptr<VideoFileDecoder> video;
         Clock::time_point playStart = Clock::now();
         double pausedAt = -1;   // seconds into the video while paused; -1 = playing
+        // Seconds into the video when its source was switched off; -1 = on. A switched-off video
+        // isn't decoded (an 8K file would use the CPU for nothing) and carries on from here.
+        double offAt = -1;
         bool gpuFrames = false; // its texture takes hardware-decoded frames (render target) rather than uploads
         bool wantSoftwareVideo = false, softwareVideo = false;  // the GPU can't convert its frames: decoded on the CPU instead
     };
