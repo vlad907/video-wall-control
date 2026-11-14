@@ -299,6 +299,7 @@ with tempfile.TemporaryDirectory() as tmp:
         call("PUT", "/api/layout", {"fallbackImage": ""})
 
         print("video file:", flush=True)
+        can_video = False
         clip = open(os.path.join(here, "test-clip.mp4"), "rb").read()  # 1 s red, then 1 s blue (H.264, 30 fps)
         req = urllib.request.Request(BASE + "/api/media?name=clip.mp4", method="POST", data=clip, headers={"Content-Type": "video/mp4"})
         with urllib.request.urlopen(req, timeout=20) as r:
@@ -314,6 +315,7 @@ with tempfile.TemporaryDirectory() as tmp:
             print("  skip this machine can't decode H.264 (no Media Foundation): video checks skipped", flush=True)
         else:
             check(st.get("video", {}).get("codec") == "H.264" and st["video"]["width"] == 320, "video opened (H.264, 320x180)")
+            can_video = True
             shows = lambda rgb: close(pixel(frame("out-1"), *spot), rgb, 40)
             # A GPU that can't convert decoded frames makes the engine decode on the CPU instead.
             wait_for(lambda: vstatus().get("status") in ("playing", "paused") and frame_id() and shows((255, 0, 0)) or shows((0, 0, 255)), timeout=20)
@@ -347,6 +349,128 @@ with tempfile.TemporaryDirectory() as tmp:
                 check(bool(decoder), f"the status names the decoder it got ({decoder})")
         call("DELETE", f"/api/sources/{vid['id']}")
         call("DELETE", "/api/media/clip.mp4")
+
+        # Arrangements: a group's area divided into slots with one stream each, switched from a
+        # control system (Blue Vue). The streams here don't exist; only where they go is checked.
+        print("arrangements and slots:", flush=True)
+        call("POST", "/api/walls", {"name": "Ultra", "cols": 1, "rows": 1, "outputWidth": 3840, "outputHeight": 1080, "x": 0, "y": 1080})
+        def group(gid="ultra"):
+            return next(x for x in json.loads(get("/api/control")[1])["groups"] if x["id"] == gid)
+        def group_sources(gid="ultra"):
+            return [x for x in json.loads(get("/api/layout")[1])["sources"] if x.get("group") == gid]
+        g = group()
+        check([(a["id"], a["slots"]) for a in g["arrangements"]] == [("full", 1), ("two", 2), ("quad", 4), ("five", 5)] and not g["on"] and g["slots"] == [],
+              f"a group lists its arrangements, and starts with no content ({[(a['id'], a['slots']) for a in g['arrangements']]})")
+        cams = [f"PC (Cam {i})" for i in range(1, 6)]
+        r = call("POST", "/api/walls/ultra/arrange", {"arrangement": "five", "streams": cams})
+        g = group()
+        check(r["arrangement"] == "five" and g["on"] and [x["ndiName"] for x in g["slots"]] == cams and g["slots"][0]["name"] == "Main",
+              "five streams: a main one and two each side")
+        rects = {x["slot"]: (x["rect"]["x"], x["rect"]["y"], x["rect"]["w"], x["rect"]["h"]) for x in group_sources()}
+        check(rects == {1: (960, 1080, 1920, 1080), 2: (0, 1080, 960, 540), 3: (0, 1620, 960, 540), 4: (2880, 1080, 960, 540), 5: (2880, 1620, 960, 540)},
+              f"on a 32:9 group the main picture and the four small ones are all 16:9 ({rects})")
+        call("POST", "/api/walls/ultra/slots/3", {"ndiName": "PC (Replay)"})
+        g = group()
+        check([x["ndiName"] for x in g["slots"]] == cams[:2] + ["PC (Replay)"] + cams[3:], "one slot changes, the others carry on")
+        call("POST", "/api/walls/ultra/slots/5", {})
+        g = group()
+        check(g["slots"][4]["signal"] == "empty" and g["slots"][4]["ndiName"] == "" and len(group_sources()) == 4, "a slot can be emptied")
+        call("POST", "/api/walls/ultra/arrange", {"arrangement": "two"})
+        g = group()
+        check(g["arrangement"] == "two" and [x["ndiName"] for x in g["slots"]] == cams[:2], "switching arrangement keeps the first slots' streams")
+        rects = sorted((x["rect"]["x"], x["rect"]["w"]) for x in group_sources())
+        check(rects == [(0, 1920), (1920, 1920)], f"two side by side ({rects})")
+        pause(0.5)
+        call("POST", "/api/walls/ultra/content", {"on": False})
+        g = group()
+        check(not g["on"] and g["canRestore"] and not group_sources(), "switched off, the group has no content of its own (it follows what's under it)")
+        call("POST", "/api/walls/ultra/content", {"on": True})
+        g = group()
+        check(g["on"] and g["arrangement"] == "two" and [x["ndiName"] for x in g["slots"]] == cams[:2], "switched on, its arrangement and streams are back")
+        call("POST", "/api/walls/ultra/clear")
+        call("POST", "/api/walls/ultra/slots/2", {"ndiName": "PC (Late)"})
+        g = group()
+        check(g["on"] and [x["ndiName"] for x in g["slots"]] == [cams[0], "PC (Late)"], "a slot changed while off switches the group back on with it")
+        call("POST", "/api/walls/ultra/show", {"ndiName": "PC (Whole)"})
+        g = group()
+        check(g["arrangement"] == "full" and [x["ndiName"] for x in g["slots"]] == ["PC (Whole)"], "showing one stream is the arrangement 'full'")
+        def refused(path, body):
+            try:
+                call("POST", path, body)
+                return False
+            except urllib.error.HTTPError as ex:
+                return ex.code == 400
+        check(refused("/api/walls/ultra/arrange", {"arrangement": "nine"}) and refused("/api/walls/ultra/slots/2", {"ndiName": "x"})
+              and refused("/api/walls/ultra/slots/1", {"playlist": "../x"}), "an unknown arrangement, slot or bad playlist name is refused")
+        call("POST", "/api/walls/ultra/arrange", {"arrangement": "quad", "slots": [{"ndiName": cams[0]}, {"playlist": "Loop"}, {}, {"ndiName": cams[3]}]})
+        saved = call("POST", "/api/walls/ultra/presets", {"name": "Quad mix"})
+        call("POST", "/api/walls/ultra/show", {"ndiName": "PC (Whole)"})
+        call("POST", "/api/walls/ultra/presets/quad-mix/recall", {})
+        g = group()
+        check(g["arrangement"] == "quad" and [x["ndiName"] or x["playlist"] for x in g["slots"]] == [cams[0], "Loop", "", cams[3]] and g["activePreset"] == "quad-mix",
+              "a preset brings back the arrangement and what each slot played")
+        # Grid groups also offer one stream per panel, laid on the panels (bezel gaps left out).
+        g = group("wall")
+        check([(a["id"], a["slots"]) for a in g["arrangements"]][:2] == [("full", 1), ("panels", g["displays"])] and g["displays"] > 1,
+              f"a group of several panels also offers one stream per panel ({g['displays']} panels)")
+        call("POST", "/api/walls/wall/arrange", {"arrangement": "panels", "streams": cams[:g["displays"]]})
+        crops = sorted((o["crop"]["x"], o["crop"]["y"], o["crop"]["w"], o["crop"]["h"]) for o in json.loads(get("/api/layout")[1])["outputs"] if o.get("group") == "wall")
+        rects = sorted((x["rect"]["x"], x["rect"]["y"], x["rect"]["w"], x["rect"]["h"]) for x in group_sources("wall"))
+        check(rects == crops, f"each stream covers exactly its panel ({rects})")
+        call("POST", "/api/walls/wall/clear")
+
+        print("background and playlists:", flush=True)
+        ctl = json.loads(get("/api/control")[1])
+        check(ctl["background"] == {"on": False, "chosen": False, "ndiName": "", "playlist": "", "video": "", "signal": "empty"}, f"no background to start with ({ctl['background']})")
+        check(refused("/api/background", {"on": True}), "switching on a background that was never chosen is refused")
+        bg = call("POST", "/api/background", {"ndiName": "PC (Ambient)"})
+        lay = json.loads(get("/api/layout")[1])
+        first = lay["sources"][0]
+        check(bg["on"] and bg["ndiName"] == "PC (Ambient)" and first["id"] == "background" and
+              (first["rect"]["w"], first["rect"]["h"]) == (lay["canvas"]["width"], lay["canvas"]["height"]), "the background is one stream under everything, covering the canvas")
+        bg = call("POST", "/api/background", {"on": False})
+        check(not bg["on"] and bg["ndiName"] == "PC (Ambient)" and not json.loads(get("/api/layout")[1])["sources"][0]["enabled"], "switched off, it remembers its stream")
+        bg = call("POST", "/api/background", {"on": True})
+        check(bg["on"] and bg["ndiName"] == "PC (Ambient)", "and comes back on with it")
+        pl = call("POST", "/api/playlists", {"name": "Loop"})
+        check(pl["id"] == "Loop" and pl["videos"] == 0, "a playlist is a folder of videos")
+        for name in ("b.mp4", "a.mp4"):
+            req = urllib.request.Request(BASE + f"/api/media?name={name}&playlist=Loop", method="POST", data=clip, headers={"Content-Type": "video/mp4"})
+            urllib.request.urlopen(req, timeout=20).read()
+        pls = json.loads(get("/api/playlists")[1])["playlists"]
+        check([(p["id"], [f["name"] for f in p["files"]]) for p in pls] == [("Loop", ["a.mp4", "b.mp4"])], f"videos uploaded into it are listed in play order ({pls})")
+        check(json.loads(get("/api/control")[1])["playlists"] == [{"id": "Loop", "name": "Loop", "videos": 2}], "control lists the playlists")
+        check(not any(f["name"] in ("a.mp4", "b.mp4") for f in json.loads(get("/api/media")[1])["files"]), "and they stay out of the single-file media list")
+        bg = call("POST", "/api/background", {"playlist": "Loop"})
+        check(bg["on"] and bg["playlist"] == "Loop" and bg["ndiName"] == "", "a playlist can be the background")
+        if can_video:
+            def playing():
+                st = next((x for x in json.loads(get("/api/sources")[1])["sources"] if x["id"] == "background"), {}).get("status") or {}
+                return (st.get("video") or {}).get("file", "")
+            seen = []
+            def step():
+                f = playing()
+                if f and (not seen or seen[-1] != f):
+                    seen.append(f)
+                return len(seen) >= 3
+            wait_for(step, timeout=25, every=0.1)
+            check(seen[:3] == ["Loop/a.mp4", "Loop/b.mp4", "Loop/a.mp4"], f"the playlist plays its videos in order and starts over ({seen})")
+            # A video added while it plays joins in.
+            req = urllib.request.Request(BASE + "/api/media?name=c.mp4&playlist=Loop", method="POST", data=clip, headers={"Content-Type": "video/mp4"})
+            urllib.request.urlopen(req, timeout=20).read()
+            check(wait_for(lambda: playing() == "Loop/c.mp4", timeout=25, every=0.1), "a video added to the folder is played too")
+            # The same playlist in a slot of a group: its picture is on that part of the wall.
+            call("POST", "/api/walls/ultra/arrange", {"arrangement": "two", "slots": [{"playlist": "Loop"}, {}]})
+            left = lambda: pixel(frame("ultra-1"), 400, 500)
+            check(wait_for(lambda: close(left(), (255, 0, 0), 40) or close(left(), (0, 0, 255), 40), timeout=20, every=0.1), f"a playlist plays in a slot {left()}")
+        else:
+            print("  skip playlist playback: this machine can't decode the test clip", flush=True)
+        call("DELETE", "/api/sources/background")
+        call("DELETE", "/api/walls/ultra?outputs=delete")
+        call("DELETE", "/api/playlists/Loop/a.mp4")
+        check([f["name"] for f in json.loads(get("/api/playlists")[1])["playlists"][0]["files"]][:1] == ["b.mp4"], "a video can be removed from a playlist")
+        call("DELETE", "/api/playlists/Loop")
+        check(json.loads(get("/api/playlists")[1])["playlists"] == [], "and the playlist deleted")
 
         print("layout history:", flush=True)
         hist = json.loads(get("/api/layouts/ci/history")[1])["history"]

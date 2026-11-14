@@ -205,6 +205,32 @@ bool safeMediaName(const std::string& name) {
     return !name.empty() && name.find_first_of("/\\") == std::string::npos && name.find("..") == std::string::npos && !mediaKind(name).empty();
 }
 
+// A playlist's name: a folder inside the media folder (no path separators, no "..").
+bool safeFolderName(const std::string& name) {
+    return !name.empty() && name.size() <= 80 && name[0] != '.' && name.find_first_of("/\\:*?\"<>|") == std::string::npos && name.find("..") == std::string::npos;
+}
+
+// What a request wants a slot or the background to play: {"ndiName": ...}, {"playlist": ...}
+// or {"video": ...} (the first one given wins), or just a string, an NDI stream's name.
+// Nothing given = empty. Returns why not, or "".
+std::string slotContentFrom(const json& j, SlotContent& c) {
+    c = {};
+    if (j.is_string()) return c.ndiName = j.get<std::string>(), "";
+    if (!j.is_object()) return j.is_null() ? "" : "a slot is an NDI stream name or {ndiName | playlist | video}";
+    auto text = [&](const char* key) { return j.contains(key) && j.at(key).is_string() ? j.at(key).get<std::string>() : std::string(); };
+    if (!text("ndiName").empty()) c.ndiName = text("ndiName");
+    else if (!text("playlist").empty()) {
+        if (!safeFolderName(text("playlist"))) return "bad playlist name";
+        c.playlist = text("playlist");
+    } else if (!text("video").empty()) {
+        if (!safeMediaName(text("video")) || mediaKind(text("video")) != "video") return "video must be a video file in the media folder";
+        c.video = text("video");
+    }
+    return "";
+}
+
+json slotContentJson(const SlotContent& c) { return {{"ndiName", c.ndiName}, {"playlist", c.playlist}, {"video", c.video}}; }
+
 bool isVideoName(const std::string& name) { return name.ends_with(".mp4") || name.ends_with(".mov") || name.ends_with(".m4v"); }
 
 const char* mediaType(const std::string& name) {
@@ -348,6 +374,76 @@ struct HttpApi::Impl {
     }
 
     // Config plus live status (from its last check-in) of one endpoint.
+    // Source ids whose NDI stream has sent nothing for a while.
+    std::set<std::string> lostSources() {
+        std::set<std::string> lost;
+        for (auto& st : eng().sourceStatus())
+            if (st.value("signal", "") == "lost") lost.insert(st.value("id", ""));
+        return lost;
+    }
+
+    // A group as control systems see its arrangement: whether it shows content of its own, how
+    // its area is divided, what each slot plays, and the arrangements it can switch to.
+    json groupControl(const Layout& l, const WallConfig& w, const std::set<std::string>* lostIn = nullptr) {
+        std::set<std::string> own;
+        if (!lostIn) own = lostSources();
+        const std::set<std::string>& lost = lostIn ? *lostIn : own;
+        auto all = groupArrangements(l, w);
+        json arrangements = json::array(), slots = json::array();
+        for (auto& a : all) {
+            arrangements.push_back({{"id", a.id}, {"name", a.name}, {"slots", a.slots.size()}});
+            if (a.id != w.arrangement) continue;
+            auto content = groupSlots(l, w);
+            for (size_t i = 0; i < a.slots.size(); ++i) {
+                json j = slotContentJson(content[i]);
+                j["slot"] = i + 1;
+                j["name"] = a.slots[i].name;
+                j["rect"] = a.slots[i].rect;
+                std::string signal = content[i].empty() ? "empty" : "ok";
+                for (auto& src : l.sources)
+                    if (src.group == w.id && src.slot == static_cast<int>(i + 1) && lost.count(src.id)) signal = "lost";
+                j["signal"] = signal;
+                slots.push_back(j);
+            }
+        }
+        bool on = std::any_of(l.sources.begin(), l.sources.end(), [&](auto& s) { return s.group == w.id; });
+        Rect b = wallBounds(w);
+        return {{"group", w.id},     {"on", on},           {"canRestore", !on && !w.parked.empty()}, {"arrangement", on ? w.arrangement : ""},
+                {"slots", on ? slots : json::array()},     {"arrangements", arrangements},           {"width", b.w}, {"height", b.h}};
+    }
+
+    json backgroundControl(const Layout& l, const std::set<std::string>* lostIn = nullptr) {
+        const SourceConfig* bg = backgroundSource(l);
+        json j = slotContentJson(bg ? contentOf(*bg) : SlotContent{});
+        j["on"] = bg && bg->enabled;
+        j["chosen"] = bg != nullptr;
+        std::set<std::string> lost = lostIn ? *lostIn : lostSources();
+        j["signal"] = !bg ? "empty" : lost.count(bg->id) ? "lost" : "ok";
+        return j;
+    }
+
+    // The playlists (folders of videos in the media folder), by name.
+    json playlists(bool withFiles) {
+        json out = json::array();
+        std::error_code ec;
+        for (auto& d : std::filesystem::directory_iterator(canvases.mediaDir(), ec)) {
+            std::string name = utf8(d.path().filename());
+            if (!d.is_directory(ec) || !safeFolderName(name)) continue;
+            json files = json::array();
+            std::error_code ec2;
+            for (auto& e : std::filesystem::directory_iterator(d.path(), ec2)) {
+                std::string file = utf8(e.path().filename());
+                if (e.is_regular_file(ec2) && mediaKind(file) == "video") files.push_back({{"name", file}, {"bytes", e.file_size(ec2)}});
+            }
+            std::sort(files.begin(), files.end(), [](auto& a, auto& b) { return a["name"] < b["name"]; });
+            json p = {{"id", name}, {"name", name}, {"videos", files.size()}};
+            if (withFiles) p["files"] = files;
+            out.push_back(p);
+        }
+        std::sort(out.begin(), out.end(), [](auto& a, auto& b) { return a["name"] < b["name"]; });
+        return out;
+    }
+
     json endpointView(const Layout& l, const Endpoint& e, const std::vector<std::string>& discovered) {
         json j = e;
         json displays = endpointDisplays(l, e, discovered);
@@ -877,7 +973,12 @@ struct HttpApi::Impl {
         s.Post("/api/media", [this](const httplib::Request& req, httplib::Response& res, const httplib::ContentReader& content) {
             std::string name = mediaName(req.get_param_value("name"));
             if (name.empty()) return sendError(res, 400, "name must be an image (.png .jpg .bmp .gif) or video (.mp4 .mov .m4v) file name");
-            auto path = canvases.mediaDir() / name;
+            // ?playlist=<folder>: into that playlist (videos only); the folder is made if it's new.
+            std::string folder = req.get_param_value("playlist");
+            if (!folder.empty() && (!safeFolderName(folder) || !isVideoName(name))) return sendError(res, 400, "a playlist takes videos (.mp4 .mov .m4v), and its name has no / \\ : * ? \" < > |");
+            std::error_code dirEc;
+            if (!folder.empty()) std::filesystem::create_directories(canvases.mediaDir() / pathFromUtf8(folder), dirEc);
+            auto path = folder.empty() ? canvases.mediaDir() / name : canvases.mediaDir() / pathFromUtf8(folder) / name;
             auto tmp = path;
             tmp += ".part";
             uint64_t bytes = 0;
@@ -1173,6 +1274,111 @@ struct HttpApi::Impl {
         }));
 
         // ---- one-call summary for control systems ----
+        // ---- arrangements: a group's area divided into slots, one stream each ----
+        // {"arrangement": "quad", "streams": ["PC (Cam 1)", ...]} or "slots": [{"ndiName" | "playlist" | "video"}, ...]
+        // in slot order. Without streams / slots, the slots keep what they played.
+        s.Post(R"(/api/walls/([A-Za-z0-9_\-]+)/arrange)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            json body = parseBody(req);
+            const WallConfig* w = store.active()->findWall(id);
+            if (!w) return sendError(res, 404, "no such wall group");
+            std::string arrangement = body.value("arrangement", "");
+            if (arrangement.empty()) return sendError(res, 400, "arrangement is required (GET /api/control lists each group's)");
+            std::vector<SlotContent> content;
+            const char* key = body.contains("slots") ? "slots" : body.contains("streams") ? "streams" : nullptr;
+            if (key) {
+                if (!body.at(key).is_array()) return sendError(res, 400, std::string(key) + " must be a list");
+                for (auto& item : body.at(key)) {
+                    SlotContent c;
+                    if (std::string why = slotContentFrom(item, c); !why.empty()) return sendError(res, 400, why);
+                    content.push_back(c);
+                }
+            }
+            int ms = body.value("transitionMs", 0);
+            if (ms > 0) eng().captureForTransition(ms, wallBounds(*w));
+            std::string error;
+            bool ok = store.mutateActive([&](Layout& l) { return arrangeGroup(l, id, arrangement, key ? &content : nullptr, error); });
+            if (!ok) return sendError(res, 400, error);
+            sendJson(res, groupControl(*store.active(), *store.active()->findWall(id)));
+        }));
+        // One slot (1..N) of the group's arrangement: {"ndiName" | "playlist" | "video"}; {} empties it.
+        s.Post(R"(/api/walls/([A-Za-z0-9_\-]+)/slots/([0-9]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            int slot = std::stoi(std::string(req.matches[2]).substr(0, 4));
+            json body = parseBody(req);
+            const WallConfig* w = store.active()->findWall(id);
+            if (!w) return sendError(res, 404, "no such wall group");
+            SlotContent c;
+            if (std::string why = slotContentFrom(body, c); !why.empty()) return sendError(res, 400, why);
+            int ms = body.value("transitionMs", 0);
+            if (ms > 0) eng().captureForTransition(ms, wallBounds(*w));
+            std::string error;
+            bool ok = store.mutateActive([&](Layout& l) { return setGroupSlot(l, id, slot, c, error); });
+            if (!ok) return sendError(res, 400, error);
+            sendJson(res, groupControl(*store.active(), *store.active()->findWall(id)));
+        }));
+        // {"on": false}: the group's content is put aside and it shows what's under it (the rest
+        // of the mosaic, the background). {"on": true}: its content comes back.
+        s.Post(R"(/api/walls/([A-Za-z0-9_\-]+)/content)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            json body = parseBody(req);
+            const WallConfig* w = store.active()->findWall(id);
+            if (!w) return sendError(res, 404, "no such wall group");
+            if (!body.contains("on") || !body.at("on").is_boolean()) return sendError(res, 400, "on (true or false) is required");
+            int ms = body.value("transitionMs", 0);
+            if (ms > 0) eng().captureForTransition(ms, wallBounds(*w));
+            std::string error;
+            bool ok = store.mutateActive([&](Layout& l) { return setGroupContentOn(l, id, body.at("on").get<bool>(), error); });
+            if (!ok) return sendError(res, 400, error);
+            sendJson(res, groupControl(*store.active(), *store.active()->findWall(id)));
+        }));
+        // ---- background: one stream under the whole canvas ----
+        s.Get("/api/background", guard([this](const httplib::Request&, httplib::Response& res) { sendJson(res, backgroundControl(*store.active())); }));
+        // {"on": true, "ndiName" | "playlist" | "video": ...}: what it plays (optional: without
+        // it, only switched on or off, keeping the stream chosen before).
+        s.Post("/api/background", guard([this](const httplib::Request& req, httplib::Response& res) {
+            json body = parseBody(req);
+            SlotContent c;
+            if (std::string why = slotContentFrom(body, c); !why.empty()) return sendError(res, 400, why);
+            bool on = body.value("on", true);
+            int ms = body.value("transitionMs", 0);
+            if (ms > 0) eng().captureForTransition(ms);
+            std::string error;
+            bool ok = store.mutateActive([&](Layout& l) { return setBackground(l, on, c.empty() ? nullptr : &c, error); });
+            if (!ok) return sendError(res, 400, error);
+            sendJson(res, backgroundControl(*store.active()));
+        }));
+        // ---- playlists: folders of videos inside the media folder ----
+        s.Get("/api/playlists", guard([this](const httplib::Request&, httplib::Response& res) {
+            sendJson(res, {{"playlists", playlists(true)}, {"folder", utf8(std::filesystem::absolute(canvases.mediaDir()))}});
+        }));
+        // {"name": "Game day"}: makes the (empty) folder. Videos go in by upload
+        // (POST /api/media?name=clip.mp4&playlist=Game day) or by copying files into the folder.
+        s.Post("/api/playlists", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string name = parseBody(req).value("name", "");
+            if (!safeFolderName(name)) return sendError(res, 400, "name is required, without / \\ : * ? \" < > |");
+            std::error_code ec;
+            std::filesystem::create_directories(canvases.mediaDir() / pathFromUtf8(name), ec);
+            if (ec) return sendError(res, 500, ec.message());
+            sendJson(res, {{"id", name}, {"name", name}, {"videos", 0}, {"files", json::array()}}, 201);
+        }));
+        // A video of a playlist, or with no file name the whole playlist (the folder and its videos).
+        s.Delete(R"(/api/playlists/([^/]+)(?:/([^/]+))?)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string name = req.matches[1], file = req.matches[2];
+            if (!safeFolderName(name) || (!file.empty() && !safeMediaName(file))) return sendError(res, 404, "no such playlist or video");
+            auto dir = canvases.mediaDir() / pathFromUtf8(name);
+            std::error_code ec;
+            if (!std::filesystem::is_directory(dir, ec)) return sendError(res, 404, "no such playlist");
+            if (!file.empty()) {
+                if (!std::filesystem::remove(dir / pathFromUtf8(file), ec)) return sendError(res, 404, "no such video in the playlist");
+                return sendJson(res, {{"deleted", file}});
+            }
+            for (auto& e : std::filesystem::directory_iterator(dir, ec))
+                if (!mediaKind(utf8(e.path().filename())).empty() || e.path().extension() == ".part") std::filesystem::remove(e.path(), ec);
+            std::filesystem::remove(dir, ec);  // only if nothing else is in it
+            sendJson(res, {{"deleted", name}});
+        }));
+
         s.Get("/api/control", guard([this](const httplib::Request&, httplib::Response& res) {
             auto l = store.active();
             std::set<std::string> lost;  // source ids whose NDI stream has no signal
@@ -1187,13 +1393,15 @@ struct HttpApi::Impl {
                         showing.push_back({{"name", src.name}, {"type", toString(src.type)}, {"ndiName", src.ndiName}, {"signal", lost.count(src.id) ? "lost" : "ok"}});
                         if (lost.count(src.id)) noSignal.push_back(src.name);
                     }
-                groups.push_back({{"id", w.id},
-                                  {"name", w.name},
-                                  {"displays", w.cols * w.rows},
-                                  {"activePreset", w.activePreset},
-                                  {"presets", presets},
-                                  {"showing", showing},
-                                  {"noSignal", noSignal}});
+                json g = {{"id", w.id},
+                          {"name", w.name},
+                          {"displays", w.cols * w.rows},
+                          {"activePreset", w.activePreset},
+                          {"presets", presets},
+                          {"showing", showing},
+                          {"noSignal", noSignal}};
+                g.update(groupControl(*l, w, &lost));
+                groups.push_back(g);
             }
             json scenes = json::array(), layouts = json::array();
             for (auto& sc : l->scenes) scenes.push_back({{"id", sc.id}, {"name", sc.name}});
@@ -1216,6 +1424,8 @@ struct HttpApi::Impl {
                            {"endpoints", endpoints},
                            {"scenes", scenes},
                            {"layouts", layouts},
+                           {"background", backgroundControl(*l, &lost)},
+                           {"playlists", playlists(false)},
                            {"ndi", {{"available", eng().ndiAvailable()}, {"streams", eng().discoveredNdiSources()}}}});
         }));
 

@@ -68,6 +68,11 @@ their names.
 | Everything a control system needs: groups, presets, what's on, streams | `GET /api/control` |
 | Recall a preset on a group | `POST /api/walls/{group}/presets/{preset}/recall` |
 | Show one NDI stream on a whole group | `POST /api/walls/{group}/show` with `{"ndiName": "..."}` |
+| Divide a group into slots and fill them (one stream, two, four, five, one per panel) | `POST /api/walls/{group}/arrange` with `{"arrangement": "quad", "streams": [...]}` |
+| Change what one slot plays | `POST /api/walls/{group}/slots/{n}` with `{"ndiName": "..."}` or `{"playlist": "..."}` |
+| Switch a group's own content off (it follows what's under it) or back on | `POST /api/walls/{group}/content` with `{"on": false}` |
+| Background under the whole canvas: choose it, switch it on or off | `POST /api/background` with `{"on": true, "ndiName": "..."}` |
+| Playlists (folders of videos) | `GET /api/playlists` |
 | Blank a group | `POST /api/walls/{group}/clear` |
 | Restart the videos a group shows, together | `POST /api/walls/{group}/restart` |
 | Recall a scene (all groups) | `POST /api/scenes/{scene}/recall` |
@@ -174,6 +179,102 @@ Reply:
 
 `ndiName` is required (`400` without it). The name isn't checked against discovery: if
 nothing on the network has that name, the group shows near-black grey ("no signal") until it appears.
+
+### Arrangements: `POST /api/walls/{group}/arrange`
+
+An arrangement divides a group's area into **slots**, each playing one stream. Every group offers:
+
+| Arrangement | Slots, in order |
+|---|---|
+| `full` | 1: the whole group |
+| `two` | 1 left, 2 right |
+| `quad` | 1 top left, 2 top right, 3 bottom left, 4 bottom right |
+| `five` | 1 main (the middle half, full height), 2 left top, 3 left bottom, 4 right top, 5 right bottom. On a 32:9 group all five pictures are 16:9 |
+| `panels` | one slot per panel, row by row, bezel gaps left out. Only groups of several panels |
+
+```json
+{ "arrangement": "five", "streams": ["PC (Cam 1)", "PC (Cam 2)", "PC (Cam 3)", "PC (Cam 4)", "PC (Cam 5)"], "transitionMs": 500 }
+```
+
+- `streams` are NDI names in slot order. To mix kinds, send `slots` instead:
+  `[{"ndiName": "PC (Cam 1)"}, {"playlist": "Game day"}, {"video": "clip.mp4"}, {}]` (`{}` = nothing in that slot).
+- Without `streams` or `slots`, the slots keep what they played, by number: going from `quad` to
+  `full` keeps slot 1's stream, and going back to `quad` starts with only slot 1 filled.
+- `400` if the group has no such arrangement.
+- `POST /api/walls/{group}/show` is the same as `full` with one NDI stream.
+
+The reply, and each group in `GET /api/control`, describes the result:
+
+```json
+{
+  "group": "ultrawide", "on": true, "canRestore": false, "arrangement": "two",
+  "slots": [
+    { "slot": 1, "name": "Left",  "ndiName": "PC (Cam 1)", "playlist": "", "video": "", "signal": "ok" },
+    { "slot": 2, "name": "Right", "ndiName": "", "playlist": "Game day", "video": "", "signal": "ok" }
+  ],
+  "arrangements": [ { "id": "full", "name": "One stream", "slots": 1 }, { "id": "two", "name": "Two side by side", "slots": 2 } ]
+}
+```
+
+`signal` is `ok`, `lost` (an NDI stream that sends nothing) or `empty`. `arrangement` is `""` when the
+group's content was placed by hand in the editor, or when it is off. Presets remember the arrangement
+they were saved with.
+
+### `POST /api/walls/{group}/slots/{n}`
+
+Changes what one slot plays; the other slots carry on untouched.
+
+```json
+{ "ndiName": "PC (Replay)", "transitionMs": 300 }
+```
+
+Send `ndiName`, `playlist` or `video`; `{}` empties the slot. On a group with no arrangement yet (or
+one that is off), slot 1 makes it `full`. `400` if the arrangement has no slot `n`.
+
+### `POST /api/walls/{group}/content`
+
+```json
+{ "on": false, "transitionMs": 500 }
+```
+
+`{"on": false}` puts the group's content aside: the group then shows what lies under it on the
+canvas (the rest of the mosaic, the background). `{"on": true}` brings the same arrangement and
+streams back. `clear` does the same as `{"on": false}`. `400` for `{"on": true}` on a group that
+never had content.
+
+### Background: `GET /api/background` · `POST /api/background`
+
+One stream, playlist or video under everything, covering the whole canvas.
+
+```json
+{ "on": true, "ndiName": "PC (Ambient)", "transitionMs": 1000 }
+```
+
+- With `ndiName`, `playlist` or `video`: that becomes the background.
+- With only `on`: switched on or off; it remembers what it plays.
+- Reply, and `background` in `GET /api/control`:
+  `{"on": true, "chosen": true, "ndiName": "PC (Ambient)", "playlist": "", "video": "", "signal": "ok"}`.
+
+The background is the lowest layer. Groups that are on cover it; so does any other source placed
+over the whole canvas in the editor (a test pattern, for example): switch that off to see the background.
+
+### Playlists: `GET /api/playlists`
+
+A playlist is a folder of videos (`.mp4 .mov .m4v`) inside the media folder on the media server.
+It plays them in name order (`01-intro.mp4`, `02-promo.mp4`, ...), one after another, and starts over.
+Videos added to the folder while it plays join in; a file that can't be played is passed over.
+Use a playlist anywhere a stream goes: a slot (`{"playlist": "Game day"}`), or the background.
+
+| What | Request |
+|---|---|
+| List playlists and their videos (and the media folder's path) | `GET /api/playlists` |
+| Make one | `POST /api/playlists` with `{"name": "Game day"}` |
+| Add a video | `POST /api/media?name=clip.mp4&playlist=Game day`, the file as the body; or copy files into the folder |
+| Remove a video / the whole playlist | `DELETE /api/playlists/{name}/{file}` / `DELETE /api/playlists/{name}` |
+
+`GET /api/control` lists them as `playlists`: `[{"id": "Game day", "name": "Game day", "videos": 2}]`.
+Playlists play without sound. Videos the media server's GPU can't decode play slowly (see the
+source's status in the editor).
 
 ### `POST /api/walls/{group}/clear`
 

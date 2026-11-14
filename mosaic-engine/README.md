@@ -444,6 +444,11 @@ Across the whole source there's also:
 | GET / POST | `/api/endpoints` | list endpoints with live status, plus PCs that checked in but aren't set up (`unassigned`) / create one: `{"name", "host", "player", "displays": [{"output", "screen", "part"}]}` (`player`: `studio_monitor` or `mosaic`; `part`: `{"cols", "rows", "index", "gapX", "gapY"}`, one stream cut across several screens) |
 | PUT / DELETE | `/api/endpoints/:id` | change `name`, `host`, `player` or `displays` / remove it (the PC keeps showing what it shows) |
 | GET | `/api/audio` | sound outputs' live status, the PC's sound devices and inputs; the outputs themselves are the layout's `audioOutputs` (`PUT /api/layout {"audioOutputs": [...]}`) |
+| POST | `/api/walls/:id/arrange` | divide a group into slots (`full`, `two`, `quad`, `five`, `panels`) and fill them: `{"arrangement", "streams": [...]}` or `"slots": [{"ndiName" \| "playlist" \| "video"}]` |
+| POST | `/api/walls/:id/slots/:n` | what one slot plays: `{"ndiName"}`, `{"playlist"}`, `{"video"}` or `{}` |
+| POST | `/api/walls/:id/content` | `{"on": false}`: the group follows what's under it; `{"on": true}`: its content comes back |
+| GET / POST | `/api/background` | one stream, playlist or video under the whole canvas: `{"on", "ndiName" \| "playlist" \| "video"}` |
+| GET / POST / DELETE | `/api/playlists` | folders of videos in the media folder, played in name order and started over; `POST {"name"}`, `DELETE /api/playlists/:name[/:file]`; upload with `POST /api/media?name=&playlist=` |
 | POST | `/api/endpoints/:id/identify` | `{"on": true}` (optional `"minutes"`, default 10): every screen of the PC shows its screen number, name and size and the display it's set up as, for mapping; `{"on": false}` ends it. Ends by itself, not saved. Mosaic Receiver only |
 | POST | `/api/endpoints/checkin` | used by the receiving PC's dashboard: `{host, screens, panels}`, reply is its assignment |
 | GET | `/api/control` | summary for control systems: groups with presets and what's on, scenes, layouts, NDI streams |

@@ -92,6 +92,8 @@ export interface Source {
   ndiName?: string;
   image?: string; // media file name (type "image")
   video?: string; // media file name (type "video")
+  playlist?: string; // type "video": a folder of videos in the media folder, played one after another
+  slot?: number; // which slot of its group's arrangement it fills (1..N)
   device?: string; // capture device name (type "capture")
   loop?: boolean; // video: start again at the end
   playing?: boolean; // video: false = paused
@@ -103,6 +105,43 @@ export interface Source {
   enabled: boolean;
   status?: { status: string; inputFps?: number; sentFps?: number; framesDropped?: number; width: number; height: number; signal?: "ok" | "lost"; showing?: string; video?: VideoStatus };
   group?: string; // wall group whose content this is (set by the group's presets)
+}
+
+// What a slot of a group's arrangement, or the background, plays: one of these, or nothing.
+export interface SlotContent {
+  ndiName?: string;
+  playlist?: string;
+  video?: string;
+}
+
+// A group as control systems see it (GET /api/control): how its area is divided and what each part plays.
+export interface GroupControl {
+  id: string;
+  on: boolean; // shows content of its own (off: it follows what's under it)
+  canRestore: boolean; // off, with content put aside that "on" brings back
+  arrangement: string; // "full", "two", "quad", "five", "panels"; "" = placed by hand, or off
+  arrangements: { id: string; name: string; slots: number }[];
+  slots: (Required<SlotContent> & { slot: number; name: string; signal: "ok" | "lost" | "empty" })[];
+}
+
+export interface BackgroundControl extends Required<SlotContent> {
+  on: boolean;
+  chosen: boolean;
+  signal: "ok" | "lost" | "empty";
+}
+
+export interface Playlist {
+  id: string;
+  name: string;
+  videos: number;
+  files?: { name: string; bytes: number }[];
+}
+
+export interface ControlInfo {
+  groups: GroupControl[];
+  background: BackgroundControl;
+  playlists: Playlist[];
+  ndi: { available: boolean; streams: string[] };
 }
 
 // What one wall group shows; source rects are relative to the group's top-left corner.
@@ -486,10 +525,10 @@ export const api = {
   media: () => call<{ files: MediaFile[]; folder: string }>("GET", "/api/media").then((r) => r.files),
   mediaFolder: () => call<{ files: MediaFile[]; folder: string }>("GET", "/api/media").then((r) => r.folder),
   // XHR rather than fetch, for upload progress (8K videos take a while).
-  uploadMedia: (file: File, onProgress?: (fraction: number) => void) =>
+  uploadMedia: (file: File, onProgress?: (fraction: number) => void, playlist?: string) =>
     new Promise<MediaFile>((resolve, reject) => {
       const x = new XMLHttpRequest();
-      x.open("POST", `/api/media?name=${encodeURIComponent(file.name)}`);
+      x.open("POST", `/api/media?name=${encodeURIComponent(file.name)}${playlist ? `&playlist=${encodeURIComponent(playlist)}` : ""}`);
       x.setRequestHeader("Content-Type", file.type || "application/octet-stream");
       const key = storedKey();
       if (key) x.setRequestHeader("X-Api-Key", key);
@@ -547,6 +586,15 @@ export const api = {
     call("POST", `/api/walls/${group}/presets/${id}/recall`, { transitionMs }),
   deleteGroupPreset: (group: string, id: string) => call("DELETE", `/api/walls/${group}/presets/${id}`),
   showOnGroup: (group: string, ndiName: string, transitionMs: number) => call("POST", `/api/walls/${group}/show`, { ndiName, transitionMs }),
+  control: () => call<ControlInfo>("GET", "/api/control"),
+  arrangeGroup: (group: string, arrangement: string, transitionMs: number) => call("POST", `/api/walls/${group}/arrange`, { arrangement, transitionMs }),
+  setGroupSlot: (group: string, slot: number, content: SlotContent, transitionMs: number) =>
+    call("POST", `/api/walls/${group}/slots/${slot}`, { ...content, transitionMs }),
+  setGroupContentOn: (group: string, on: boolean, transitionMs: number) => call("POST", `/api/walls/${group}/content`, { on, transitionMs }),
+  setBackground: (body: SlotContent & { on?: boolean; transitionMs?: number }) => call<BackgroundControl>("POST", "/api/background", body),
+  playlists: () => call<{ playlists: Playlist[]; folder: string }>("GET", "/api/playlists"),
+  createPlaylist: (name: string) => call<Playlist>("POST", "/api/playlists", { name }),
+  deletePlaylist: (name: string, file?: string) => call("DELETE", `/api/playlists/${encodeURIComponent(name)}${file ? `/${encodeURIComponent(file)}` : ""}`),
   clearGroup: (group: string, transitionMs: number) => call("POST", `/api/walls/${group}/clear`, { transitionMs }),
   endpoints: () => call<EndpointsInfo>("GET", "/api/endpoints"),
   createEndpoint: (e: Partial<Endpoint>) => call<EndpointView>("POST", "/api/endpoints", e),

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <future>
 #include <iostream>
 #include <set>
 
@@ -259,6 +260,38 @@ void Engine::run() {
         frameMs_.add(msBetween(tick, Clock::now()));
         renderRate_.tick();
     }
+}
+
+// A folder or file name inside the media folder: no path separators, no "..".
+static bool plainName(const std::string& name) {
+    return !name.empty() && name.find_first_of("/\\") == std::string::npos && name.find("..") == std::string::npos;
+}
+
+// The videos of a playlist folder in play order (by name, ignoring case), as paths relative
+// to the media folder ("folder/clip.mp4").
+static std::vector<std::string> playlistFiles(const std::filesystem::path& mediaDir, const std::string& folder) {
+    std::vector<std::string> files;
+    if (!plainName(folder)) return files;
+    auto lower = [](std::string v) {
+        for (auto& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return v;
+    };
+    std::error_code ec;
+    for (auto& e : std::filesystem::directory_iterator(mediaDir / pathFromUtf8(folder), ec)) {
+        std::string name = utf8(e.path().filename());
+        std::string l = lower(name);
+        if (e.is_regular_file(ec) && name[0] != '.' && (l.ends_with(".mp4") || l.ends_with(".mov") || l.ends_with(".m4v"))) files.push_back(folder + "/" + name);
+    }
+    std::sort(files.begin(), files.end(), [&](auto& a, auto& b) { return lower(a) < lower(b); });
+    return files;
+}
+
+// The file after `current` in the list, going round; the first when `current` isn't in it.
+static std::string playlistNext(const std::vector<std::string>& files, const std::string& current) {
+    if (files.empty()) return "";
+    auto it = std::find(files.begin(), files.end(), current);
+    if (it == files.end() || ++it == files.end()) return files.front();
+    return *it;
 }
 
 void Engine::renderFrame(const Layout& layout, uint64_t frameId, Clock::time_point tick, double seconds) {
@@ -666,6 +699,18 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
                 st["height"] = s.h;
             }
         } else if (s.cfg.type == SourceType::Video) {
+            if (!s.video && !s.cfg.playlist.empty() && plainName(s.cfg.playlist) && now - s.playlistTried > std::chrono::seconds(2)) {
+                // A playlist that had nothing to play: look again (videos may have been added).
+                s.playlistTried = now;
+                std::string next = playlistNext(playlistFiles(mediaDir_, s.cfg.playlist), s.videoFile);
+                if (!next.empty()) {
+                    std::string err;
+                    s.videoFile = next;
+                    s.video = openVideoFile(utf8(mediaDir_ / pathFromUtf8(next)), renderer_.nativeDevice(), false, err);
+                    if (s.video) s.error.clear(), s.playStart = now;
+                    else s.error = "cannot play " + next + ": " + err;
+                }
+            }
             if (!s.video) {
                 st["status"] = s.error;
             } else {
@@ -702,14 +747,46 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
                     // card): open the file again decoding on the CPU, which hands over BGRA.
                     s.softwareVideo = true;
                     std::string err;
-                    auto sw = openVideoFile(utf8(mediaDir_ / pathFromUtf8(s.cfg.video)), nullptr, s.cfg.loop, err);
+                    auto sw = openVideoFile(utf8(mediaDir_ / pathFromUtf8(s.videoFile)), nullptr, s.cfg.playlist.empty() && s.cfg.loop, err);
                     if (sw) {
                         s.video = std::move(sw);
                         s.playStart = now;
                         if (s.pausedAt >= 0) s.pausedAt = 0;
-                        std::cerr << "[engine] video '" << s.cfg.video << "': the GPU can't convert its frames, decoding on the CPU\n";
+                        std::cerr << "[engine] video '" << s.videoFile << "': the GPU can't convert its frames, decoding on the CPU\n";
                     } else {
                         s.error = "the GPU couldn't convert the video frame, and it can't be decoded on the CPU: " + err;
+                    }
+                }
+                if (!s.cfg.playlist.empty() && s.offAt < 0 && s.pausedAt < 0) {
+                    // Playlist: near the end of a file the next one is opened on another thread;
+                    // when this one has played out (or broke), the next takes over.
+                    double length = s.video->info().durationS;
+                    bool over = s.video->finished() || s.video->status() != "ok";
+                    if ((over || length <= 0 || t > length - 5.0) && !s.nextVideo.valid() && now - s.playlistTried > std::chrono::seconds(1)) {
+                        std::string next = playlistNext(playlistFiles(mediaDir_, s.cfg.playlist), s.videoFile);
+                        if (!next.empty()) {
+                            std::string path = utf8(mediaDir_ / pathFromUtf8(next));
+                            void* device = s.softwareVideo ? nullptr : renderer_.nativeDevice();
+                            s.nextVideo = std::async(std::launch::async, [path, device, next] {
+                                SourceState::NextVideo n;
+                                n.file = next;
+                                n.video = openVideoFile(path, device, false, n.error);
+                                return n;
+                            });
+                        }
+                    }
+                    if (over && s.nextVideo.valid() && s.nextVideo.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                        SourceState::NextVideo n = s.nextVideo.get();
+                        s.videoFile = n.file;  // a file that can't be played is passed over: the one after it is tried next
+                        if (n.video) {
+                            s.video = std::move(n.video);
+                            s.playStart = now;
+                            t = 0;
+                            s.error.clear();
+                        } else {
+                            s.playlistTried = now;
+                            std::cerr << "[engine] playlist '" << s.cfg.playlist << "': cannot play " << n.file << ": " << n.error << "\n";
+                        }
                     }
                 }
                 VideoInfo vi = s.video->info();
@@ -720,7 +797,8 @@ void Engine::updateSources(const Layout& layout, const std::set<std::string>& ne
                                {"positionS", vi.durationS > 0 ? std::fmod(t, vi.durationS) : t},
                                // Paused or off, the decoder idles: its last rate says nothing about the file.
                                {"decodeFps", s.pausedAt >= 0 || s.offAt >= 0 ? 0.0 : s.video->decodeFps()}, {"playing", s.pausedAt < 0},
-                               {"hdr", vi.hdr},      {"bitDepth", vi.bitDepth}};
+                               {"hdr", vi.hdr},      {"bitDepth", vi.bitDepth}, {"file", s.videoFile}};
+                if (!s.cfg.playlist.empty()) st["video"]["playlist"] = s.cfg.playlist;
                 st["width"] = s.w;
                 st["height"] = s.h;
             }
@@ -836,6 +914,8 @@ void Engine::restartVideo(const std::string& sourceId) {
 
 void Engine::destroySource(SourceState& s) {
     s.rx.reset();
+    if (s.nextVideo.valid()) s.nextVideo.wait();  // a playlist's next file, being opened
+    s.nextVideo = {};
     s.video.reset();  // before its textures: hardware decoders hold GPU surfaces
     for (int i = 0; i < s.texCount; ++i) renderer_.destroyTexture(s.tex[i]);
     for (TexId& t : s.packed)
@@ -965,13 +1045,14 @@ void Engine::reconcile(const Layout& layout) {
     for (auto it = sources_.begin(); it != sources_.end();) {
         const SourceConfig* c = layout.findSource(it->first);
         bool keep = c && c->type == it->second.cfg.type && c->ndiName == it->second.cfg.ndiName &&
-                    c->image == it->second.cfg.image && c->video == it->second.cfg.video && c->device == it->second.cfg.device &&
+                    c->image == it->second.cfg.image && c->video == it->second.cfg.video && c->playlist == it->second.cfg.playlist &&
+                    c->device == it->second.cfg.device &&
                     (c->type != SourceType::TestPattern || (c->rect.w == it->second.w && c->rect.h == it->second.h));
         if (keep) {
             if (c->animated != it->second.cfg.animated) it->second.patternDrawn = false;
             SourceState& v = it->second;
             if (v.video) {
-                if (c->loop != v.cfg.loop) v.video->setLoop(c->loop);
+                if (c->playlist.empty() && c->loop != v.cfg.loop) v.video->setLoop(c->loop);
                 double pos = v.offAt >= 0 ? v.offAt : std::chrono::duration<double>(Clock::now() - v.playStart).count();
                 if (!c->playing && v.pausedAt < 0) v.pausedAt = pos;  // pause: hold the position
                 if (c->playing && v.pausedAt >= 0) {                  // resume from it
@@ -1014,12 +1095,21 @@ void Engine::reconcile(const Layout& layout) {
             if (c.device.empty()) s.error = "no capture device chosen";
             else if (!(s.rx = openCapture(c.device, s.error))) std::cerr << "[engine] capture '" << c.device << "': " << s.error << "\n";
         } else if (c.type == SourceType::Video) {
-            bool safe = !c.video.empty() && c.video.find_first_of("/\\") == std::string::npos && c.video.find("..") == std::string::npos;
-            if (!safe) s.error = c.video.empty() ? "no video chosen" : "bad video name";
-            else {
+            if (!c.playlist.empty()) {
+                // A folder of videos: the first one now, the rest as each ends (see the frame loop).
+                auto files = playlistFiles(mediaDir_, c.playlist);
+                if (!plainName(c.playlist)) s.error = "bad playlist name";
+                else if (files.empty()) s.error = "playlist '" + c.playlist + "' has no videos (.mp4 .mov .m4v) yet", s.playlistTried = Clock::now();
+                else s.videoFile = files.front();
+            } else if (!plainName(c.video)) {
+                s.error = c.video.empty() ? "no video chosen" : "bad video name";
+            } else {
+                s.videoFile = c.video;
+            }
+            if (!s.videoFile.empty()) {
                 std::string err;
-                s.video = openVideoFile(utf8(mediaDir_ / pathFromUtf8(c.video)), renderer_.nativeDevice(), c.loop, err);
-                if (!s.video) s.error = "cannot play " + c.video + ": " + err;
+                s.video = openVideoFile(utf8(mediaDir_ / pathFromUtf8(s.videoFile)), renderer_.nativeDevice(), c.playlist.empty() && c.loop, err);
+                if (!s.video) s.error = "cannot play " + s.videoFile + ": " + err, s.playlistTried = Clock::now();
             }
             s.playStart = Clock::now();
             s.pausedAt = c.playing ? -1 : 0;

@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -94,6 +95,16 @@ private:
         double offAt = -1;
         bool gpuFrames = false; // its texture takes hardware-decoded frames (render target) rather than uploads
         bool wantSoftwareVideo = false, softwareVideo = false;  // the GPU can't convert its frames: decoded on the CPU instead
+        // The file playing, relative to the media folder (in a playlist: "folder/clip.mp4").
+        std::string videoFile;
+        // Playlist: the next file, opened ahead of time on another thread so the change from one
+        // video to the next doesn't hold up a frame.
+        struct NextVideo {
+            std::string file, error;
+            std::unique_ptr<VideoFileDecoder> video;
+        };
+        std::future<NextVideo> nextVideo;
+        Clock::time_point playlistTried{};  // last time a file couldn't be opened or the folder was empty
     };
     std::mutex videoRestartMutex_;
     std::vector<std::string> videoRestarts_;

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { dialog, toast } from "./Dialogs";
 import { api, storeKey, storedKey, type Layout, type LayoutVersion, type MediaFile } from "./api";
 import { AudioSection } from "./Audio";
+import { BackgroundSettings } from "./Arrangement";
 import { CanvasSettings } from "./CanvasSettings";
 import { UpdatesSection } from "./Updates";
 
@@ -142,6 +143,7 @@ export function SettingsPanel({ layout, onChanged, onError }: { layout: Layout; 
   return (
     <>
       <CanvasSettings layout={layout} onChanged={onChanged} onError={onError} />
+      <BackgroundSettings onChanged={onChanged} onError={onError} />
       <section className="list">
         <div className="list-head">
           <h3>Layout file</h3>

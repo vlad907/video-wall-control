@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { dialog, toast } from "./Dialogs";
 import { api, wallBounds, type Layout, type Wall } from "./api";
+import { GroupArrangement } from "./Arrangement";
 import { FADES } from "./Panels";
 import { MediaSelect } from "./Settings";
 
@@ -45,6 +46,7 @@ export function GroupContent({
 
   return (
     <>
+      <GroupArrangement wall={wall} fade={fade} onChanged={onChanged} onError={onError} />
       <div className="group">
         <h3>Showing now</h3>
         {showing.length === 0 ? (

@@ -110,10 +110,12 @@ void to_json(json& j, const SourceConfig& s) {
     if (s.type == SourceType::Capture) j["device"] = s.device;
     if (s.type == SourceType::Video) {
         j["video"] = s.video;
+        if (!s.playlist.empty()) j["playlist"] = s.playlist;
         j["loop"] = s.loop;
         j["playing"] = s.playing;
     }
     if (!s.group.empty()) j["group"] = s.group;
+    if (s.slot > 0) j["slot"] = s.slot;
 }
 
 void from_json(const json& j, SourceConfig& s) {
@@ -123,6 +125,8 @@ void from_json(const json& j, SourceConfig& s) {
     s.ndiName = j.value("ndiName", s.ndiName);
     s.image = j.value("image", s.image);
     s.video = j.value("video", s.video);
+    s.playlist = j.value("playlist", s.playlist);
+    s.slot = j.value("slot", s.slot);
     s.device = j.value("device", s.device);
     s.loop = j.value("loop", s.loop);
     s.playing = j.value("playing", s.playing);
@@ -135,11 +139,15 @@ void from_json(const json& j, SourceConfig& s) {
     s.group = j.value("group", s.group);
 }
 
-void to_json(json& j, const GroupPreset& p) { j = json{{"id", p.id}, {"name", p.name}, {"sources", p.sources}}; }
+void to_json(json& j, const GroupPreset& p) {
+    j = json{{"id", p.id}, {"name", p.name}, {"sources", p.sources}};
+    if (!p.arrangement.empty()) j["arrangement"] = p.arrangement;
+}
 
 void from_json(const json& j, GroupPreset& p) {
     p.id = j.value("id", p.id);
     p.name = j.value("name", p.name);
+    p.arrangement = j.value("arrangement", p.arrangement);
     if (j.contains("sources")) p.sources = j.at("sources").get<std::vector<SourceConfig>>();
 }
 
@@ -211,6 +219,8 @@ void to_json(json& j, const WallConfig& w) {
              {"gapX", w.gapX},       {"gapY", w.gapY},         {"x", w.x},
              {"y", w.y},             {"pixelFormat", toString(w.pixelFormat)}, {"fitCanvas", w.fitCanvas},
              {"presets", w.presets}, {"activePreset", w.activePreset}, {"fallbackImage", w.fallbackImage}};
+    if (!w.arrangement.empty()) j["arrangement"] = w.arrangement;
+    if (!w.parked.empty()) j["parked"] = w.parked, j["parkedArrangement"] = w.parkedArrangement;
 }
 
 void from_json(const json& j, WallConfig& w) {
@@ -230,6 +240,9 @@ void from_json(const json& j, WallConfig& w) {
     if (j.contains("presets")) w.presets = j.at("presets").get<std::vector<GroupPreset>>();
     w.activePreset = j.value("activePreset", w.activePreset);
     w.fallbackImage = j.value("fallbackImage", w.fallbackImage);
+    w.arrangement = j.value("arrangement", w.arrangement);
+    if (j.contains("parked")) w.parked = j.at("parked").get<std::vector<SourceConfig>>();
+    w.parkedArrangement = j.value("parkedArrangement", w.parkedArrangement);
 }
 
 void to_json(json& j, const EndpointDisplay& d) {
@@ -684,6 +697,7 @@ std::string saveGroupPreset(Layout& l, const std::string& groupId, const std::st
         if (rel.id.rfind(prefix, 0) == 0) rel.id = rel.id.substr(prefix.size());
         p.sources.push_back(rel);
     }
+    p.arrangement = w->arrangement;
     bool replaced = false;
     for (auto& existing : w->presets)
         if (existing.id == p.id) existing = p, replaced = true;
@@ -699,6 +713,7 @@ bool recallGroupPreset(Layout& l, const std::string& groupId, const std::string&
         if (p.id == presetId) {
             replaceGroupSources(l, *w, p.sources);
             w->activePreset = p.id;
+            w->arrangement = p.arrangement;
             return true;
         }
     return false;
@@ -713,20 +728,197 @@ bool deleteGroupPreset(Layout& l, const std::string& groupId, const std::string&
     return w->presets.size() != n;
 }
 
+// The group's content as it is now, relative to the group (as presets keep it).
+static std::vector<SourceConfig> groupContent(const Layout& l, const WallConfig& w) {
+    std::vector<SourceConfig> out;
+    Rect area = wallBounds(w);
+    std::string prefix = w.id + "--";
+    for (const auto& s : l.sources) {
+        if (s.group != w.id) continue;
+        SourceConfig rel = s;
+        rel.group.clear();
+        rel.rect.x -= area.x;
+        rel.rect.y -= area.y;
+        if (rel.id.rfind(prefix, 0) == 0) rel.id = rel.id.substr(prefix.size());
+        out.push_back(rel);
+    }
+    return out;
+}
+
 bool showOnGroup(Layout& l, const std::string& groupId, const std::string& ndiName) {
     WallConfig* w = findWallMut(l, groupId);
     if (!w) return false;
-    std::vector<SourceConfig> content;
-    if (!ndiName.empty()) {
-        SourceConfig s;
-        s.id = "live";
-        s.name = ndiName;
-        s.type = SourceType::Ndi;
-        s.ndiName = ndiName;
-        content.push_back(s);  // no rect: fills the group
+    if (ndiName.empty()) {
+        std::string error;
+        return setGroupContentOn(l, groupId, false, error);
     }
-    replaceGroupSources(l, *w, content);
+    SlotContent c;
+    c.ndiName = ndiName;
+    std::vector<SlotContent> content{c};
+    std::string error;
+    return arrangeGroup(l, groupId, "full", &content, error);
+}
+
+std::vector<Arrangement> groupArrangements(const Layout& l, const WallConfig& w) {
+    Rect b = wallBounds(w);
+    const int W = b.w, H = b.h;
+    std::vector<Arrangement> out;
+    out.push_back({"full", "One stream", {{"Whole", {0, 0, W, H}}}});
+    if (w.cols * w.rows > 1) {
+        // One per panel: where each panel's output looks on the canvas, so bezel gaps stay out of the pictures.
+        Arrangement a{"panels", "One stream per panel", {}};
+        for (auto& o : l.outputs)
+            if (o.group == w.id && o.source == "canvas")
+                a.slots.push_back({"Panel " + std::to_string(a.slots.size() + 1), {o.crop.x - b.x, o.crop.y - b.y, o.crop.w, o.crop.h}});
+        if (a.slots.size() > 1) out.push_back(a);
+    }
+    out.push_back({"two", "Two side by side", {{"Left", {0, 0, W / 2, H}}, {"Right", {W / 2, 0, W - W / 2, H}}}});
+    out.push_back({"quad",
+                   "Four (2 x 2)",
+                   {{"Top left", {0, 0, W / 2, H / 2}},
+                    {"Top right", {W / 2, 0, W - W / 2, H / 2}},
+                    {"Bottom left", {0, H / 2, W / 2, H - H / 2}},
+                    {"Bottom right", {W / 2, H / 2, W - W / 2, H - H / 2}}}});
+    // A main picture in the middle half, two stacked in each outer quarter. On a 32:9 group the
+    // main picture and the four small ones are all 16:9.
+    const int q = W / 4;
+    out.push_back({"five",
+                   "Main in the middle, two each side",
+                   {{"Main", {q, 0, W - 2 * q, H}},
+                    {"Left top", {0, 0, q, H / 2}},
+                    {"Left bottom", {0, H / 2, q, H - H / 2}},
+                    {"Right top", {W - q, 0, q, H / 2}},
+                    {"Right bottom", {W - q, H / 2, q, H - H / 2}}}});
+    return out;
+}
+
+SlotContent contentOf(const SourceConfig& s) {
+    SlotContent c;
+    if (s.type == SourceType::Ndi) c.ndiName = s.ndiName;
+    else if (s.type == SourceType::Video && !s.playlist.empty()) c.playlist = s.playlist;
+    else if (s.type == SourceType::Video) c.video = s.video;
+    return c;
+}
+
+// The source that plays `c`, without a place yet.
+static SourceConfig sourceFor(const SlotContent& c) {
+    SourceConfig s;
+    if (!c.ndiName.empty()) {
+        s.type = SourceType::Ndi;
+        s.ndiName = c.ndiName;
+        s.name = c.ndiName;
+    } else {
+        s.type = SourceType::Video;
+        s.playlist = c.playlist;
+        s.video = c.playlist.empty() ? c.video : "";
+        s.name = c.playlist.empty() ? c.video : c.playlist;
+    }
+    return s;
+}
+
+static const Arrangement* findArrangement(const std::vector<Arrangement>& all, const std::string& id) {
+    for (auto& a : all)
+        if (a.id == id) return &a;
+    return nullptr;
+}
+
+std::vector<SlotContent> groupSlots(const Layout& l, const WallConfig& w) {
+    auto all = groupArrangements(l, w);
+    const Arrangement* a = findArrangement(all, w.arrangement);
+    std::vector<SlotContent> out(a ? a->slots.size() : 0);
+    for (auto& s : l.sources)
+        if (s.group == w.id && s.slot >= 1 && s.slot <= static_cast<int>(out.size())) out[static_cast<size_t>(s.slot - 1)] = contentOf(s);
+    return out;
+}
+
+bool arrangeGroup(Layout& l, const std::string& groupId, const std::string& arrangement, const std::vector<SlotContent>* content, std::string& error) {
+    WallConfig* w = findWallMut(l, groupId);
+    if (!w) return error = "no such wall group", false;
+    auto all = groupArrangements(l, *w);
+    const Arrangement* a = findArrangement(all, arrangement);
+    if (!a) return error = "group '" + groupId + "' has no arrangement '" + arrangement + "'", false;
+    std::vector<SlotContent> fill = content ? *content : groupSlots(l, *w);
+    fill.resize(a->slots.size());
+    std::vector<SourceConfig> sources;
+    for (size_t i = 0; i < a->slots.size(); ++i) {
+        if (fill[i].empty()) continue;
+        SourceConfig s = sourceFor(fill[i]);
+        s.id = "slot-" + std::to_string(i + 1);
+        s.slot = static_cast<int>(i + 1);
+        s.rect = a->slots[i].rect;
+        sources.push_back(s);
+    }
+    replaceGroupSources(l, *w, sources);
+    w->arrangement = a->id;
     w->activePreset.clear();
+    w->parked.clear();
+    w->parkedArrangement.clear();
+    return true;
+}
+
+bool setGroupSlot(Layout& l, const std::string& groupId, int slot, const SlotContent& content, std::string& error) {
+    WallConfig* w = findWallMut(l, groupId);
+    if (!w) return error = "no such wall group", false;
+    // Switched off: change what it will show when it comes back on.
+    if (!w->parked.empty() && std::none_of(l.sources.begin(), l.sources.end(), [&](auto& s) { return s.group == groupId; })) {
+        std::string ignored;
+        setGroupContentOn(l, groupId, true, ignored);
+    }
+    auto all = groupArrangements(l, *w);
+    const Arrangement* a = findArrangement(all, w->arrangement);
+    if (!a) a = &all.front();  // hand-placed content or none: "full"
+    if (slot < 1 || slot > static_cast<int>(a->slots.size()))
+        return error = "arrangement '" + a->id + "' has slots 1 to " + std::to_string(a->slots.size()), false;
+    std::vector<SlotContent> fill = a->id == w->arrangement ? groupSlots(l, *w) : std::vector<SlotContent>{};
+    fill.resize(a->slots.size());
+    fill[static_cast<size_t>(slot - 1)] = content;
+    return arrangeGroup(l, groupId, a->id, &fill, error);
+}
+
+bool setGroupContentOn(Layout& l, const std::string& groupId, bool on, std::string& error) {
+    WallConfig* w = findWallMut(l, groupId);
+    if (!w) return error = "no such wall group", false;
+    bool showing = std::any_of(l.sources.begin(), l.sources.end(), [&](auto& s) { return s.group == groupId; });
+    if (!on) {
+        if (showing) {
+            w->parked = groupContent(l, *w);
+            w->parkedArrangement = w->arrangement;
+            replaceGroupSources(l, *w, {});
+        }
+        w->activePreset.clear();
+        return true;
+    }
+    if (showing) return true;
+    if (w->parked.empty()) return error = "group '" + groupId + "' has nothing to switch back on; choose what it shows first", false;
+    replaceGroupSources(l, *w, w->parked);
+    w->arrangement = w->parkedArrangement;
+    w->parked.clear();
+    w->parkedArrangement.clear();
+    return true;
+}
+
+const SourceConfig* backgroundSource(const Layout& l) {
+    for (auto& s : l.sources)
+        if (s.id == "background" && s.group.empty()) return &s;
+    return nullptr;
+}
+
+bool setBackground(Layout& l, bool on, const SlotContent* content, std::string& error) {
+    auto it = std::find_if(l.sources.begin(), l.sources.end(), [](auto& s) { return s.id == "background" && s.group.empty(); });
+    if (content && !content->empty()) {
+        SourceConfig s = sourceFor(*content);
+        s.id = "background";
+        s.name = "Background: " + s.name;
+        if (it != l.sources.end()) l.sources.erase(it);
+        l.sources.insert(l.sources.begin(), s);  // under everything
+        it = l.sources.begin();
+    }
+    if (it == l.sources.end()) {
+        if (!on) return true;  // nothing to switch off
+        return error = "no background chosen yet: send ndiName, playlist or video", false;
+    }
+    it->rect = {0, 0, l.canvas.width, l.canvas.height};
+    it->enabled = on;
     return true;
 }
 

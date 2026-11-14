@@ -27,6 +27,7 @@ struct SourceConfig {
     std::string ndiName;                      // for SourceType::Ndi
     std::string image;                        // for SourceType::Image: a file in the media folder (data/media)
     std::string video;                        // for SourceType::Video: a file in the media folder
+    std::string playlist;                     // for SourceType::Video: a folder in the media folder instead; its videos play one after another, in name order, and start over
     std::string device;                       // for SourceType::Capture: the capture device's name (GET /api/capture)
     bool loop = true;                         // video: start again at the end (else hold the last frame)
     bool playing = true;                      // video: false = paused
@@ -37,6 +38,7 @@ struct SourceConfig {
     bool animated = true;                     // test pattern: false freezes the moving bar and frame counter
     bool enabled = true;
     std::string group;                        // wall group whose content this is (set by its presets), or empty
+    int slot = 0;                             // which slot of the group's arrangement it fills (1..N); 0 = placed by hand
 };
 
 // What one wall group shows: its sources, placed relative to the group's top-left corner,
@@ -44,6 +46,7 @@ struct SourceConfig {
 struct GroupPreset {
     std::string id;
     std::string name;
+    std::string arrangement;  // the group's arrangement when it was saved ("" = placed by hand)
     std::vector<SourceConfig> sources;
 };
 
@@ -100,6 +103,30 @@ struct WallConfig {
     std::vector<GroupPreset> presets;             // saved content for this group
     std::string fallbackImage;                    // media file shown where one of its NDI streams has no signal
     std::string activePreset;                     // last preset recalled or saved ("" after show / clear)
+    // How the group's area is divided into slots, each showing one stream: "full", "two", "quad",
+    // "five", "panels" (see groupArrangements), or "" when its content was placed by hand.
+    std::string arrangement;
+    // What the group showed when it was switched off (clear), relative to the group, so
+    // switching it back on brings it back.
+    std::vector<SourceConfig> parked;
+    std::string parkedArrangement;
+};
+
+// A way to divide a group's area into slots.
+struct Arrangement {
+    struct Slot {
+        std::string name;  // "Main", "Left top", ...
+        Rect rect;         // relative to the group's top-left corner
+    };
+    std::string id, name;
+    std::vector<Slot> slots;
+};
+
+// What a slot (or the background) plays: one of an NDI stream, a playlist (a folder of videos
+// in the media folder) or a single video file. All empty = nothing.
+struct SlotContent {
+    std::string ndiName, playlist, video;
+    bool empty() const { return ndiName.empty() && playlist.empty() && video.empty(); }
 };
 
 // A saved arrangement of sources that can be recalled without touching outputs.
@@ -244,6 +271,26 @@ bool recallGroupPreset(Layout& l, const std::string& groupId, const std::string&
 bool deleteGroupPreset(Layout& l, const std::string& groupId, const std::string& presetId);
 // Replaces the group's sources with one NDI stream filling the group ("" = clear the group).
 bool showOnGroup(Layout& l, const std::string& groupId, const std::string& ndiName);
+
+// The arrangements a group offers: "full" (one stream), "two" (side by side), "quad" (2 x 2),
+// "five" (a main picture in the middle, two stacked on each side), and for a group of several
+// panels "panels" (one stream per panel, bezel gaps left out).
+std::vector<Arrangement> groupArrangements(const Layout& l, const WallConfig& w);
+// What each slot of the group's arrangement plays now (empty where nothing).
+std::vector<SlotContent> groupSlots(const Layout& l, const WallConfig& w);
+// Divides the group as `arrangement` and fills its slots. Without `content`, slots keep what
+// they played (by number). False with `error` set if there's no such group or arrangement.
+bool arrangeGroup(Layout& l, const std::string& groupId, const std::string& arrangement, const std::vector<SlotContent>* content, std::string& error);
+// Changes what one slot (1..N) plays; the others carry on. A group with hand-placed content
+// (or none) becomes "full" first.
+bool setGroupSlot(Layout& l, const std::string& groupId, int slot, const SlotContent& content, std::string& error);
+// Off: the group's content is put aside and it shows what lies under it. On: it comes back.
+bool setGroupContentOn(Layout& l, const std::string& groupId, bool on, std::string& error);
+// The background: one stream under everything, covering the whole canvas (source id
+// "background"). `content` null keeps what it plays and only switches it on or off.
+bool setBackground(Layout& l, bool on, const SlotContent* content, std::string& error);
+const SourceConfig* backgroundSource(const Layout& l);
+SlotContent contentOf(const SourceConfig& s);
 
 // Saves the current sources as a scene (replacing one with the same id); returns its id.
 std::string saveScene(Layout& l, const std::string& name);
