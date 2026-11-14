@@ -30,6 +30,9 @@ struct DisplayConfig {
     // it by default): several monitors showing cells of one stream (a 2 x 2 from a single stream).
     double cropX = 0, cropY = 0, cropW = 1, cropH = 1;
     nlohmann::json synthetic;     // options for a synthetic stream
+    // With stream "identify": the display shows which screen it is instead of a stream:
+    // {big: "3", lines: ["RCV02", ...], colour: 0xAARRGGBB} (see identify_input.hpp).
+    nlohmann::json identify;
 };
 
 struct ReceiverConfig {

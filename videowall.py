@@ -1113,6 +1113,30 @@ def receiver_displays(displays):
     return out
 
 
+def identify_displays():
+    """Identify: every screen of this PC shows its number (as in the editor's Screen lists), its
+    size and which display it's set up as, instead of a stream."""
+    slots = cfg("receiver_displays") or []
+    screens = enumerate_displays()
+    if not screens:  # no screen info (not Windows): the displays' own windows, for testing
+        screens = [{"device": d.get("screen") or "", "short": d.get("screen") or "DISPLAY%d" % (i + 1), "x": d["window"]["x"],
+                    "y": d["window"]["y"], "width": d["window"]["w"], "height": d["window"]["h"]} for i, d in enumerate(slots)]
+    host = (endpoint_state["endpoint"] or {}).get("name") or short_host(socket.gethostname())
+    out = []
+    for i, s in enumerate(screens):
+        number = re.search(r"(\d+)$", s["short"])
+        slot = next((d for d in slots if d.get("screen") == s["device"] and
+                     (s["device"] or d["window"] == {"x": s["x"], "y": s["y"], "w": s["width"], "h": s["height"]})), None)
+        lines = [host, "SCREEN %s  %dx%d%s" % (s["short"], s["width"], s["height"], "  (main)" if s.get("primary") else ""),
+                 "DISPLAY %d: %s" % (slot["index"], slot.get("label") or slot["stream"]) if slot else "NOT USED"]
+        if s.get("monitor"):
+            lines.append(s["monitor"])
+        out.append({"index": slot["index"] if slot else 100 + i, "stream": "identify", "label": slot.get("label", "") if slot else "",
+                    "screen": s["device"], "window": {"x": s["x"], "y": s["y"], "w": s["width"], "h": s["height"]},
+                    "identify": {"big": number.group(1) if number else str(i + 1), "lines": lines}})
+    return out
+
+
 def sync_receiver(displays=None):
     """Keeps the receiver running with the right displays (saved, so it comes back after a reboot)."""
     if displays is not None:
@@ -1122,12 +1146,16 @@ def sync_receiver(displays=None):
     if not start_receiver():
         return
     endpoint = endpoint_state["endpoint"] or {}
-    wanted = {"displays": cfg("receiver_displays") or [], "flashTest": bool(endpoint.get("flashTest")),
-              "bufferMs": int(endpoint.get("bufferMs") or 0)}
+    identify = bool(endpoint.get("identify"))
+    wanted = {"displays": identify_displays() if identify else cfg("receiver_displays") or [],
+              "flashTest": bool(endpoint.get("flashTest")) and not identify, "bufferMs": int(endpoint.get("bufferMs") or 0)}
     if receiver_state["sent"] != wanted:
         if receiver_call("PUT", "/config", wanted, timeout=3) is not None:
             receiver_state["sent"] = wanted
-            log.info("Mosaic Receiver: %s", ", ".join("%s -> %s" % (d["label"] or d["index"], d["stream"]) for d in wanted["displays"]) or "no displays")
+            if identify:
+                log.info("Mosaic Receiver: identify, %d screen(s) show their numbers", len(wanted["displays"]))
+            else:
+                log.info("Mosaic Receiver: %s", ", ".join("%s -> %s" % (d["label"] or d["index"], d["stream"]) for d in wanted["displays"]) or "no displays")
 
 
 def receiver_panels():

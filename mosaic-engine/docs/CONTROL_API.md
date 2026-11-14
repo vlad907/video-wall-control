@@ -351,6 +351,9 @@ Outputs → *+ Group* → 1 × 1. Outputs that aren't in a group follow the canv
 
 - `GET /api/control?canvas=<id>` → `endpoints`: each receiving PC, `online`, and `displaysOk` of
   `displays` (how many screens play the stream they should).
+- Which screen is which: `POST /api/endpoints/<id>/identify?canvas=<id>` with `{"on": true}` makes
+  every screen of that PC show its screen number and the display it's set up as, for 10 minutes or
+  until `{"on": false}` (see RECEIVER.md, "Identify screens").
 - `GET /api/metrics?canvas=<id>` → `outputs`: per output `sink` (`ndi` or `display`). An NDI output
   has `connections` (receivers connected) and `fps`. A display output has `open`, `fps`, `refreshHz`,
   `repeats`, `error` (why the monitor isn't showing, for example unplugged or used by another

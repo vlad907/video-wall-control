@@ -55,7 +55,7 @@ Plan, phases and acceptance criteria: [RECEIVER.md](RECEIVER.md).
 - [x] Phase 1: one PC: frame-aligned multi-display player, dashboard supervision, player choice per endpoint
       (self-test and Windows CI; still to run on the receiving PCs, see RECEIVER.md "Using it")
 - [ ] Phase 2: across PCs: clock sync with the engine and scheduled presentation
-- [ ] Phase 3: per-display colour matching, identify overlay, local test patterns
+- [ ] Phase 3: per-display colour matching, local test patterns (identify screens: done)
 
 ## Possible next features
 

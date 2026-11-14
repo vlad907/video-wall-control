@@ -444,6 +444,7 @@ Across the whole source there's also:
 | GET / POST | `/api/endpoints` | list endpoints with live status, plus PCs that checked in but aren't set up (`unassigned`) / create one: `{"name", "host", "player", "displays": [{"output", "screen", "part"}]}` (`player`: `studio_monitor` or `mosaic`; `part`: `{"cols", "rows", "index", "gapX", "gapY"}`, one stream cut across several screens) |
 | PUT / DELETE | `/api/endpoints/:id` | change `name`, `host`, `player` or `displays` / remove it (the PC keeps showing what it shows) |
 | GET | `/api/audio` | sound outputs' live status, the PC's sound devices and inputs; the outputs themselves are the layout's `audioOutputs` (`PUT /api/layout {"audioOutputs": [...]}`) |
+| POST | `/api/endpoints/:id/identify` | `{"on": true}` (optional `"minutes"`, default 10): every screen of the PC shows its screen number, name and size and the display it's set up as, for mapping; `{"on": false}` ends it. Ends by itself, not saved. Mosaic Receiver only |
 | POST | `/api/endpoints/checkin` | used by the receiving PC's dashboard: `{host, screens, panels}`, reply is its assignment |
 | GET | `/api/control` | summary for control systems: groups with presets and what's on, scenes, layouts, NDI streams |
 | GET / PUT / DELETE | `/api/wall` | the group `wall` (the single-wall API from before groups) |

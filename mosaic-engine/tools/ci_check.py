@@ -405,6 +405,24 @@ with tempfile.TemporaryDirectory() as tmp:
         call("PUT", "/api/endpoints/quad-pc", {"displays": [{"output": "out-1", "part": {"cols": 2, "rows": 2, "index": k, "gapX": 5000}} for k in (1, 2, 3, 4)]})
         r = call("POST", "/api/endpoints/checkin", {"host": "quad-pc", "screens": [], "panels": []})
         check(r["displays"][0]["crop"]["w"] >= 0.25 - 1e-9, f"an oversized gap still leaves half the picture on the screens ({r['displays'][0]['crop']['w']:.3f})")
+        # Identify: the PC's screens show their numbers for a while; not saved with the layout.
+        r = call("POST", "/api/endpoints/checkin", {"host": "quad-pc", "screens": [], "panels": []})
+        check(r["endpoint"]["identify"] is False, "identify is off unless asked for")
+        ep = call("POST", "/api/endpoints/quad-pc/identify", {"on": True})
+        check(540 < ep["identifySecondsLeft"] <= 600, f"identify turns on for 10 minutes ({ep['identifySecondsLeft']} s left)")
+        r = call("POST", "/api/endpoints/checkin", {"host": "QUAD-PC.example.org", "screens": [], "panels": []})
+        check(r["endpoint"]["identify"] is True and len(r["displays"]) == 4, "the check-in tells the PC to show its screen numbers, and still what it plays")
+        saved = next(e for e in json.loads(get("/api/layout")[1])["endpoints"] if e["id"] == "quad-pc")
+        check("identify" not in saved, "identify isn't saved with the layout")
+        ep = call("POST", "/api/endpoints/quad-pc/identify", {"on": False})
+        r = call("POST", "/api/endpoints/checkin", {"host": "quad-pc", "screens": [], "panels": []})
+        check(ep["identifySecondsLeft"] == 0 and r["endpoint"]["identify"] is False, "and off again")
+        try:
+            call("POST", "/api/endpoints/spare-pc/identify", {"on": True})
+            refused = False
+        except urllib.error.HTTPError as ex:
+            refused = ex.code == 400
+        check(refused, "identify is refused for a PC that plays with Studio Monitor")
         call("PUT", "/api/endpoints/quad-pc", {"player": "studio_monitor"})
         r = call("POST", "/api/endpoints/checkin", {"host": "quad-pc", "screens": [], "panels": []})
         check("Mosaic Receiver" in (r["displays"][0].get("error") or ""), "Studio Monitor can't show part of a stream, and says so")

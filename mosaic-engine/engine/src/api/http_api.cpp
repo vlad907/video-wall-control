@@ -286,6 +286,15 @@ struct HttpApi::Impl {
     // Last check-in of each receiving PC, by hostKey (not saved; they check in every few seconds).
     std::mutex checkinMutex;
     std::map<std::string, json> checkins;
+    // Identify: until when (nowSeconds) each PC's screens show their numbers instead of their
+    // streams, by hostKey. Not saved, and it ends by itself, so a wall is never left showing numbers.
+    std::map<std::string, double> identifyUntil;
+    // Seconds of identify left for a PC (0 = off).
+    double identifyLeft(const std::string& host) {
+        std::lock_guard lock(checkinMutex);
+        auto it = identifyUntil.find(hostKey(host));
+        return it == identifyUntil.end() ? 0.0 : std::max(0.0, it->second - nowSeconds());
+    }
 
     // Full NDI name of one of our outputs, as receivers see it on the network.
     std::string fullStreamName(const std::string& ndiName, const std::vector<std::string>& discovered) const {
@@ -350,6 +359,7 @@ struct HttpApi::Impl {
         }
         double ago = last.contains("time") ? nowSeconds() - last.value("time", 0.0) : -1;
         j["online"] = ago >= 0 && ago < kEndpointOnlineSeconds;
+        j["identifySecondsLeft"] = std::round(identifyLeft(e.host));
         j["lastSeenSecondsAgo"] = ago < 0 ? json(nullptr) : json(std::round(ago));
         j["address"] = last.value("address", "");
         j["receiverVersion"] = last.value("receiverVersion", "");
@@ -1038,6 +1048,26 @@ struct HttpApi::Impl {
                 if (e.id == id) return sendJson(res, endpointView(*l, e, eng().discoveredNdiSources()));
             sendError(res, 404, "no such endpoint");
         }));
+        // Identify: {on: true, minutes: 10} makes every screen of the PC show its number (Windows
+        // screen name, and the display it's set up as) instead of its stream; {on: false} ends it.
+        // It ends by itself after `minutes` (1-60, 10 by default). Mosaic Receiver only.
+        s.Post(R"(/api/endpoints/([A-Za-z0-9_\-]+)/identify)", guard([this](const httplib::Request& req, httplib::Response& res) {
+            std::string id = req.matches[1];
+            json body = parseBody(req);
+            auto l = store.active();
+            for (auto& e : l->endpoints)
+                if (e.id == id) {
+                    bool on = body.value("on", true);
+                    if (on && e.player != "mosaic") return sendError(res, 400, "identify needs the Mosaic Receiver as the player");
+                    {
+                        std::lock_guard lock(checkinMutex);
+                        if (on) identifyUntil[hostKey(e.host)] = nowSeconds() + 60.0 * std::clamp(body.value("minutes", 10.0), 1.0, 60.0);
+                        else identifyUntil.erase(hostKey(e.host));
+                    }
+                    return sendJson(res, endpointView(*l, e, eng().discoveredNdiSources()));
+                }
+            sendError(res, 404, "no such endpoint");
+        }));
         s.Delete(R"(/api/endpoints/([A-Za-z0-9_\-]+))", guard([this](const httplib::Request& req, httplib::Response& res) {
             std::string id = req.matches[1];
             bool ok = store.mutateActive([&](Layout& l) {
@@ -1066,7 +1096,7 @@ struct HttpApi::Impl {
             for (auto& l : running)
                 for (auto& e : l->endpoints)
                     if (hostKey(e.host) == hostKey(host))
-                        return sendJson(res, {{"endpoint", {{"id", e.id}, {"name", e.name}, {"player", e.player}, {"flashTest", e.flashTest}, {"bufferMs", l->receiverBufferMs}}},
+                        return sendJson(res, {{"endpoint", {{"id", e.id}, {"name", e.name}, {"player", e.player}, {"flashTest", e.flashTest}, {"bufferMs", l->receiverBufferMs}, {"identify", identifyLeft(e.host) > 0}}},
                                               {"layout", l->id},
                                               {"engineHost", machine},
                                               {"receiverPackage", receiverPackage()},

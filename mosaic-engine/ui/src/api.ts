@@ -210,6 +210,7 @@ export interface EndpointView extends Omit<Endpoint, "displays"> {
   address: string;
   version: string;
   screens: Screen[];
+  identifySecondsLeft?: number; // its screens show their numbers for this much longer (0 = off)
   receiverVersion?: string; // the receiver this PC installed (from the engine)
   receiverUpdate?: string;  // why it couldn't update or switch, if so
   appVersion?: string; // the dashboard's version (git commit)
@@ -551,6 +552,7 @@ export const api = {
   createEndpoint: (e: Partial<Endpoint>) => call<EndpointView>("POST", "/api/endpoints", e),
   putEndpoint: (id: string, e: Partial<Endpoint>) => call<EndpointView>("PUT", `/api/endpoints/${id}`, e),
   deleteEndpoint: (id: string) => call("DELETE", `/api/endpoints/${id}`),
+  identifyEndpoint: (id: string, on: boolean) => call<EndpointView>("POST", `/api/endpoints/${id}/identify`, { on }),
   saveScene: (name: string) => call<Scene>("POST", "/api/scenes", { name }),
   recallScene: (id: string, transitionMs: number) => call("POST", `/api/scenes/${id}/recall`, { transitionMs }),
   deleteScene: (id: string) => call("DELETE", `/api/scenes/${id}`),

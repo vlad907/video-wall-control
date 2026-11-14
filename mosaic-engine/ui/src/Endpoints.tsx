@@ -388,6 +388,20 @@ export function EndpointPanel({
             </div>
           );
         })}
+        {endpoint.player === "mosaic" && (
+          <label
+            className="toggle"
+            title="For mapping: every screen on this PC shows its screen number (the DISPLAY number in the Screen lists here), its size, and which display it's set up as, instead of its picture. A white frame runs along the edges of each screen. Turns itself off after 10 minutes."
+          >
+            <input
+              type="checkbox"
+              checked={(endpoint.identifySecondsLeft ?? 0) > 0}
+              onChange={(e) => api.identifyEndpoint(endpoint.id, e.target.checked).then(onChanged).catch(onError)}
+            />
+            Identify screens: each screen shows its number instead of its picture
+            {(endpoint.identifySecondsLeft ?? 0) > 0 ? ` (on, ${Math.ceil((endpoint.identifySecondsLeft ?? 0) / 60)} min left)` : ""}
+          </label>
+        )}
         <div className="row buttons">
           <button onClick={() => save([...slots, { screen: "", output: nextFree() }])}>+ Display</button>
           <select

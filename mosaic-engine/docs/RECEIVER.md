@@ -76,6 +76,16 @@ and each endpoint chooses its player, so a PC can switch back at any time.
    second at 60 fps. Displays in step flash together. Film the wall in slow motion to compare against the numbers,
    including across receiving PCs, since the flash follows the engine's frame number.
    `/api/control` lists `syncSpreadFrames` per endpoint.
+
+   **Identify screens** (endpoint panel, under the displays): for mapping. Every screen on the PC, used or not,
+   shows a big number instead of its picture: the number in its Windows name (`DISPLAY3` shows 3), which is the
+   name in the editor's Screen lists. Under it: the PC's name, the screen's name and size, the display it's set
+   up as and what that plays ("DISPLAY 2: Right top"), or "NOT USED". A white frame runs along the edges of
+   the picture: a side of it missing means the window doesn't fill that screen. Each screen gets its own
+   background colour. It turns itself off after 10 minutes and isn't saved, so a restart never comes back
+   showing numbers. Over the API: `POST /api/endpoints/<id>/identify` with `{"on": true}` (optional
+   `"minutes"`, 1 to 60) or `{"on": false}`. The PC picks it up at its next check-in (within 5 seconds).
+   Mosaic Receiver only.
 5. **Switch back** by choosing *NDI Studio Monitor*: the receiver stops and the Studio Monitors return.
 
 Checks without hardware:
@@ -101,7 +111,7 @@ What phase 1 doesn't do yet:
 | Window placement | set over its HTTP API, can drift onto the wrong screen | opens full screen on its assigned monitor by itself |
 | Lost signal | frozen last frame | slate (the group's fallback image, or "no signal"); a local slate when the media server is gone |
 | Buffering / latency | Studio Monitor's own | ours: a small fixed jitter buffer, tunable |
-| Later | — | per-display colour / brightness matching, identify-display overlay, local test patterns |
+| Later | — | per-display colour / brightness matching, local test patterns |
 
 Display-level limits stay: screens on different PCs refresh on their own clocks, so without
 hardware framelock (Quadro Sync, FirePro S400) cross-PC alignment is "within about one refresh",
@@ -282,7 +292,7 @@ Uploads: the four 4K pictures are copied to the GPU on four threads at once (abo
 
 ### Phase 3: extras
 - Per-display colour matching (gain / offset / gamma per channel, set in the editor)
-- An identify overlay (big display numbers)
+- An identify overlay (big display numbers): done, see "Identify screens" above
 - Local test patterns (grid, colour bars, the flash test)
 - Optional on-screen status when the media server is unreachable
 

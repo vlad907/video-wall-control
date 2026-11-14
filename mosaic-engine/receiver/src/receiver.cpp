@@ -7,6 +7,7 @@
 #include <iostream>
 
 #include "aligner.hpp"
+#include "identify_input.hpp"
 #include "ndi_input.hpp"
 #include "synthetic_input.hpp"
 
@@ -65,6 +66,7 @@ void from_json(const json& j, ReceiverConfig& c) {
             dc.cropH = std::clamp(cr.value("h", 1.0), 0.01, 1.0 - dc.cropY);
         }
         dc.synthetic = d.value("synthetic", json::object());
+        dc.identify = d.value("identify", json::object());
         c.displays.push_back(dc);
     }
 }
@@ -78,7 +80,8 @@ json to_json(const ReceiverConfig& c) {
                             {"window", {{"x", d.window.x}, {"y", d.window.y}, {"w", d.window.w}, {"h", d.window.h}}},
                             {"tile", {{"x", d.tile.x}, {"y", d.tile.y}, {"w", d.tile.w}, {"h", d.tile.h}}},
                             {"crop", {{"x", d.cropX}, {"y", d.cropY}, {"w", d.cropW}, {"h", d.cropH}}},
-                            {"synthetic", d.synthetic}});
+                            {"synthetic", d.synthetic},
+                            {"identify", d.identify}});
     return {{"displays", displays}, {"lagFrames", c.lagFrames}, {"lostAfterMs", c.lostAfterMs}, {"flashTest", c.flashTest}, {"compensate", c.compensate}, {"bufferMs", c.bufferMs}};
 }
 
@@ -98,6 +101,18 @@ static std::unique_ptr<FrameInput> makeInput(const DisplayConfig& d, std::string
         s.colour = o.value("colour", s.colour);
         s.quadrants = o.value("quadrants", s.quadrants);
         return std::make_unique<SyntheticInput>(s);
+    }
+    if (d.stream == "identify") {
+        // Drawn at half the window's size (sharp enough for big letters, a quarter of the memory).
+        const json& o = d.identify;
+        IdentifyOptions s;
+        bool whole = d.tile.w <= 0 || d.tile.h <= 0;
+        s.width = std::clamp((whole ? d.window.w : d.tile.w) / 2, 64, 4096);
+        s.height = std::clamp((whole ? d.window.h : d.tile.h) / 2, 64, 4096);
+        s.big = o.value("big", std::to_string(d.index));
+        s.lines = o.value("lines", std::vector<std::string>{});
+        s.colour = o.value("colour", identifyColour(d.index - 1));
+        return std::make_unique<IdentifyInput>(s);
     }
     return createNdiInput(d.stream, error);
 }
@@ -157,7 +172,9 @@ void Receiver::apply(const ReceiverConfig& c) {
     std::vector<Stream> next;
     displayStream_.clear();
     for (auto& d : c.displays) {
-        std::string key = d.stream == "synthetic" ? "synthetic:" + d.synthetic.dump() : d.stream;
+        std::string key = d.stream == "synthetic" ? "synthetic:" + d.synthetic.dump()
+                          : d.stream == "identify" ? "identify:" + std::to_string(d.index) + ":" + std::to_string(d.window.w) + "x" + std::to_string(d.window.h) + d.identify.dump()
+                          : d.stream;
         auto have = std::find_if(next.begin(), next.end(), [&](auto& s) { return s.name == key; });
         if (have == next.end()) {
             Stream s;

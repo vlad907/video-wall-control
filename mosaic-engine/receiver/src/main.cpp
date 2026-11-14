@@ -17,6 +17,7 @@
 #endif
 
 #include "receiver.hpp"
+#include "identify_input.hpp"
 #include "synthetic_input.hpp"
 
 using nlohmann::json;
@@ -191,6 +192,43 @@ int selfTest(double seconds) {
         double med = after.empty() ? -99 : after[after.size() / 2];
         std::cout << "engine-clock show times: " << after.size() << " frames, median " << med << " ms after due\n";
         check(after.size() > 20 && med > -2 && med < 42, "frames' show times on the engine's clock are their due time (within two refreshes)");
+    }
+    // Identify: each display shows a still picture with its number instead of a stream.
+    {
+        IdentifyOptions o;
+        o.width = 480, o.height = 270, o.big = "3", o.lines = {"rcv02", "SCREEN DISPLAY3  3840x2160"}, o.colour = 0xFF14532D;
+        auto px = renderIdentify(o);
+        auto at = [&](int x, int y) { return px[static_cast<size_t>(y) * 480 + x]; };
+        size_t white = static_cast<size_t>(std::count(px.begin(), px.end(), 0xFFFFFFFFu));
+        check(px.size() == 480u * 270u && at(0, 0) == 0xFFFFFFFF && at(479, 269) == 0xFFFFFFFF && at(240, 0) == 0xFFFFFFFF && at(0, 135) == 0xFFFFFFFF,
+              "identify picture has a white frame along its edges");
+        check(at(20, 20) == 0xFF14532D && white > px.size() / 20 && white < px.size() / 3, "and white text on its background colour");
+        o.big = "8";
+        check(renderIdentify(o) != px, "different numbers give different pictures");
+        json cfg5 = {{"displays", json::array()}};
+        for (int i = 1; i <= 3; ++i)
+            cfg5["displays"].push_back({{"index", i}, {"stream", "identify"}, {"identify", {{"big", std::to_string(i)}, {"lines", {"TEST"}}}},
+                                        {"window", {{"x", (i - 1) * 1920}, {"y", 0}, {"w", 1920}, {"h", 1080}}}});
+        ReceiverConfig c5;
+        from_json(cfg5, c5);
+        Receiver rx5([](std::string&) { return createHeadlessPresenter(60.0); });
+        rx5.setConfig(c5);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        json s5 = rx5.status();
+        auto d5 = s5.value("displays", json::array());
+        bool all = d5.size() == 3;
+        for (auto& d : d5) all = all && d.value("status", "") == "identify" && d.value("framesShown", 0) == 1 && d.value("width", 0) == 960 && d.value("height", 0) == 540;
+        check(all, "identify: three displays each show their own still picture, uploaded once");
+        check(s5.value("freezesTotal", 99) == 0, "and a still picture isn't counted as a freeze");
+        // Back to streams: the same receiver carries on.
+        json cfg6 = {{"displays", json::array({{{"index", 1}, {"stream", "synthetic"}, {"synthetic", {{"width", 64}, {"height", 36}}},
+                                                 {"window", {{"x", 0}, {"y", 0}, {"w", 1920}, {"h", 1080}}}}})}};
+        ReceiverConfig c6;
+        from_json(cfg6, c6);
+        rx5.setConfig(c6);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        json s6 = rx5.status();
+        check(s6["displays"].size() == 1 && s6["displays"][0].value("framesShown", 0) > 30, "after identify the display plays its stream again");
     }
     std::cout << (ok ? "SELF-TEST PASSED" : "SELF-TEST FAILED") << "\n";
     return ok ? 0 : 1;

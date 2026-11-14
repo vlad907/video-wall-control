@@ -120,6 +120,30 @@ jobs:
           if ($s.presenter -ne "Direct3D 11") { "::warning title=receiver 2x2::not checked: presenter is $($s.presenter)"; exit 0 }
           if ($got -ne "FF0000 00FF00 0000FF FFFFFF") { "::error title=receiver 2x2::each window should show its quarter (FF0000 00FF00 0000FF FFFFFF), got $got"; exit 1 }
 
+      # Identify: each window shows a still picture with its screen number. With no big number
+      # the centre of the picture is its background colour, read back from Direct3D 11.
+      - name: Receiver on Direct3D 11 (WARP), identify screens
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $colours = 0x1E3A8A, 0x14532D
+          $d = @()
+          foreach ($i in 0..1) {
+            $d += @{ index = $i + 1; stream = "identify"; identify = @{ big = ""; lines = @("RCV-CI", "SCREEN DISPLAY$($i + 1)  640x360"); colour = $colours[$i] }
+                     window = @{ x = $i * 640; y = 0; w = 640; h = 360 } }
+          }
+          @{ probe = $true; displays = $d } | ConvertTo-Json -Depth 5 | Set-Content -Path rxid.json
+          $p = Start-Process build/Release/mosaic_receiver.exe -ArgumentList "--software-gpu","--config","rxid.json","--port","8097" -PassThru
+          Start-Sleep -Seconds 6
+          $s = Invoke-RestMethod http://127.0.0.1:8097/status
+          Stop-Process -Id $p.Id
+          $got = ($s.probe | ForEach-Object { "{0:X6}" -f $_ }) -join " "
+          $status = ($s.displays | ForEach-Object { $_.status }) -join " "
+          "presenter $($s.presenter), centres: $got, status: $status"
+          if ($status -ne "identify identify") { "::error title=receiver identify::both displays should report identify, got '$status'"; exit 1 }
+          if ($s.presenter -ne "Direct3D 11") { "::warning title=receiver identify::picture not checked: presenter is $($s.presenter)"; exit 0 }
+          if ($got -ne "1E3A8A 14532D") { "::error title=receiver identify::each window should show its background colour (1E3A8A 14532D), got $got"; exit 1 }
+
       - name: Upload snapshots and metrics
         if: always()
         uses: actions/upload-artifact@v4
